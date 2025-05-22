@@ -9,9 +9,9 @@ import discord
 from discord.ext import commands
 import asyncio
 from dotenv import load_dotenv
-from discord import app_commands
 
 import src.thread_manage.cog as thread_manage
+import src.bot_manage.cog as bot_manage
 import src.admin.cog as admin
 
 # 加载环境变量
@@ -50,6 +50,7 @@ class SingleEmbedLogHandler(logging.Handler):
 
         self._message: discord.Message = None  # 日志 Embed 消息
         self._lines: list[str] = []  # 当前行缓存
+        self._initialized = False  # 标记是否已初始化频道和消息
 
     async def setup(self):
         # 启动后台任务
@@ -57,19 +58,18 @@ class SingleEmbedLogHandler(logging.Handler):
 
     # -------- handler 接口 --------
     def emit(self, record: logging.LogRecord):
-        if not (hasattr(self.bot, 'is_ready') and self.bot.is_ready()):
-            return
-
         # 格式化单行日志
         line = self.format(record)
+        # 即使bot还没准备好，也将日志放入队列中缓存
         asyncio.create_task(self._queue.put(line))
 
     # -------- 后台任务 --------
     async def _worker(self):
         await self.bot.wait_until_ready()
-
-        # 初始化 / 获取日志消息
+        
+        # 初始化频道和消息 (仅在bot准备好后进行)
         await self._ensure_message()
+        self._initialized = True
 
         while True:
             line: str = await self._queue.get()
@@ -80,8 +80,9 @@ class SingleEmbedLogHandler(logging.Handler):
                 if len(self._lines) > self.max_lines:
                     self._lines = self._lines[-self.max_lines :]
 
-                # 更新 embed
-                await self._edit_message()
+                # 仅当已初始化时才更新消息
+                if self._initialized and self._message:
+                    await self._edit_message()
             except Exception:
                 print(f"更新日志 Embed 失败: {traceback.format_exc()}")
             finally:
@@ -145,18 +146,11 @@ file_handler = logging.FileHandler(
 file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
 logger.addHandler(file_handler)
 
-# ---- 机器人设置 ----
-intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
-
-
 class OdysseiaBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
-        intents.guilds = True
         super().__init__(command_prefix=CONFIG.get('prefix', '!'), intents=intents)
     # on_ready sync all commands to main guild
 
@@ -165,10 +159,10 @@ class OdysseiaBot(commands.Bot):
         # 加载所有启用的Cog
         await cog_manager.load_all_enabled()
         
-        # 确保admin模块始终加载，因为它包含管理命令
-        if "admin" not in self.cogs:
-            admin_cog = cog_manager.cog_map["admin"]
-            await cog_manager.load_cog(admin_cog)
+        # 确保bot_manage模块始终加载，因为它包含bot管理命令
+        if "bot_manage" not in self.cogs:
+            bot_manage_cog = cog_manager.cog_map["bot_manage"]
+            await cog_manager.load_cog(bot_manage_cog)
             logger.info("已加载管理命令模块")
 
         logger.info(f"同步命令到主服务器: {guild.name} ({guild.id})")
@@ -181,54 +175,59 @@ class OdysseiaBot(commands.Bot):
                 logger.info(f"已同步全局命令: {command.name}")
             for command in synced_guild:
                 logger.info(f"已同步服务器命令: {command.name}")
+            
+        # 设置机器人状态
+        status_type = CONFIG.get('status', 'watching').lower()
+        status_text = CONFIG.get('status_text', '子区里的一切')
+            
+        activity = None
+        if status_type == 'playing':
+            activity = discord.Game(name=status_text)
+        elif status_type == 'watching':
+            activity = discord.Activity(type=discord.ActivityType.watching, name=status_text)
+        elif status_type == 'listening':
+            activity = discord.Activity(type=discord.ActivityType.listening, name=status_text)
+            
+        if activity:
+            await self.change_presence(activity=activity)
 
 bot = OdysseiaBot()
 bot.logger = logger
 
 # ---- 添加Discord日志处理器 ----
+# 全局变量用于存储处理器实例
+_discord_handler = None
+
+# 提前创建Discord日志处理器
 if CONFIG.get('logging', {}).get('enabled', False):
-    # 全局变量用于存储处理器实例
-    _discord_handler = None
+    guild_id = CONFIG['logging']['guild_id']
+    channel_id = CONFIG['logging']['channel_id']
+    
+    _discord_handler = SingleEmbedLogHandler(bot, guild_id, channel_id)
+    _discord_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    
+    # 设置日志级别
+    level_str = CONFIG['logging'].get('level', 'INFO').upper()
+    level_map = {
+        'DEBUG': logging.DEBUG,
+        'INFO': logging.INFO,
+        'WARNING': logging.WARNING,
+        'ERROR': logging.ERROR,
+        'CRITICAL': logging.CRITICAL
+    }
+    _discord_handler.setLevel(level_map.get(level_str, logging.INFO))
+    
+    # 提前添加到logger，这样在bot ready前的日志也会被缓存
+    logger.addHandler(_discord_handler)
     
     @bot.listen('on_ready')
     async def setup_logging_on_ready():
         """当机器人准备就绪时，设置Discord日志处理器"""
         global _discord_handler
-        if _discord_handler is None and CONFIG.get('logging', {}).get('enabled', False):
-            guild_id = CONFIG['logging']['guild_id']
-            channel_id = CONFIG['logging']['channel_id']
-            
-            _discord_handler = SingleEmbedLogHandler(bot, guild_id, channel_id)
-            _discord_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-            logger.addHandler(_discord_handler)
+        if _discord_handler is not None:
+            # 只在ready时设置handler的频道和消息
             await _discord_handler.setup()
-            
-            level_str = CONFIG['logging'].get('level', 'INFO').upper()
-            level_map = {
-                'DEBUG': logging.DEBUG,
-                'INFO': logging.INFO,
-                'WARNING': logging.WARNING,
-                'ERROR': logging.ERROR,
-                'CRITICAL': logging.CRITICAL
-            }
-            _discord_handler.setLevel(level_map.get(level_str, logging.INFO))
-            
             logger.info(f"{bot.user}已连接到Discord! 机器人ID: {bot.user.id}")
-            
-            # 设置机器人状态
-            status_type = CONFIG.get('status', 'watching').lower()
-            status_text = CONFIG.get('status_text', '子区里的一切')
-            
-            activity = None
-            if status_type == 'playing':
-                activity = discord.Game(name=status_text)
-            elif status_type == 'watching':
-                activity = discord.Activity(type=discord.ActivityType.watching, name=status_text)
-            elif status_type == 'listening':
-                activity = discord.Activity(type=discord.ActivityType.listening, name=status_text)
-            
-            if activity:
-                await bot.change_presence(activity=activity)
 
 # ---- Cog管理 ----
 class CogManager:
@@ -239,6 +238,7 @@ class CogManager:
         self.loaded_cogs: set = set()
         self.cog_map: dict = {
             "thread_manage": thread_manage.ThreadSelfManage(bot),
+            "bot_manage": bot_manage.BotManageCommands(bot),
             "admin": admin.AdminCommands(bot)
         }
     
