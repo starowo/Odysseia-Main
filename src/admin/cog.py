@@ -6,7 +6,7 @@ import json
 import uuid
 import datetime
 import pathlib
-from typing import Tuple
+from typing import List, Tuple
 
 from src.utils.confirm_view import confirm_view
 
@@ -200,7 +200,7 @@ class AdminCommands(commands.Cog):
             await channel.delete_messages(fetched)
             start_message = fetched[-1]
             deleted += len(fetched)
-            await interaction.response.edit_message(f"已删除 {deleted} 条消息", ephemeral=True)
+            await interaction.response.edit_message(f"已删除 {deleted} 条消息")
         
 
     # ---- 批量转移身份组 ----
