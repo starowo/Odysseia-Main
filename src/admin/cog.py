@@ -46,7 +46,7 @@ class AdminCommands(commands.Cog):
                 for file in warn_dir.glob("*.json"):
                     with open(file, "r", encoding="utf-8") as f:
                         warn_record = json.load(f)
-                        if warn_record.get("until", None) and datetime.datetime.now(datetime.UTC) > datetime.datetime.fromisoformat(warn_record["until"]):
+                        if warn_record.get("until", None) and datetime.datetime.now(datetime.timezone.utc) > datetime.datetime.fromisoformat(warn_record["until"]):
                             await guild.remove_roles(warn_record["user_id"], reason=f"警告移除 by {self.bot.user}")
                             file.unlink(missing_ok=True)
 
@@ -78,7 +78,7 @@ class AdminCommands(commands.Cog):
         """保存处罚记录到 data/punish 目录，文件名为 id.json"""
         record_id = uuid.uuid4().hex[:8]
         record["id"] = record_id
-        record["timestamp"] = datetime.datetime.utcnow().isoformat()
+        record["timestamp"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
         punish_dir = pathlib.Path("data") / "punish" / str(guild_id)
         punish_dir.mkdir(parents=True, exist_ok=True)
@@ -96,7 +96,7 @@ class AdminCommands(commands.Cog):
     def _save_warn_record(self, guild_id: int, record: dict):
         record_id = uuid.uuid4().hex[:8]
         record["id"] = record_id
-        record["timestamp"] = datetime.datetime.utcnow().isoformat()
+        record["timestamp"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
         warn_dir = pathlib.Path("data") / "warn" / str(guild_id)
         warn_dir.mkdir(parents=True, exist_ok=True)
@@ -267,11 +267,15 @@ class AdminCommands(commands.Cog):
         duration = datetime.timedelta(seconds=mute_time)
 
         await interaction.response.defer(ephemeral=True)
+        if duration.total_seconds() <= 0 and warn <= 0:
+            await interaction.followup.send("❌ 时长和警告天数不能同时为0", ephemeral=True)
+            return
         try:
-            await member.timeout(duration, reason=reason or "管理员禁言")
+            if duration.total_seconds() > 0:
+                await member.timeout(duration, reason=reason or "管理员禁言")
             warned_role = guild.get_role(int(self.config.get("warned_role_id", 0)))
             if warned_role and warn > 0:
-                await member.add_roles(warned_role, reason=f"禁言附加警告 {warn} 天")
+                await member.add_roles(warned_role, reason=f"处罚附加警告 {warn} 天")
         except discord.Forbidden:
             await interaction.followup.send("❌ 无权限对该成员执行禁言", ephemeral=True)
             return
@@ -292,30 +296,41 @@ class AdminCommands(commands.Cog):
                 "user_id": member.id,
                 "moderator_id": interaction.user.id,
                 "reason": reason,
-                "until": datetime.datetime.utcnow() + datetime.timedelta(days=warn),
+                "until": (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=warn)).isoformat(),
             })
 
 
         await interaction.followup.send(f"✅ 已禁言 {member.mention} ({mute_time_str})。处罚ID: `{record_id}`", ephemeral=True)
 
         # 私聊通知
-        try:
-            await member.send(embed=discord.Embed(title="🔇 禁言处罚", description=f"您因 {reason} 被禁言 {mute_time_str}。请注意遵守社区规则。"))
-        except discord.Forbidden:
-            pass
+        if duration.total_seconds() > 0:
+            try:
+                await member.send(embed=discord.Embed(title="🔇 禁言处罚", description=f"您因 {reason} 被禁言 {mute_time_str}。请注意遵守社区规则。"))
+            except discord.Forbidden:
+                pass
+        elif warn > 0:
+            try:
+                await member.send(embed=discord.Embed(title="⚠️ 警告处罚", description=f"您因 {reason} 被警告 {warn} 天。请注意遵守社区规则。"))
+            except discord.Forbidden:
+                pass
 
         # 当前频道公示
-        await interaction.followup.send(embed=discord.Embed(title="🔇 禁言处罚", description=f"{member.mention} 因 {reason} 被禁言 {mute_time_str}。请注意遵守社区规则。"), ephemeral=False)
+        if duration.total_seconds() > 0:
+            await interaction.followup.send(embed=discord.Embed(title="🔇 禁言处罚", description=f"{member.mention} 因 {reason} 被禁言 {mute_time_str}。请注意遵守社区规则。"), ephemeral=False)
+        elif warn > 0:
+            await interaction.followup.send(embed=discord.Embed(title="⚠️ 警告处罚", description=f"{member.mention} 因 {reason} 被警告 {warn} 天。请注意遵守社区规则。"), ephemeral=False)
 
         # 公示频道
         channel_id = int(self.config.get("punish_announce_channel_id", 0))
         announce_channel = guild.get_channel(channel_id)
         if announce_channel:
-            embed = discord.Embed(title="🔇 禁言处罚", color=discord.Color.orange())
-            embed.add_field(name="成员", value=member.mention)
-            embed.add_field(name="时长", value=mute_time_str)
+            embed = discord.Embed(title="🔇 禁言处罚" if duration.total_seconds() > 0 else "⚠️ 警告处罚", color=discord.Color.orange())
+            if duration.total_seconds() > 0:
+                embed.add_field(name="时长", value=mute_time_str)
+                embed.add_field(name="成员", value=member.mention)
             embed.add_field(name="原因", value=reason or "未提供", inline=False)
-            embed.add_field(name="警告", value=f"{warn}天", inline=False)
+            if warn > 0:
+                embed.add_field(name="警告", value=f"{warn}天", inline=False)
             if img:
                 embed.set_image(url=img.url)
             embed.set_footer(text=f"处罚ID: {record_id}")
