@@ -200,7 +200,8 @@ class AdminCommands(commands.Cog):
             await channel.delete_messages(fetched)
             start_message = fetched[-1]
             deleted += len(fetched)
-            await interaction.response.edit_message(f"已删除 {deleted} 条消息")
+            await interaction.edit_original_response(content=f"已删除 {deleted} 条消息")
+        await interaction.followup.send(f"✅ 已删除 {deleted} 条消息", ephemeral=True)
         
 
     # ---- 批量转移身份组 ----
