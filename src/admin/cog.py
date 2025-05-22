@@ -192,7 +192,9 @@ class AdminCommands(commands.Cog):
         deleted = 0
         # 一次100条，分批删除，从start_message开始，到end_message结束
         while True:
-            fetched = await channel.history(limit=100, after=start_message, before=end_message)
+            fetched: List[discord.Message] = [
+                m async for m in channel.history(limit=100, after=start_message, before=end_message)
+            ]
             if len(fetched) == 0:
                 break
             await channel.delete_messages(fetched)
