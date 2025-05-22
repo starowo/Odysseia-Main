@@ -131,13 +131,14 @@ class AdminCommands(commands.Cog):
         if guild is None:
             await interaction.response.send_message("此命令只能在服务器中使用", ephemeral=True)
             return
-        
+
+        await interaction.response.defer(ephemeral=True)
+
         # 阻止用户操作比自己权限高的身份组
         if role.position >= interaction.user.top_role.position:
             await interaction.followup.send("❌ 无法操作比自己权限高的身份组", ephemeral=True)
             return
 
-        await interaction.response.defer(ephemeral=True)
         if action == "添加":
             await member.add_roles(role, reason=reason)
         elif action == "移除":
