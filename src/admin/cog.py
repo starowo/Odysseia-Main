@@ -104,6 +104,42 @@ class AdminCommands(commands.Cog):
             json.dump(record, f, ensure_ascii=False, indent=2)
         return record_id
 
+    # ---- 添加/移除身份组 ----
+    @admin.command(name="身份组", description="添加/移除身份组")
+    @is_admin()
+    @app_commands.describe(
+        member="成员",
+        action="操作",
+        role="身份组",
+        reason="原因"
+    )
+    @app_commands.choices(
+        action=[
+            app_commands.Choice(name="添加", value="添加"),
+            app_commands.Choice(name="移除", value="移除"),
+        ]
+    )
+    async def add_role(
+        self,
+        interaction, # type: discord.Interaction
+        member: "discord.Member",
+        action: str,
+        role: "discord.Role",
+        reason: str = None,
+    ):
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message("此命令只能在服务器中使用", ephemeral=True)
+            return
+        
+        await interaction.response.defer(ephemeral=True)
+        if action == "添加":
+            await member.add_roles(role, reason=reason)
+        elif action == "移除":
+            await member.remove_roles(role, reason=reason)
+        
+        await interaction.followup.send(f"✅ 已{action}身份组 {role.mention} {member.mention}", ephemeral=True)
+
     # ---- 批量删除消息 ----
     @admin.command(name="批量删除消息", description="在当前频道，从指定消息开始到指定消息结束，删除全部消息")
     @is_admin()
