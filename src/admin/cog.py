@@ -327,7 +327,8 @@ class AdminCommands(commands.Cog):
             embed = discord.Embed(title="🔇 禁言处罚" if duration.total_seconds() > 0 else "⚠️ 警告处罚", color=discord.Color.orange())
             if duration.total_seconds() > 0:
                 embed.add_field(name="时长", value=mute_time_str)
-                embed.add_field(name="成员", value=member.mention)
+            embed.add_field(name="成员", value=member.mention)
+            embed.set_thumbnail(url=member.display_avatar.url)
             embed.add_field(name="原因", value=reason or "未提供", inline=False)
             if warn > 0:
                 embed.add_field(name="警告", value=f"{warn}天", inline=False)
@@ -414,7 +415,7 @@ class AdminCommands(commands.Cog):
         if record["type"] == "mute":
             try:
                 await user_obj.timeout(None, reason="撤销处罚")
-                if record.get("warn", 0) > 0:
+                if record["warn"] > 0:
                     warned_role = guild.get_role(int(self.config.get("warned_role_id", 0)))
                     await user_obj.remove_roles(warned_role, reason=f"撤销处罚附加警告 {record['warn']} 天")
             except discord.Forbidden:
