@@ -383,7 +383,7 @@ class VotingManageCommands(commands.Cog):
             else:
                 # --- 创建公共子区 ---
                 is_private_thread_flag = False
-                # 公共子区可以直接从消息创建
+
                 created_thread = await vote_message.create_thread(
                     name=thread_name,
                     auto_archive_duration=10080
@@ -620,19 +620,19 @@ class VotingManageCommands(commands.Cog):
             await interaction.response.send_message("❌ 未找到此投票数据。", ephemeral=True)
             return
 
-        # 权限检查：发起人、议员或管理员
+        # 权限检查：发起人或管理员
         is_initiator = target_vote_data.get("initiator_id") == interaction.user.id
-        can_moderate_vote = self.is_vote_initiator(interaction.user) or interaction.user.guild_permissions.administrator
+        can_moderate_vote =  interaction.user.guild_permissions.administrator
 
         if not (is_initiator or can_moderate_vote or is_admin):
             await interaction.response.send_message(
-                "❌ 你没有权限结束此投票 (需要发起人、议员身份组或机器人/服务器管理员权限)。",
+                "❌ 你没有权限结束此投票 (需要发起人/服务器管理员权限)。",
                 ephemeral=True)
             return
 
         await interaction.response.defer(ephemeral=True)
 
-        if not target_vote_data.get("active", True):  # active可能不存在于旧数据
+        if not target_vote_data.get("active", True):
             await interaction.followup.send("ℹ️ 这个投票已经结束了。", ephemeral=True)
             return
 
@@ -666,7 +666,7 @@ class VotingManageCommands(commands.Cog):
                         vote_uuid = vote_data.get('uuid', 'N/A')
                         self.logger.info(
                             f"定时投票 '{vote_data['topic']}' (ID: {msg_id}, UUID: {vote_uuid}) 已到期。正在结束...")
-                        await self._conclude_vote(msg_id)  # message_id 作为参数
+                        await self._conclude_vote(msg_id)
             except ValueError:  # 文件名不是整数
                 self.logger.warning(f"check_timed_votes: 跳过非整数的投票文件名: {vote_file_path.name}")
             except Exception as e:
@@ -675,16 +675,14 @@ class VotingManageCommands(commands.Cog):
 
 async def setup(bot: commands.Bot):
     """Cog 的标准入口函数"""
-    # 确保 bot 对象上有 logger
     if not hasattr(bot, 'logger'):
-        # 如果你的主bot文件用其他方式设置logger，在这里调整
-        # 或者使用模块级别的 logger
+
         bot.logger = module_logger
         module_logger.info("Bot对象未找到logger属性，已将模块logger赋给bot.logger")
 
     vote_cog_instance = VotingManageCommands(bot)
     await bot.add_cog(vote_cog_instance)
-    if hasattr(bot, 'logger') and bot.logger:  # 再次检查，确保logger有效
+    if hasattr(bot, 'logger') and bot.logger:
         bot.logger.info("投票模块 已通过 setup 函数加载并添加。")
     else:
         print("投票模块 已通过 setup 函数加载并添加 (未找到 bot.logger，使用 print)。")
