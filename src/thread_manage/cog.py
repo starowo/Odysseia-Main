@@ -1,3 +1,4 @@
+#src\thread_manage\cog.py
 import asyncio
 import discord
 from discord.ext import commands
@@ -7,6 +8,7 @@ from src.thread_manage.thread_clear import clear_thread_members
 from typing import Optional
 import re
 from datetime import datetime
+import traceback
 
 class ThreadSelfManage(commands.Cog):
     def __init__(self, bot):
@@ -61,11 +63,12 @@ class ThreadSelfManage(commands.Cog):
                     "被移除的成员可以重新加入子区",
                 ]
             ),
-            colour=discord.Colour(0x808080),
+            colour=discord.Colour.red(), # 将颜色改为红色以强调危险操作
             timeout=60,
         )
 
         if not confirmed:
+            await interaction.delete_original_response() # 如果用户取消，删除确认消息
             return
 
         # ── 进行清理，实时更新进度 ──────────────────────────────
@@ -164,7 +167,8 @@ class ThreadSelfManage(commands.Cog):
         )
 
         await interaction.edit_original_response(embed=final_embed)
-        await interaction.followup.send("✅ 子区清理完成", embed=final_embed, ephemeral=False)
+        # 不再发送第二个消息，因为 edit_original_response 已经更新了
+        # await interaction.followup.send("✅ 子区清理完成", embed=final_embed, ephemeral=False)
 
     # ---- 删除单条消息 ----
     @self_manage.command(name="删除消息", description="删除指定消息")
@@ -189,19 +193,30 @@ class ThreadSelfManage(commands.Cog):
             message_id_int = int(message_link.strip().split("/")[-1])
             message = await channel.fetch_message(message_id_int)
         except (ValueError, discord.NotFound, discord.HTTPException):
-            await interaction.edit_original_response("找不到指定的消息，请确认消息ID是否正确", ephemeral=True)
+            await interaction.edit_original_response(content="找不到指定的消息，请确认消息ID是否正确。", ephemeral=True)
             return
 
         # 验证是否有权限删除（只能删除自己的消息或者子区内的所有消息）
+        # Discord bot 自身需要有 manage_messages 权限才能删除他人消息
         if message.author.id != interaction.user.id and not channel.owner_id == interaction.user.id:
-            await interaction.edit_original_response("你只能删除自己的消息", ephemeral=True)
-            return
+            # 如果不是自己的消息，也不是子区所有者，并且机器人也没有管理消息权限，则不允许
+            if not channel.permissions_for(self.bot.user).manage_messages:
+                await interaction.edit_original_response("你只能删除自己的消息，或机器人没有管理消息权限无法删除他人的消息。", ephemeral=True)
+                return
+            # 如果机器人有管理消息权限，但操作者不是子区所有者，理论上可以删除，但为了安全，限制为只有子区所有者可以删除他人消息
+            if not interaction.user.id == channel.owner_id:
+                await interaction.edit_original_response("你不是子区所有者，无法删除他人的消息。", ephemeral=True)
+                return
 
         # 删除消息
         try:
             await message.delete()
             await interaction.edit_original_response(
                 content="✅ 消息已删除", embed=None, view=None
+            )
+        except discord.Forbidden:
+            await interaction.edit_original_response(
+                content="❌ 删除失败: 机器人无权限删除此消息。", embed=None, view=None
             )
         except discord.HTTPException as e:
             await interaction.edit_original_response(
@@ -230,6 +245,7 @@ class ThreadSelfManage(commands.Cog):
             title="删除子区",
             description=f"⚠️ **危险操作** ⚠️\n\n确定要删除子区 **{channel.name}** 吗？\n\n**此操作不可逆，将删除所有消息和历史记录！**",
             colour=discord.Colour.red(),
+            timeout=30 # 缩短超时时间
         )
 
         if not confirmed:
@@ -243,6 +259,17 @@ class ThreadSelfManage(commands.Cog):
         # 删除子区
         try:
             await channel.delete()
+            # 由于线程被删除，原有的 ephemeral response 可能无法更新
+            # 如果需要确认，可以在父频道发送一个确认消息
+            # 但通常 ephemeral response 即使在线程删除后也能显示
+            # 这里依赖于 ephemeral response 的持久性
+        except discord.Forbidden:
+            embed = discord.Embed(
+                title=f"❌ 删除失败",
+                description=f"机器人无权限删除此子区，请检查权限。",
+                color=discord.Color.red()
+            )
+            await interaction.edit_original_response(embed=embed, view=None)
         except discord.HTTPException as e:
             # beautiful embed for error
             embed = discord.Embed(
@@ -251,6 +278,15 @@ class ThreadSelfManage(commands.Cog):
                 color=discord.Color.red()
             )
             await interaction.edit_original_response(embed=embed, view=None)
+        except Exception as e:
+            self.logger.error(f"删除子区时出错: {traceback.format_exc()}")
+            embed = discord.Embed(
+                title=f"❌ 删除失败",
+                description=f"发生未知错误: {str(e)}",
+                color=discord.Color.red()
+            )
+            await interaction.edit_original_response(embed=embed, view=None)
+
 
     # ---- 锁定和关闭子区 ----
     @self_manage.command(name="锁定子区", description="锁定子区，禁止发言")
@@ -285,9 +321,11 @@ class ThreadSelfManage(commands.Cog):
             title="锁定子区",
             description=lock_msg,
             colour=discord.Colour.orange(),
+            timeout=30 # 缩短超时时间
         )
 
         if not confirmed:
+            await interaction.delete_original_response()
             return
 
         # 锁定子区
@@ -305,7 +343,12 @@ class ThreadSelfManage(commands.Cog):
             
             # 通知操作者
             await interaction.followup.send("✅ 子区已锁定", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.followup.send("❌ 锁定失败: 机器人无权限锁定此子区。", ephemeral=True)
         except discord.HTTPException as e:
+            await interaction.followup.send(f"❌ 锁定失败: {str(e)}", ephemeral=True)
+        except Exception as e:
+            self.logger.error(f"锁定子区时出错: {traceback.format_exc()}")
             await interaction.followup.send(f"❌ 锁定失败: {str(e)}", ephemeral=True)
 
     # ---- 解锁子区 ----
@@ -341,7 +384,12 @@ class ThreadSelfManage(commands.Cog):
             
             # 通知操作者
             await interaction.followup.send("✅ 子区已解锁", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.followup.send("❌ 解锁失败: 机器人无权限解锁此子区。", ephemeral=True)
         except discord.HTTPException as e:
+            await interaction.followup.send(f"❌ 解锁失败: {str(e)}", ephemeral=True)
+        except Exception as e:
+            self.logger.error(f"解锁子区时出错: {traceback.format_exc()}")
             await interaction.followup.send(f"❌ 解锁失败: {str(e)}", ephemeral=True)
 
     # ---- 设置慢速模式 ----
@@ -355,6 +403,13 @@ class ThreadSelfManage(commands.Cog):
         app_commands.Choice(name="15秒", value=15),
         app_commands.Choice(name="30秒", value=30),
         app_commands.Choice(name="1分钟", value=60),
+        app_commands.Choice(name="5分钟", value=300), # 新增
+        app_commands.Choice(name="10分钟", value=600), # 新增
+        app_commands.Choice(name="15分钟", value=900), # 新增
+        app_commands.Choice(name="30分钟", value=1800), # 新增
+        app_commands.Choice(name="1小时", value=3600), # 新增
+        app_commands.Choice(name="2小时", value=7200), # 新增
+        app_commands.Choice(name="6小时", value=21600), # 新增
     ])
     async def set_slowmode(self, interaction: discord.Interaction, option: app_commands.Choice[int]):
         # 验证是否在子区内
@@ -384,7 +439,12 @@ class ThreadSelfManage(commands.Cog):
                 await interaction.followup.send(f"✅ 已设置慢速模式为 {option.name}", ephemeral=True)
                 # 在子区内发送通知
                 await channel.send(f"⏱️ **慢速模式已设置为 {option.name}**\n\n由 {interaction.user.mention} 设置于 {discord.utils.format_dt(datetime.now())}")
+        except discord.Forbidden:
+            await interaction.followup.send("❌ 设置失败: 机器人无权限设置慢速模式。", ephemeral=True)
         except discord.HTTPException as e:
+            await interaction.followup.send(f"❌ 设置失败: {str(e)}", ephemeral=True)
+        except Exception as e:
+            self.logger.error(f"设置慢速模式时出错: {traceback.format_exc()}")
             await interaction.followup.send(f"❌ 设置失败: {str(e)}", ephemeral=True)
 
     # ---- 标注操作 ----
@@ -428,35 +488,52 @@ class ThreadSelfManage(commands.Cog):
             message_id_int = int(message_link.strip().split("/")[-1])
             message = await channel.fetch_message(message_id_int)
         except (ValueError, discord.NotFound, discord.HTTPException):
-            await interaction.response.send_message("找不到指定的消息，请确认消息ID是否正确", ephemeral=True)
+            await interaction.response.send_message("找不到指定的消息，请确认消息ID是否正确。", ephemeral=True)
+            return
+
+        # 检查机器人是否有权限管理消息（置顶/取消置顶需要此权限）
+        if not channel.permissions_for(self.bot.user).manage_messages:
+            await interaction.response.send_message("❌ 机器人无 '管理消息' 权限，无法执行此操作。", ephemeral=True)
             return
 
         # 执行操作
         if action.value == "pin":
             # 检查是否已经置顶
             if message.pinned:
-                await interaction.response.send_message("此消息已经被标注", ephemeral=True)
+                await interaction.response.send_message("此消息已经被标注。", ephemeral=True)
                 return
                 
             # 置顶消息
             try:
                 await message.pin(reason=f"由 {interaction.user} 标注")
                 await interaction.response.send_message("✅ 消息已标注", ephemeral=True)
+            except discord.Forbidden:
+                await interaction.response.send_message("❌ 标注失败: 机器人无权限置顶此消息。", ephemeral=True)
             except discord.HTTPException as e:
+                await interaction.response.send_message(f"❌ 标注失败: {str(e)}", ephemeral=True)
+            except Exception as e:
+                self.logger.error(f"标注消息时出错: {traceback.format_exc()}")
                 await interaction.response.send_message(f"❌ 标注失败: {str(e)}", ephemeral=True)
         
         elif action.value == "unpin":
             # 检查是否已经置顶
             if not message.pinned:
-                await interaction.response.send_message("此消息未被标注", ephemeral=True)
+                await interaction.response.send_message("此消息未被标注。", ephemeral=True)
                 return
                 
             # 取消置顶
             try:
                 await message.unpin(reason=f"由 {interaction.user} 取消标注")
                 await interaction.response.send_message("✅ 已取消标注", ephemeral=True)
+            except discord.Forbidden:
+                await interaction.response.send_message("❌ 取消标注失败: 机器人无权限取消置顶此消息。", ephemeral=True)
             except discord.HTTPException as e:
                 await interaction.response.send_message(f"❌ 取消标注失败: {str(e)}", ephemeral=True)
+            except Exception as e:
+                self.logger.error(f"取消标注消息时出错: {traceback.format_exc()}")
+                await interaction.response.send_message(f"❌ 取消标注失败: {str(e)}", ephemeral=True)
 
-async def setup(bot):
+# 每个 Cog 模块都需要一个 setup 函数，供 discord.py 加载扩展时调用
+async def setup(bot: commands.Bot):
     await bot.add_cog(ThreadSelfManage(bot))
+
