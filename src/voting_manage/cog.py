@@ -49,7 +49,6 @@ def load_vote_data(message_id: int) -> dict | None:
         try:
             with open(filepath, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                # 旧数据可能没有uuid, 确保返回的字典有此键，即使是None
                 data.setdefault('uuid', None)
                 return data
         except Exception as e:
@@ -77,12 +76,12 @@ def delete_vote_data(message_id: int):
 class VoteButton(discord.ui.Button):
     """投票按钮类"""
 
-    def __init__(self, team_id: str, team_name: str, style: discord.ButtonStyle, cog_logger: logging.Logger,vote_initiator_role_id: int ):
+    def __init__(self, team_id: str, team_name: str, style: discord.ButtonStyle, cog_logger: logging.Logger,
+                 vote_initiator_role_id: int):
         super().__init__(
             label=f"支持{team_name}",
             style=style,
             custom_id=f"vote_button_persistent_{team_id}",
-
 
         )
         self.team_id = team_id
@@ -98,12 +97,11 @@ class VoteButton(discord.ui.Button):
                                                     ephemeral=True)
             return
 
-
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         vote_data = load_vote_data(interaction.message.id)
         if not vote_data or not vote_data.get("active", False):
-            await interaction.followup.send("真该死，这个投票已结束或数据没了", ephemeral=True)
+            await interaction.followup.send("真不幸，这个投票已结束或数据丢失", ephemeral=True)
             view = discord.ui.View.from_message(interaction.message)
             if view:
                 for item in view.children:
@@ -160,18 +158,20 @@ class VoteButton(discord.ui.Button):
 
 
 class DebateVoteView(discord.ui.View):
-    """辩论投票视图类"""
+    """投票视图类"""
 
-    def __init__(self, cog_logger: logging.Logger,vote_initiator_role_id: int ):
+    def __init__(self, cog_logger: logging.Logger, vote_initiator_role_id: int):
         super().__init__(timeout=None)  # 持久化视图
         self.add_item(
-            VoteButton(team_id="red", team_name="红方", vote_initiator_role_id=vote_initiator_role_id,style=discord.ButtonStyle.danger, cog_logger=cog_logger))
+            VoteButton(team_id="red", team_name="红方", vote_initiator_role_id=vote_initiator_role_id,
+                       style=discord.ButtonStyle.danger, cog_logger=cog_logger))
         self.add_item(
-            VoteButton(team_id="blue", team_name="蓝方",vote_initiator_role_id=vote_initiator_role_id, style=discord.ButtonStyle.primary, cog_logger=cog_logger))
+            VoteButton(team_id="blue", team_name="蓝方", vote_initiator_role_id=vote_initiator_role_id,
+                       style=discord.ButtonStyle.primary, cog_logger=cog_logger))
 
 
 class VotingManageCommands(commands.Cog):
-    """投票辩诉功能的 Cog"""
+    """投票辩诉功能命令本体"""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -213,7 +213,7 @@ class VotingManageCommands(commands.Cog):
         self.check_timed_votes.cancel()
 
     def is_vote_initiator(self, user: discord.Member | discord.User) -> bool:
-        if not isinstance(user, discord.Member):  
+        if not isinstance(user, discord.Member):
             return False
         if not self.vote_initiator_role_id:
             self.logger.debug("投票模块: 未配置投票发起人角色 (vote_role_id)，默认不允许非管理员发起/进行投票。")
@@ -230,7 +230,8 @@ class VotingManageCommands(commands.Cog):
     async def on_ready(self):
         """Cog 准备就绪时调用"""
         if not hasattr(self.bot, '_vote_view_added_flag'):
-            self.bot.add_view(DebateVoteView(cog_logger=self.logger,vote_initiator_role_id=self.vote_initiator_role_id))
+            self.bot.add_view(
+                DebateVoteView(cog_logger=self.logger, vote_initiator_role_id=self.vote_initiator_role_id))
             self.bot._vote_view_added_flag = True
             self.logger.info(f"{self.name} cog 的持久化 DebateVoteView 已注册到机器人。")
 
@@ -312,7 +313,7 @@ class VotingManageCommands(commands.Cog):
 
         embed.set_footer(text=footer_text)
         embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
-        vote_view = DebateVoteView(cog_logger=self.logger,vote_initiator_role_id=self.vote_initiator_role_id)
+        vote_view = DebateVoteView(cog_logger=self.logger, vote_initiator_role_id=self.vote_initiator_role_id)
 
         try:
             vote_message = await voting_channel.send(embed=embed, view=vote_view)
@@ -330,8 +331,8 @@ class VotingManageCommands(commands.Cog):
         is_private_thread_flag = False
 
         try:
-            thread_name = f"汴京大战区 - {topic[:80]}"
-            thread_welcome_message_content = f"🗳️ 这是关于投票 **'{topic}'** 的专属汴京大战区。\n"
+            thread_name = f"讨论区 - {topic[:80]}"
+            thread_welcome_message_content = f"🗳️ 这是关于投票 **'{topic}'** 的专属讨论区。\n"
 
             if thread_restricted_role:
 
@@ -347,7 +348,7 @@ class VotingManageCommands(commands.Cog):
                 thread_creation_log += f" 限定身份组: {thread_restricted_role.name}。"
 
                 thread_welcome_message_content += f"原始投票信息: {vote_message.jump_url}\n\n"  # 指向原投票
-                thread_welcome_message_content += f"这是一个私有讨论区，仅限身份组 {thread_restricted_role.mention} 的成员及投票发起人参与。(白字滚）\n"
+                thread_welcome_message_content += f"这是一个私有讨论区，仅限身份组 {thread_restricted_role.mention} 的成员及投票发起人参与。\n"
 
                 await created_thread.send(thread_welcome_message_content + "请在此理性发表你的看法。")
                 added_users_to_thread = set()
@@ -403,8 +404,6 @@ class VotingManageCommands(commands.Cog):
             self.logger.error(f"为投票 {vote_uuid} 创建或配置子区时发生未知错误: {e}", exc_info=True)
             thread_creation_log = f"创建或配置子区时发生未知错误: {e}"
 
-
-
         vote_data = {
             "uuid": vote_uuid,
             "topic": topic, "description": description, "initiator_id": interaction.user.id,
@@ -422,7 +421,6 @@ class VotingManageCommands(commands.Cog):
         try:
             save_vote_data(vote_message.id, vote_data)
         except Exception as e:
-            # 日志已在save_vote_data中记录
             try:
                 await vote_message.delete()
                 self.logger.info(f"由于保存失败，已删除投票消息 {vote_message.id} (UUID: {vote_uuid})")
@@ -467,7 +465,6 @@ class VotingManageCommands(commands.Cog):
         try:
             save_vote_data(message_id, vote_data)
         except Exception as e:
-            # 日志已在save_vote_data中记录
             return False
 
         channel = self.bot.get_channel(vote_data["channel_id"])
@@ -503,7 +500,7 @@ class VotingManageCommands(commands.Cog):
             original_embed.set_footer(text=" | ".join(footer_text_parts))
 
             # 禁用按钮
-            disabled_view = DebateVoteView(cog_logger=self.logger,vote_initiator_role_id=self.vote_initiator_role_id)
+            disabled_view = DebateVoteView(cog_logger=self.logger, vote_initiator_role_id=self.vote_initiator_role_id)
             for item in disabled_view.children:
                 item.disabled = True
             await vote_message.edit(embed=original_embed, view=disabled_view)
@@ -525,7 +522,6 @@ class VotingManageCommands(commands.Cog):
         elif vote_data['blue_count'] > vote_data['red_count']:
             winner = "🔵 蓝方"
         result_message_content += f"**结果: {winner}胜出！** 🎉"
-        #查成分时间
         result_message_content += f"\n投🔵 蓝方的议员有：\n\n"
         for str1 in vote_data["blue_votes_users"]:
             result_message_content += f"<@{str1}>"
@@ -540,7 +536,6 @@ class VotingManageCommands(commands.Cog):
                 f"投票 '{vote_data['topic']}' (ID: {message_id}, UUID: {vote_uuid}) 已结束。获胜方: {winner}。")
         except (discord.Forbidden, discord.HTTPException) as e:
             self.logger.error(f"为投票 {message_id} (UUID: {vote_uuid}) 在频道 C:{channel.id} 发送结束消息失败: {e}")
-
 
         # --- 处理关联子区 ---
         if vote_data.get("thread_id"):
@@ -578,7 +573,6 @@ class VotingManageCommands(commands.Cog):
         msg_id_to_process = None
         target_vote_data = None
 
-
         try:
             if '/' in vote_identifier:
                 msg_id_to_process = int(vote_identifier.split('/')[-1])
@@ -588,10 +582,9 @@ class VotingManageCommands(commands.Cog):
             if msg_id_to_process:
                 target_vote_data = load_vote_data(msg_id_to_process)
 
-        except ValueError:  # 不是纯数字，也不是链接格式，可能是UUID
+        except ValueError:
             pass
 
-            # 如果通过消息ID没找到，或者输入不是消息ID格式，尝试通过UUID查找
         if not target_vote_data:
             found_by_uuid = False
             for vote_file_path in VOTE_DATA_DIR.glob("*.json"):
@@ -600,12 +593,12 @@ class VotingManageCommands(commands.Cog):
                     data = load_vote_data(temp_msg_id)
                     if data and data.get("uuid") == vote_identifier:
                         target_vote_data = data
-                        msg_id_to_process = temp_msg_id  # 获取对应的message_id
+                        msg_id_to_process = temp_msg_id
                         found_by_uuid = True
                         break
-                except ValueError:  # 文件名不是纯数字
+                except ValueError:
                     continue
-                except Exception as e:  # 加载文件出错
+                except Exception as e:
                     self.logger.warning(f"尝试通过UUID查找投票时，加载文件 {vote_file_path.name} 失败: {e}")
                     continue
             if not found_by_uuid:
@@ -613,13 +606,13 @@ class VotingManageCommands(commands.Cog):
                                                         ephemeral=True)
                 return
 
-        if not target_vote_data:  # 双重检查
+        if not target_vote_data:
             await interaction.response.send_message("❌ 未找到此投票数据。", ephemeral=True)
             return
 
         # 权限检查：发起人或管理员
         is_initiator = target_vote_data.get("initiator_id") == interaction.user.id
-        can_moderate_vote =  interaction.user.guild_permissions.administrator
+        can_moderate_vote = interaction.user.guild_permissions.administrator
 
         if not (is_initiator or can_moderate_vote or is_admin):
             await interaction.response.send_message(
@@ -673,7 +666,6 @@ class VotingManageCommands(commands.Cog):
 async def setup(bot: commands.Bot):
     """模块标准入口函数"""
     if not hasattr(bot, 'logger'):
-
         bot.logger = module_logger
         module_logger.info("Bot对象未找到logger属性，已将模块logger赋给bot.logger")
 
