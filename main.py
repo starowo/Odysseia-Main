@@ -1,4 +1,3 @@
-import os
 import json
 import logging
 import traceback
@@ -67,7 +66,7 @@ class SingleEmbedLogHandler(logging.Handler):
     # -------- 后台任务 --------
     async def _worker(self):
         await self.bot.wait_until_ready()
-        
+
         # 初始化频道和消息 (仅在bot准备好后进行)
         await self._ensure_message()
         self._initialized = True
@@ -159,7 +158,7 @@ class OdysseiaBot(commands.Bot):
         guild = self.get_guild(CONFIG.get('logging', {}).get('guild_id'))
         # 加载所有启用的Cog
         await cog_manager.load_all_enabled()
-        
+
         # 确保bot_manage模块始终加载，因为它包含bot管理命令
         if "bot_manage" not in self.cogs:
             bot_manage_cog = cog_manager.cog_map["bot_manage"]
@@ -176,11 +175,11 @@ class OdysseiaBot(commands.Bot):
                 logger.info(f"已同步全局命令: {command.name}")
             for command in synced_guild:
                 logger.info(f"已同步服务器命令: {command.name}")
-            
+
         # 设置机器人状态
         status_type = CONFIG.get('status', 'watching').lower()
         status_text = CONFIG.get('status_text', '子区里的一切')
-            
+
         activity = None
         if status_type == 'playing':
             activity = discord.Game(name=status_text)
@@ -188,7 +187,11 @@ class OdysseiaBot(commands.Bot):
             activity = discord.Activity(type=discord.ActivityType.watching, name=status_text)
         elif status_type == 'listening':
             activity = discord.Activity(type=discord.ActivityType.listening, name=status_text)
-            
+        else:
+            # 处理未知的状态类型，设置默认状态并记录警告
+            logger.warning(f"未知的状态类型 '{status_type}'，使用默认状态 'watching'")
+            activity = discord.Activity(type=discord.ActivityType.watching, name=status_text)
+
         if activity:
             await self.change_presence(activity=activity)
 
@@ -203,10 +206,10 @@ _discord_handler = None
 if CONFIG.get('logging', {}).get('enabled', False):
     guild_id = CONFIG['logging']['guild_id']
     channel_id = CONFIG['logging']['channel_id']
-    
+
     _discord_handler = SingleEmbedLogHandler(bot, guild_id, channel_id)
     _discord_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-    
+
     # 设置日志级别
     level_str = CONFIG['logging'].get('level', 'INFO').upper()
     level_map = {
@@ -217,10 +220,10 @@ if CONFIG.get('logging', {}).get('enabled', False):
         'CRITICAL': logging.CRITICAL
     }
     _discord_handler.setLevel(level_map.get(level_str, logging.INFO))
-    
+
     # 提前添加到logger，这样在bot ready前的日志也会被缓存
     logger.addHandler(_discord_handler)
-    
+
     @bot.listen('on_ready')
     async def setup_logging_on_ready():
         """当机器人准备就绪时，设置Discord日志处理器"""
@@ -243,7 +246,7 @@ class CogManager:
             "admin": admin.AdminCommands(bot),
             "verify": verify.VerifyCommands(bot)
         }
-    
+
     async def load_all_enabled(self):
         """加载所有配置中启用的Cog"""
         for cog_name, cog_config in self.config.get('cogs', {}).items():
@@ -252,7 +255,7 @@ class CogManager:
                     await self.load_cog(self.cog_map[cog_name])
                 else:
                     logger.warning(f"模块 {cog_name} 在配置中启用但不在cog_map中")
-    
+
     async def load_cog(self, cog):
         """加载指定的Cog"""
         try:
@@ -265,7 +268,7 @@ class CogManager:
             # traceback
             logger.error(traceback.format_exc())
             return False, f"❌ 加载失败: {cog.name} - {str(e)}"
-    
+
     async def unload_cog(self, cog):
         """卸载指定的Cog"""
         try:
@@ -276,7 +279,7 @@ class CogManager:
         except Exception as e:
             logger.error(f"卸载 {cog.name} 失败: {str(e)}")
             return False, f"❌ 卸载失败: {cog.name} - {str(e)}"
-    
+
     async def reload_cog(self, cog):
         """重载指定的Cog"""
         try:
@@ -304,11 +307,11 @@ async def on_command_error(ctx, error):
     """全局命令错误处理"""
     if isinstance(error, commands.CommandNotFound):
         return
-    
+
     if isinstance(error, commands.CheckFailure):
         await ctx.send("❌ 你没有权限执行此命令")
         return
-    
+
     logger.error(f"命令 {ctx.command} 执行时出错: {error}")
     await ctx.send(f"❌ 命令执行时出错: {str(error)}")
 
