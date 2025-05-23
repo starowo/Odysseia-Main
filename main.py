@@ -14,6 +14,7 @@ import src.thread_manage.cog as thread_manage
 import src.bot_manage.cog as bot_manage
 import src.admin.cog as admin
 import src.verify.cog as verify
+import src.voting_manage.cog as voting_manage
 
 # 加载环境变量
 load_dotenv()
@@ -152,7 +153,7 @@ class OdysseiaBot(commands.Bot):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
-        super().__init__(command_prefix=CONFIG.get('prefix', '!'), intents=intents)
+        super().__init__(command_prefix=CONFIG.get('prefix', '!'), intents=intents,proxy="htto://127.0.0.1:7890")
     # on_ready sync all commands to main guild
 
     async def on_ready(self):
@@ -188,7 +189,8 @@ class OdysseiaBot(commands.Bot):
             activity = discord.Activity(type=discord.ActivityType.watching, name=status_text)
         elif status_type == 'listening':
             activity = discord.Activity(type=discord.ActivityType.listening, name=status_text)
-            
+        else:
+            activity = discord.Activity(type=discord.ActivityType.unknown, name=status_text)
         if activity:
             await self.change_presence(activity=activity)
 
@@ -241,7 +243,8 @@ class CogManager:
             "thread_manage": thread_manage.ThreadSelfManage(bot),
             "bot_manage": bot_manage.BotManageCommands(bot),
             "admin": admin.AdminCommands(bot),
-            "verify": verify.VerifyCommands(bot)
+            "verify": verify.VerifyCommands(bot),
+            "voting_manage": voting_manage.VotingManageCommands(bot)
         }
     
     async def load_all_enabled(self):
