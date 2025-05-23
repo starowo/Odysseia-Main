@@ -15,15 +15,10 @@ class AdminCommands(commands.Cog):
         self.bot = bot
         self.logger = bot.logger
         self.name = "管理命令"
-        self.config = None
-        # 从main.py加载配置
-        try:
-            with open('config.json', 'r', encoding='utf-8') as f:
-                self.config = json.load(f)
-        except Exception as e:
-            if self.logger:
-                self.logger.error(f"加载配置文件失败: {e}")
-
+        # 初始化配置缓存
+        self._config_cache = {}
+        self._config_cache_mtime = None
+    
     admin = app_commands.Group(name="管理", description="管理员专用命令")
     
     @commands.Cog.listener()
@@ -50,12 +45,27 @@ class AdminCommands(commands.Cog):
                             await guild.remove_roles(warn_record["user_id"], reason=f"警告移除 by {self.bot.user}")
                             file.unlink(missing_ok=True)
 
+    @property
+    def config(self):
+        """读取配置文件并缓存，只有在文件修改后重新加载"""
+        try:
+            path = pathlib.Path('config.json')
+            mtime = path.stat().st_mtime
+            if self._config_cache_mtime != mtime:
+                with open(path, 'r', encoding='utf-8') as f:
+                    self._config_cache = json.load(f)
+                self._config_cache_mtime = mtime
+            return self._config_cache
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"加载配置文件失败: {e}")
+            return {}
+    
     def is_admin():
         async def predicate(ctx):
-            # 在运行时重新加载配置以获取最新的管理员列表
             try:
-                with open('config.json', 'r', encoding='utf-8') as f:
-                    config = json.load(f)
+                cog = ctx.cog
+                config = getattr(cog, 'config', {})
                 return ctx.author.id in config.get('admins', [])
             except Exception:
                 return False
@@ -210,31 +220,59 @@ class AdminCommands(commands.Cog):
     @app_commands.describe(
         source_role="需要转移的原身份组",
         target_role="要添加的新身份组",
-        remove_source="是否移除原身份组"
+        remove_source="是否移除原身份组",
+        limit="限制转移数量(0为全部转移)"
     )
-    @app_commands.rename(source_role="原身份组", target_role="新身份组", remove_source="移除原身份组")
+    @app_commands.rename(source_role="原身份组", target_role="新身份组", remove_source="移除原身份组", limit="限制数量")
     async def bulk_move_role(
         self,
         interaction,  # type: discord.Interaction
         source_role: "discord.Role",
         target_role: "discord.Role",
         remove_source: bool = False,
+        limit: int = 100
     ):
         guild: discord.Guild = interaction.guild
 
         await interaction.response.defer(ephemeral=True, thinking=True)
 
+        # 防止越权
+        if source_role.position >= interaction.user.top_role.position or target_role.position >= interaction.user.top_role.position:
+            await interaction.followup.send("❌ 无法操作比自己权限高的身份组", ephemeral=True)
+            return
+        
+        # 操作确认
+        confirmed = await confirm_view(
+            interaction,
+            title="批量转移身份组",
+            description=f"确定要转移 {limit} 名成员的身份组吗？",
+            colour=discord.Colour(0x808080),
+            timeout=60,
+        )
+
+        if not confirmed:
+            return
+
         affected = 0
-        for member in guild.members:
+
+        members = await guild.fetch_members()
+        # 如果有数量限制，则先按加入时间排序
+        if limit > 0:
+            members.sort(key=lambda x: x.joined_at)
+            members = members[:limit]
+
+        for member in members:
             if source_role in member.roles and target_role not in member.roles:
                 try:
                     await member.add_roles(target_role, reason=f"批量转移身份组 by {interaction.user}")
                     if remove_source:
                         await member.remove_roles(source_role, reason=f"批量转移身份组 remove source by {interaction.user}")
                     affected += 1
+                    if affected % 50 == 0:
+                        await interaction.edit_original_response(content=f"已转移 {affected} 名成员")
                 except discord.Forbidden:
                     continue
-        await interaction.followup.send(f"✅ 已对 {affected} 名成员完成身份组转移", ephemeral=True)
+        await interaction.edit_original_response(content=f"✅ 已对 {affected} 名成员完成身份组转移")
 
     # ---- 禁言 ----
     @admin.command(name="禁言", description="将成员禁言（最长28天）并公示")
@@ -331,6 +369,7 @@ class AdminCommands(commands.Cog):
             if duration.total_seconds() > 0:
                 embed.add_field(name="时长", value=mute_time_str)
             embed.add_field(name="成员", value=member.mention)
+            embed.add_field(name="管理员", value=interaction.user.mention)
             embed.set_thumbnail(url=member.display_avatar.url)
             embed.add_field(name="原因", value=reason or "未提供", inline=False)
             if warn > 0:
@@ -390,6 +429,8 @@ class AdminCommands(commands.Cog):
         if announce_channel:
             embed = discord.Embed(title="⛔ 永久封禁", color=discord.Color.red())
             embed.add_field(name="成员", value=f"{member} ({member.id})")
+            embed.add_field(name="管理员", value=interaction.user.mention)
+            embed.set_thumbnail(url=member.display_avatar.url)
             embed.add_field(name="原因", value=reason or "未提供", inline=False)
             if img:
                 embed.set_image(url=img.url)
@@ -511,8 +552,20 @@ class AdminCommands(commands.Cog):
 
     @thread_manage_group.command(name="锁定", description="锁定线程")
     @is_admin()
-    async def lock_thread_admin(self, interaction, thread: "discord.Thread"):
+    @app_commands.describe(thread="要锁定的子区（留空则为当前子区）")
+    @app_commands.rename(thread="子区")
+    async def lock_thread_admin(
+        self, 
+        interaction, 
+        thread: "discord.Thread" = None
+    ):
         await interaction.response.defer(ephemeral=True)
+        if thread is None:
+            thread = interaction.channel
+        if not isinstance(thread, discord.Thread):
+            await interaction.followup.send("❌ 请指定一个子区", ephemeral=True)
+            return
+            
         if thread.locked:
             await interaction.followup.send("已锁定", ephemeral=True)
             return
@@ -524,8 +577,19 @@ class AdminCommands(commands.Cog):
 
     @thread_manage_group.command(name="解锁", description="解锁线程")
     @is_admin()
-    async def unlock_thread_admin(self, interaction, thread: "discord.Thread"):
+    @app_commands.describe(thread="要解锁的子区（留空则为当前子区）")
+    @app_commands.rename(thread="子区")
+    async def unlock_thread_admin(
+        self, 
+        interaction, 
+        thread: "discord.Thread" = None
+    ):
         await interaction.response.defer(ephemeral=True)
+        if thread is None:
+            thread = interaction.channel
+        if not isinstance(thread, discord.Thread):
+            await interaction.followup.send("❌ 请指定一个子区", ephemeral=True)
+            return
         if not thread.locked:
             await interaction.followup.send("未锁定", ephemeral=True)
             return
@@ -537,8 +601,19 @@ class AdminCommands(commands.Cog):
 
     @thread_manage_group.command(name="archive", description="归档线程")
     @is_admin()
-    async def archive_thread_admin(self, interaction, thread: "discord.Thread"):
+    @app_commands.describe(thread="要归档的子区（留空则为当前子区）")
+    @app_commands.rename(thread="子区")
+    async def archive_thread_admin(
+        self, 
+        interaction, 
+        thread: "discord.Thread" = None
+    ):
         await interaction.response.defer(ephemeral=True)
+        if thread is None:
+            thread = interaction.channel
+        if not isinstance(thread, discord.Thread):
+            await interaction.followup.send("❌ 请指定一个子区", ephemeral=True)
+            return
         if thread.archived:
             await interaction.followup.send("已归档", ephemeral=True)
             return
@@ -550,8 +625,19 @@ class AdminCommands(commands.Cog):
 
     @thread_manage_group.command(name="unarchive", description="取消归档线程")
     @is_admin()
-    async def unarchive_thread_admin(self, interaction, thread: "discord.Thread"):
+    @app_commands.describe(thread="要取消归档的子区（留空则为当前子区）")
+    @app_commands.rename(thread="子区")
+    async def unarchive_thread_admin(
+        self, 
+        interaction, 
+        thread: "discord.Thread" = None
+    ):
         await interaction.response.defer(ephemeral=True)
+        if thread is None:
+            thread = interaction.channel
+        if not isinstance(thread, discord.Thread):
+            await interaction.followup.send("❌ 请指定一个子区", ephemeral=True)
+            return
         if not thread.archived:
             await interaction.followup.send("未归档", ephemeral=True)
             return
@@ -561,14 +647,21 @@ class AdminCommands(commands.Cog):
         except Exception as e:
             await interaction.followup.send(f"❌ 取消归档失败: {e}", ephemeral=True)
 
-    @thread_manage_group.command(name="pin", description="置顶线程")
+    @thread_manage_group.command(name="pin", description="置顶")
     @is_admin()
+    @app_commands.describe(thread="要置顶的子区（留空则为当前子区）")
+    @app_commands.rename(thread="子区")
     async def pin_in_thread_admin(
         self,
         interaction,
-        thread: "discord.Thread",
+        thread: "discord.Thread" = None
     ):
         await interaction.response.defer(ephemeral=True)
+        if thread is None:
+            thread = interaction.channel
+        if not isinstance(thread, discord.Thread):
+            await interaction.followup.send("❌ 请指定一个子区", ephemeral=True)
+            return
         try:
             await thread.pin(reason=f"管理员置顶 by {interaction.user}")
             await interaction.followup.send("✅ 已置顶线程", ephemeral=True)
@@ -580,9 +673,14 @@ class AdminCommands(commands.Cog):
     async def unpin_in_thread_admin(
         self,
         interaction,
-        thread: "discord.Thread"
+        thread: "discord.Thread" = None
     ):
         await interaction.response.defer(ephemeral=True)
+        if thread is None:
+            thread = interaction.channel
+        if not isinstance(thread, discord.Thread):
+            await interaction.followup.send("❌ 请指定一个子区", ephemeral=True)
+            return
         try:
             await thread.unpin(reason=f"管理员取消置顶 by {interaction.user}")
             await interaction.followup.send("✅ 已取消置顶", ephemeral=True)
@@ -591,8 +689,32 @@ class AdminCommands(commands.Cog):
 
     @thread_manage_group.command(name="删帖", description="删除线程")
     @is_admin()
-    async def delete_thread_admin(self, interaction, thread: "discord.Thread"):
+    @app_commands.describe(thread="要删除的子区（留空则为当前子区）")
+    @app_commands.rename(thread="子区")
+    async def delete_thread_admin(
+        self,
+        interaction,
+        thread: "discord.Thread" = None
+    ):  
         await interaction.response.defer(ephemeral=True)
+        if thread is None:
+            thread = interaction.channel
+        if not isinstance(thread, discord.Thread):
+            await interaction.followup.send("❌ 请指定一个子区", ephemeral=True)
+            return
+        
+        confirmed = await confirm_view(
+            interaction,
+            title="🔴 删除子区",
+            description=f"确定要删除 【{thread.name}】 吗？",
+            confirm_text="确定",
+            cancel_text="取消"
+        )
+
+        if not confirmed:
+            await interaction.followup.send("❌ 已取消", ephemeral=True)
+            return
+        
         try:
             await thread.delete(reason=f"管理员删帖 by {interaction.user}")
         except Exception as e:
@@ -607,12 +729,19 @@ class AdminCommands(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         # TODO: 移至独立配置文件
         role_id = int(self.config.get("quiz_role_id", 0))
+        highest_role_id = int(self.config.get("quiz_punish_highest_role_id", 0))
         role = interaction.guild.get_role(role_id)
+        highest_role = interaction.guild.get_role(highest_role_id)
         if role is None:
             await interaction.followup.send("❌ 未找到答题区身份组", ephemeral=True)
             return
         try:
             if role in member.roles:
+                for r in member.roles:
+                    # 持有高于指定身份组的身份组，则无权处罚
+                    if r.position >= highest_role.position:
+                        await interaction.followup.send("❌ 无权处罚", ephemeral=True)
+                        return
                 await member.remove_roles(role, reason=f"答题处罚 by {interaction.user}")
                 # 私聊通知
                 try:    

@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 import src.thread_manage.cog as thread_manage
 import src.bot_manage.cog as bot_manage
 import src.admin.cog as admin
+import src.verify.cog as verify
 
 # 加载环境变量
 load_dotenv()
@@ -239,7 +240,8 @@ class CogManager:
         self.cog_map: dict = {
             "thread_manage": thread_manage.ThreadSelfManage(bot),
             "bot_manage": bot_manage.BotManageCommands(bot),
-            "admin": admin.AdminCommands(bot)
+            "admin": admin.AdminCommands(bot),
+            "verify": verify.VerifyCommands(bot)
         }
     
     async def load_all_enabled(self):
@@ -254,10 +256,9 @@ class CogManager:
     async def load_cog(self, cog):
         """加载指定的Cog"""
         try:
-            logger.info(f"加载 {cog.name}") 
             await self.bot.add_cog(cog)
             self.loaded_cogs.add(cog)
-            logger.info(f"已加载: {cog.name}")
+            await cog.on_ready()
             return True, f"✅ 已加载: {cog.name}"
         except Exception as e:
             logger.error(f"加载 {cog.name} 失败: {str(e)}")
