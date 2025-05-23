@@ -18,9 +18,9 @@ class AdminCommands(commands.Cog):
         # 初始化配置缓存
         self._config_cache = {}
         self._config_cache_mtime = None
-    
+
     admin = app_commands.Group(name="管理", description="管理员专用命令")
-    
+
     @commands.Cog.listener()
     async def on_ready(self):
         if self.logger:
@@ -29,7 +29,7 @@ class AdminCommands(commands.Cog):
         asyncio.create_task(self._auto_remove_warn())
         if self.logger:
             self.logger.info("警告自动移除任务已启动")
-    
+
     async def _auto_remove_warn(self):
         while True:
             # 每小时检查一次
@@ -60,7 +60,7 @@ class AdminCommands(commands.Cog):
             if self.logger:
                 self.logger.error(f"加载配置文件失败: {e}")
             return {}
-    
+
     def is_admin():
         async def predicate(ctx):
             try:
@@ -70,7 +70,7 @@ class AdminCommands(commands.Cog):
             except Exception:
                 return False
         return commands.check(predicate)
-    
+
     # ---- 工具函数：将字符串时间转换为数字时长 ----
     def _parse_time(self, time_str: str) -> tuple[int, str]:
         """将字符串时间转换为数字时长"""
@@ -82,7 +82,7 @@ class AdminCommands(commands.Cog):
             return int(time_str[:-1]) * 86400, time_str[:-1] + "天"
         else:
             return -1, "未知时间"
-    
+
     # ---- 工具函数：发送处罚公告并保存记录 ----
     def _save_punish_record(self, guild_id: int, record: dict):
         """保存处罚记录到 data/punish 目录，文件名为 id.json"""
@@ -102,7 +102,7 @@ class AdminCommands(commands.Cog):
             return None, path
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f), path
-        
+
     def _save_warn_record(self, guild_id: int, record: dict):
         record_id = uuid.uuid4().hex[:8]
         record["id"] = record_id
@@ -153,7 +153,7 @@ class AdminCommands(commands.Cog):
             await member.add_roles(role, reason=reason)
         elif action == "移除":
             await member.remove_roles(role, reason=reason)
-        
+
         await interaction.followup.send(f"✅ 已{action}身份组 {role.mention} {member.mention}", ephemeral=True)
 
     # ---- 批量删除消息 ----
@@ -182,7 +182,7 @@ class AdminCommands(commands.Cog):
         if start_message.created_at > end_message.created_at:
             await interaction.followup.send("开始消息必须在结束消息之前", ephemeral=True)
             return
-        
+
                 # 调用统一的确认视图
         confirmed = await confirm_view(
             interaction,
@@ -212,7 +212,7 @@ class AdminCommands(commands.Cog):
             deleted += len(fetched)
             await interaction.edit_original_response(content=f"已删除 {deleted} 条消息")
         await interaction.followup.send(f"✅ 已删除 {deleted} 条消息", ephemeral=True)
-        
+
 
     # ---- 批量转移身份组 ----
     @admin.command(name="批量转移身份组", description="给具有指定身份组的成员添加新身份组，可选是否移除原身份组")
@@ -240,7 +240,7 @@ class AdminCommands(commands.Cog):
         if source_role.position >= interaction.user.top_role.position or target_role.position >= interaction.user.top_role.position:
             await interaction.followup.send("❌ 无法操作比自己权限高的身份组", ephemeral=True)
             return
-        
+
         # 操作确认
         confirmed = await confirm_view(
             interaction,
@@ -304,7 +304,7 @@ class AdminCommands(commands.Cog):
         if mute_time == -1:
             await interaction.followup.send("❌ 未知时间", ephemeral=True)
             return
-        
+
         duration = datetime.timedelta(seconds=mute_time)
 
         await interaction.response.defer(ephemeral=True)
@@ -555,8 +555,8 @@ class AdminCommands(commands.Cog):
     @app_commands.describe(thread="要锁定的子区（留空则为当前子区）")
     @app_commands.rename(thread="子区")
     async def lock_thread_admin(
-        self, 
-        interaction, 
+        self,
+        interaction,
         thread: "discord.Thread" = None
     ):
         await interaction.response.defer(ephemeral=True)
@@ -565,7 +565,7 @@ class AdminCommands(commands.Cog):
         if not isinstance(thread, discord.Thread):
             await interaction.followup.send("❌ 请指定一个子区", ephemeral=True)
             return
-            
+
         if thread.locked:
             await interaction.followup.send("已锁定", ephemeral=True)
             return
@@ -580,8 +580,8 @@ class AdminCommands(commands.Cog):
     @app_commands.describe(thread="要解锁的子区（留空则为当前子区）")
     @app_commands.rename(thread="子区")
     async def unlock_thread_admin(
-        self, 
-        interaction, 
+        self,
+        interaction,
         thread: "discord.Thread" = None
     ):
         await interaction.response.defer(ephemeral=True)
@@ -604,8 +604,8 @@ class AdminCommands(commands.Cog):
     @app_commands.describe(thread="要归档的子区（留空则为当前子区）")
     @app_commands.rename(thread="子区")
     async def archive_thread_admin(
-        self, 
-        interaction, 
+        self,
+        interaction,
         thread: "discord.Thread" = None
     ):
         await interaction.response.defer(ephemeral=True)
@@ -628,8 +628,8 @@ class AdminCommands(commands.Cog):
     @app_commands.describe(thread="要取消归档的子区（留空则为当前子区）")
     @app_commands.rename(thread="子区")
     async def unarchive_thread_admin(
-        self, 
-        interaction, 
+        self,
+        interaction,
         thread: "discord.Thread" = None
     ):
         await interaction.response.defer(ephemeral=True)
@@ -695,14 +695,14 @@ class AdminCommands(commands.Cog):
         self,
         interaction,
         thread: "discord.Thread" = None
-    ):  
+    ):
         await interaction.response.defer(ephemeral=True)
         if thread is None:
             thread = interaction.channel
         if not isinstance(thread, discord.Thread):
             await interaction.followup.send("❌ 请指定一个子区", ephemeral=True)
             return
-        
+
         confirmed = await confirm_view(
             interaction,
             title="🔴 删除子区",
@@ -714,7 +714,7 @@ class AdminCommands(commands.Cog):
         if not confirmed:
             await interaction.followup.send("❌ 已取消", ephemeral=True)
             return
-        
+
         try:
             await thread.delete(reason=f"管理员删帖 by {interaction.user}")
         except Exception as e:
@@ -744,7 +744,7 @@ class AdminCommands(commands.Cog):
                         return
                 await member.remove_roles(role, reason=f"答题处罚 by {interaction.user}")
                 # 私聊通知
-                try:    
+                try:
                     await member.send(embed=discord.Embed(title="🔴 答题处罚", description=f"您因 {reason} 被移送答题区。请重新阅读规则并遵守。"))
                 except discord.Forbidden:
                     pass
@@ -755,3 +755,9 @@ class AdminCommands(commands.Cog):
                 await interaction.followup.send("成员不包含该身份组", ephemeral=True)
         except discord.Forbidden:
             await interaction.followup.send("❌ 无权限移除身份组", ephemeral=True)
+
+
+# ---- setup函数 ----
+async def setup(bot: commands.Bot):
+    """当扩展被加载时，discord.py 会调用这个函数。"""
+    await bot.add_cog(AdminCommands(bot))

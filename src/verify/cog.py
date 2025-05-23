@@ -56,9 +56,9 @@ class VerifyCommands(commands.Cog):
         """保存用户答题记录"""
         data_dir = pathlib.Path("data") / "verify" / str(guild_id)
         data_dir.mkdir(parents=True, exist_ok=True)
-        
+
         file_path = data_dir / f"{user_id}.json"
-        
+
         # 读取现有记录
         if file_path.exists():
             with open(file_path, 'r', encoding='utf-8') as f:
@@ -69,32 +69,32 @@ class VerifyCommands(commands.Cog):
                 "last_success": None,
                 "timeout_until": None
             }
-        
+
         # 添加新记录
         attempt_record = {
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "success": success
         }
         user_data["attempts"].append(attempt_record)
-        
+
         if success:
             user_data["last_success"] = attempt_record["timestamp"]
-        
+
         # 保存记录
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(user_data, f, ensure_ascii=False, indent=2)
-        
+
         return user_data
 
     def _get_user_data(self, guild_id: int, user_id: int) -> Dict:
         """获取用户数据"""
         data_dir = pathlib.Path("data") / "verify" / str(guild_id)
         file_path = data_dir / f"{user_id}.json"
-        
+
         if file_path.exists():
             with open(file_path, 'r', encoding='utf-8') as f:
                 return json.load(f)
-        
+
         return {
             "attempts": [],
             "last_success": None,
@@ -106,11 +106,11 @@ class VerifyCommands(commands.Cog):
         data_dir = pathlib.Path("data") / "verify" / str(guild_id)
         data_dir.mkdir(parents=True, exist_ok=True)
         file_path = data_dir / f"{user_id}.json"
-        
+
         user_data = self._get_user_data(guild_id, user_id)
         timeout_until = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=minutes)
         user_data["timeout_until"] = timeout_until.isoformat()
-        
+
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(user_data, f, ensure_ascii=False, indent=2)
 
@@ -118,11 +118,11 @@ class VerifyCommands(commands.Cog):
         """检查用户是否在禁言期间"""
         user_data = self._get_user_data(guild_id, user_id)
         timeout_until = user_data.get("timeout_until")
-        
+
         if timeout_until:
             timeout_time = datetime.datetime.fromisoformat(timeout_until)
             return datetime.datetime.now(datetime.timezone.utc) < timeout_time
-        
+
         return False
 
     def _get_recent_failed_attempts(self, guild_id: int, user_id: int) -> int:
@@ -131,7 +131,7 @@ class VerifyCommands(commands.Cog):
         now = datetime.datetime.now(datetime.timezone.utc)
         reset_hours = self.config.get("attempt_reset_hours", 24)
         cutoff_time = now - datetime.timedelta(hours=reset_hours)
-        
+
         recent_failures = 0
         for attempt in reversed(user_data.get("attempts", [])):
             attempt_time = datetime.datetime.fromisoformat(attempt["timestamp"])
@@ -141,7 +141,7 @@ class VerifyCommands(commands.Cog):
                 recent_failures += 1
             else:
                 break  # 遇到成功记录就停止计数
-        
+
         return recent_failures
 
     def is_admin():
@@ -210,14 +210,14 @@ class VerifyCommands(commands.Cog):
         ans1="第1题答案", ans2="第2题答案", ans3="第3题答案", ans4="第4题答案", ans5="第5题答案"
     )
     @app_commands.rename(ans1="答案1", ans2="答案2", ans3="答案3", ans4="答案4", ans5="答案5")
-    async def answer_zh(self, interaction: discord.Interaction, 
+    async def answer_zh(self, interaction: discord.Interaction,
                         ans1: str, ans2: str, ans3: str, ans4: str, ans5: str):
         answers = [ans1, ans2, ans3, ans4, ans5]
         await self._process_answers(interaction, answers, "zh_cn")
 
     @app_commands.command(name="answer", description="Answer verification questions (English)")
     @app_commands.describe(
-        answer1="Answer to question 1", answer2="Answer to question 2", 
+        answer1="Answer to question 1", answer2="Answer to question 2",
         answer3="Answer to question 3", answer4="Answer to question 4", answer5="Answer to question 5"
     )
     async def answer_en(self, interaction: discord.Interaction,
@@ -243,7 +243,7 @@ class VerifyCommands(commands.Cog):
         # 检查是否已有身份组
         buffer_role_id = self.config.get("buffer_role_id")
         verified_role_id = self.config.get("verified_role_id")
-        
+
         if buffer_role_id != "请填入缓冲区身份组ID":
             buffer_role = guild.get_role(int(buffer_role_id))
             if buffer_role and buffer_role in user.roles:
@@ -282,7 +282,7 @@ class VerifyCommands(commands.Cog):
         if is_success:
             # 答题成功
             success_msg = f"🎉 恭喜！您已成功通过验证（{correct_count}/5）" if language == "zh_cn" else f"🎉 Congratulations! You have passed the verification ({correct_count}/5)"
-            
+
             # 添加身份组
             try:
                 if self.config.get("buffer_mode", True) and buffer_role_id != "请填入缓冲区身份组ID":
@@ -300,7 +300,7 @@ class VerifyCommands(commands.Cog):
                 success_msg += error_msg
 
             await interaction.followup.send(success_msg, ephemeral=True)
-            
+
             # 清除用户题目
             await self._clear_user_questions(guild.id, user.id)
 
@@ -308,7 +308,7 @@ class VerifyCommands(commands.Cog):
             # 答题失败
             fail_count = self._get_recent_failed_attempts(guild.id, user.id)
             fail_msg = f"❌ 答案不正确，请重新答题" if language == "zh_cn" else f"❌ Incorrect answers, please try again"
-            
+
             # 检查是否需要禁言
             max_attempts = self.config.get("max_attempts_per_period", 3)
             if fail_count >= max_attempts:
@@ -317,7 +317,7 @@ class VerifyCommands(commands.Cog):
                     timeout_duration = timeout_minutes[0]
                 else:
                     timeout_duration = timeout_minutes[1] if len(timeout_minutes) > 1 else timeout_minutes[0]
-                
+
                 # 设置禁言
                 self._set_user_timeout(guild.id, user.id, timeout_duration)
                 try:
@@ -333,7 +333,7 @@ class VerifyCommands(commands.Cog):
         """获取用户的题目"""
         data_dir = pathlib.Path("data") / "verify" / str(guild_id)
         questions_file = data_dir / f"{user_id}_questions.json"
-        
+
         if questions_file.exists():
             with open(questions_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
@@ -344,7 +344,7 @@ class VerifyCommands(commands.Cog):
         data_dir = pathlib.Path("data") / "verify" / str(guild_id)
         data_dir.mkdir(parents=True, exist_ok=True)
         questions_file = data_dir / f"{user_id}_questions.json"
-        
+
         with open(questions_file, 'w', encoding='utf-8') as f:
             json.dump(questions, f, ensure_ascii=False, indent=2)
 
@@ -352,7 +352,7 @@ class VerifyCommands(commands.Cog):
         """清除用户的题目"""
         data_dir = pathlib.Path("data") / "verify" / str(guild_id)
         questions_file = data_dir / f"{user_id}_questions.json"
-        
+
         if questions_file.exists():
             questions_file.unlink()
 
@@ -373,7 +373,7 @@ class VerifyCommands(commands.Cog):
         # 检查是否已有身份组
         buffer_role_id = self.config.get("buffer_role_id")
         verified_role_id = self.config.get("verified_role_id")
-        
+
         if buffer_role_id != "请填入缓冲区身份组ID":
             buffer_role = guild.get_role(int(buffer_role_id))
             if buffer_role and buffer_role in user.roles:
@@ -388,7 +388,7 @@ class VerifyCommands(commands.Cog):
 
         # 随机选择5道题
         selected_questions = random.sample(self.questions, min(5, len(self.questions)))
-        
+
         # 保存用户题目
         await self._save_user_questions(guild.id, user.id, selected_questions)
 
@@ -433,3 +433,9 @@ class VerifyButtonView(discord.ui.View):
     @discord.ui.button(label="开始答题 / Start Quiz", style=discord.ButtonStyle.primary, emoji="🎯")
     async def start_quiz_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.cog.start_quiz(interaction, self.language)
+
+
+# ---- setup函数 ----
+async def setup(bot: commands.Bot):
+    """当扩展被加载时，discord.py 会调用这个函数。"""
+    await bot.add_cog(VerifyCommands(bot))
