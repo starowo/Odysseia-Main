@@ -9,10 +9,7 @@ from discord.ext import commands
 import asyncio
 from dotenv import load_dotenv
 
-import src.thread_manage.cog as thread_manage
-import src.bot_manage.cog as bot_manage
-import src.admin.cog as admin
-import src.verify.cog as verify
+# 移除直接导入Cog模块，改用扩展系统
 
 # 加载环境变量
 load_dotenv()
@@ -160,10 +157,15 @@ class OdysseiaBot(commands.Bot):
         await cog_manager.load_all_enabled()
 
         # 确保bot_manage模块始终加载，因为它包含bot管理命令
-        if "bot_manage" not in self.cogs:
-            bot_manage_cog = cog_manager.cog_map["bot_manage"]
-            await cog_manager.load_cog(bot_manage_cog)
-            logger.info("已加载管理命令模块")
+        bot_manage_cog_key = "bot_manage"
+        if bot_manage_cog_key in cog_manager.cog_module_paths:
+            bot_manage_module_path = cog_manager.cog_module_paths[bot_manage_cog_key]
+            if bot_manage_module_path not in self.extensions:
+                success, msg = await cog_manager.load_extension(bot_manage_module_path, bot_manage_cog_key)
+                if success:
+                    logger.info("已加载管理命令模块 (通过 on_ready 确保)")
+                else:
+                    logger.error(f"无法在 on_ready 中加载管理命令模块: {msg}")
 
         logger.info(f"同步命令到主服务器: {guild.name} ({guild.id})")
         if guild:
@@ -197,6 +199,7 @@ class OdysseiaBot(commands.Bot):
 
 bot = OdysseiaBot()
 bot.logger = logger
+bot.config = CONFIG  # 让配置在 bot 实例上可访问
 
 # ---- 添加Discord日志处理器 ----
 # 全局变量用于存储处理器实例
@@ -239,68 +242,81 @@ class CogManager:
     def __init__(self, bot: commands.Bot, config: dict):
         self.bot: commands.Bot = bot
         self.config: dict = config
-        self.loaded_cogs: set = set()
-        self.cog_map: dict = {
-            "thread_manage": thread_manage.ThreadSelfManage(bot),
-            "bot_manage": bot_manage.BotManageCommands(bot),
-            "admin": admin.AdminCommands(bot),
-            "verify": verify.VerifyCommands(bot)
+        # 使用模块路径而不是实例，支持真正的热重载
+        self.cog_module_paths: dict = {
+            "thread_manage": "src.thread_manage.cog",
+            "bot_manage": "src.bot_manage.cog",
+            "admin": "src.admin.cog",
+            "verify": "src.verify.cog"
         }
 
     async def load_all_enabled(self):
         """加载所有配置中启用的Cog"""
         for cog_name, cog_config in self.config.get('cogs', {}).items():
             if cog_config.get('enabled', False):
-                if cog_name in self.cog_map:
-                    await self.load_cog(self.cog_map[cog_name])
+                if cog_name in self.cog_module_paths:
+                    module_path = self.cog_module_paths[cog_name]
+                    await self.load_extension(module_path, cog_name)
                 else:
-                    logger.warning(f"模块 {cog_name} 在配置中启用但不在cog_map中")
+                    logger.warning(f"模块 {cog_name} 在配置中启用但未在 cog_module_paths 中定义")
 
-    async def load_cog(self, cog):
-        """加载指定的Cog"""
+    async def load_extension(self, module_path: str, cog_key: str):
+        """加载指定的Cog扩展"""
         try:
-            await self.bot.add_cog(cog)
-            self.loaded_cogs.add(cog)
-            await cog.on_ready()
-            return True, f"✅ 已加载: {cog.name}"
+            await self.bot.load_extension(module_path)
+            logger.info(f"✅ 已加载扩展: {cog_key} (来自 {module_path})")
+            return True, f"✅ 已加载: {cog_key}"
+        except commands.ExtensionAlreadyLoaded:
+            logger.info(f"⚠️ 模块 {cog_key} ({module_path}) 已经加载。")
+            return True, f"⚠️ 模块 {cog_key} 已经处于启用状态"
+        except commands.ExtensionNotFound:
+            logger.error(f"❌ 扩展模块未找到: {module_path} (对于 {cog_key})")
+            return False, f"❌ 模块路径未找到: {module_path}"
+        except commands.NoEntryPointError:
+            logger.error(f"❌ 扩展 {module_path} (对于 {cog_key}) 没有定义 'async def setup(bot)' 函数。")
+            return False, f"❌ 模块 {module_path} 缺少 setup 函数。"
         except Exception as e:
-            logger.error(f"加载 {cog.name} 失败: {str(e)}")
-            # traceback
+            logger.error(f"加载扩展 {cog_key} ({module_path}) 失败: {str(e)}")
             logger.error(traceback.format_exc())
-            return False, f"❌ 加载失败: {cog.name} - {str(e)}"
+            return False, f"❌ 加载失败: {cog_key} - {str(e)}"
 
-    async def unload_cog(self, cog):
-        """卸载指定的Cog"""
+    async def unload_extension(self, module_path: str, cog_key: str):
+        """卸载指定的Cog扩展"""
         try:
-            await self.bot.remove_cog(cog.name)
-            self.loaded_cogs.discard(cog)
-            logger.info(f"已卸载: {cog.name}")
-            return True, f"✅ 已卸载: {cog.name}"
+            await self.bot.unload_extension(module_path)
+            logger.info(f"已卸载扩展: {cog_key} (来自 {module_path})")
+            return True, f"✅ 已卸载: {cog_key}"
+        except commands.ExtensionNotLoaded:
+            logger.warning(f"⚠️ 模块 {cog_key} ({module_path}) 未加载，无需卸载。")
+            return True, f"⚠️ 模块 {cog_key} 已经处于禁用状态"
         except Exception as e:
-            logger.error(f"卸载 {cog.name} 失败: {str(e)}")
-            return False, f"❌ 卸载失败: {cog.name} - {str(e)}"
+            logger.error(f"卸载扩展 {cog_key} ({module_path}) 失败: {str(e)}")
+            logger.error(traceback.format_exc())
+            return False, f"❌ 卸载失败: {cog_key} - {str(e)}"
 
-    async def reload_cog(self, cog):
-        """重载指定的Cog"""
+    async def reload_extension(self, module_path: str, cog_key: str):
+        """重载指定的Cog扩展"""
         try:
-            # 先卸载再加载
-            await self.unload_cog(cog)
-            await self.load_cog(cog)
-            logger.info(f"已重载: {cog.name}")
-            return True, f"✅ 已重载: {cog.name}"
+            await self.bot.reload_extension(module_path)
+            logger.info(f"已重载扩展: {cog_key} (来自 {module_path})")
+            return True, f"✅ 已重载: {cog_key}"
+        except commands.ExtensionNotLoaded:
+            logger.warning(f"模块 {cog_key} ({module_path}) 未加载，尝试加载...")
+            return await self.load_extension(module_path, cog_key)
+        except commands.ExtensionNotFound:
+            logger.error(f"❌ 扩展模块未找到: {module_path} (对于 {cog_key})")
+            return False, f"❌ 模块路径未找到: {module_path}"
+        except commands.NoEntryPointError:
+            logger.error(f"❌ 扩展 {module_path} (对于 {cog_key}) 没有定义 'async def setup(bot)' 函数。")
+            return False, f"❌ 模块 {module_path} 缺少 setup 函数。"
         except Exception as e:
-            logger.error(f"重载 {cog.name} 失败: {str(e)}")
-            # 尝试重新加载
-            try:
-                await self.bot.add_cog(cog)
-                self.loaded_cogs.add(cog)
-                return True, f"✅ 重载失败但已重新加载: {cog.name}"
-            except Exception as reload_error:
-                logger.error(f"重新加载 {cog.name} 也失败: {str(reload_error)}")
-                return False, f"❌ 重载失败: {cog.name} - {str(e)}"
+            logger.error(f"重载扩展 {cog_key} ({module_path}) 失败: {str(e)}")
+            logger.error(traceback.format_exc())
+            return False, f"❌ 重载失败: {cog_key} - {str(e)}"
 
 # 创建Cog管理器
 cog_manager = CogManager(bot, CONFIG)
+bot.cog_manager = cog_manager  # 将 cog_manager 实例附加到 bot 上，方便 cogs 内部访问
 
 @bot.event
 async def on_command_error(ctx, error):

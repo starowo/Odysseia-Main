@@ -30,7 +30,7 @@ class ThreadSelfManage(commands.Cog):
         if not isinstance(channel, discord.Thread):
             await interaction.response.send_message("此指令仅在子区内有效", ephemeral=True)
             return
-        
+
         if not interaction.user.id == channel.owner_id:
             await interaction.response.send_message("不能在他人子区内使用此指令", ephemeral=True)
             return
@@ -47,7 +47,7 @@ class ThreadSelfManage(commands.Cog):
             embed = discord.Embed(title="清理子区", description=f"当前子区内有{count}名成员，低于阈值{threshold}，无需清理", color=0x808080)
             await interaction.edit_original_response(embed=embed)
             return
-        
+
         # 调用统一的确认视图
         confirmed = await confirm_view(
             interaction,
@@ -176,7 +176,7 @@ class ThreadSelfManage(commands.Cog):
         if not isinstance(channel, discord.Thread):
             await interaction.response.send_message("此指令仅在子区内有效", ephemeral=True)
             return
-        
+
         # 验证是否是子区所有者
         if not interaction.user.id == channel.owner_id:
             await interaction.response.send_message("不能在他人子区内使用此指令", ephemeral=True)
@@ -216,7 +216,7 @@ class ThreadSelfManage(commands.Cog):
         if not isinstance(channel, discord.Thread):
             await interaction.response.send_message("此指令仅在子区内有效", ephemeral=True)
             return
-        
+
         # 验证是否是子区所有者
         if not interaction.user.id == channel.owner_id:
             await interaction.response.send_message("不能在他人子区内使用此指令", ephemeral=True)
@@ -262,7 +262,7 @@ class ThreadSelfManage(commands.Cog):
         if not isinstance(channel, discord.Thread):
             await interaction.response.send_message("此指令仅在子区内有效", ephemeral=True)
             return
-        
+
         # 验证是否是子区所有者
         if not interaction.user.id == channel.owner_id:
             await interaction.response.send_message("不能在他人子区内使用此指令", ephemeral=True)
@@ -293,16 +293,16 @@ class ThreadSelfManage(commands.Cog):
         # 锁定子区
         try:
             await channel.edit(locked=True, archived=False)
-            
+
             # 发送公告消息
             lock_notice = f"🔒 **子区已锁定**"
             if reason:
                 lock_notice += f"\n\n**原因：** {reason}"
             lock_notice += f"\n\n由 {interaction.user.mention} 锁定于 {discord.utils.format_dt(datetime.now())}"
-            
+
             # 在子区内发送锁定通知
             await channel.send(lock_notice)
-            
+
             # 通知操作者
             await interaction.followup.send("✅ 子区已锁定", ephemeral=True)
         except discord.HTTPException as e:
@@ -316,7 +316,7 @@ class ThreadSelfManage(commands.Cog):
         if not isinstance(channel, discord.Thread):
             await interaction.response.send_message("此指令仅在子区内有效", ephemeral=True)
             return
-        
+
         # 验证是否是子区所有者
         if not interaction.user.id == channel.owner_id:
             await interaction.response.send_message("不能在他人子区内使用此指令", ephemeral=True)
@@ -328,17 +328,17 @@ class ThreadSelfManage(commands.Cog):
             return
 
         await interaction.response.defer(ephemeral=True)
-        
+
         # 解锁子区
         try:
             await channel.edit(locked=False, archived=False)
-            
+
             # 发送公告消息
             unlock_notice = f"🔓 **子区已解锁**\n\n由 {interaction.user.mention} 解锁于 {discord.utils.format_dt(datetime.now())}"
-            
+
             # 在子区内发送解锁通知
             await channel.send(unlock_notice)
-            
+
             # 通知操作者
             await interaction.followup.send("✅ 子区已解锁", ephemeral=True)
         except discord.HTTPException as e:
@@ -362,18 +362,18 @@ class ThreadSelfManage(commands.Cog):
         if not isinstance(channel, discord.Thread):
             await interaction.response.send_message("此指令仅在子区内有效", ephemeral=True)
             return
-        
+
         # 验证是否是子区所有者
         if not interaction.user.id == channel.owner_id:
             await interaction.response.send_message("不能在他人子区内使用此指令", ephemeral=True)
             return
 
         await interaction.response.defer(ephemeral=True)
-        
+
         # 设置慢速模式
         try:
             await channel.edit(slowmode_delay=option.value)
-            
+
             if option.value == 0:
                 # 通知操作者
                 await interaction.followup.send("✅ 已关闭慢速模式", ephemeral=True)
@@ -402,8 +402,8 @@ class ThreadSelfManage(commands.Cog):
         app_commands.Choice(name="📍 取消标注", value="unpin"),
     ])
     async def pin_operations(
-        self, 
-        interaction: discord.Interaction, 
+        self,
+        interaction: discord.Interaction,
         action: app_commands.Choice[str],
         message_link: str
     ):
@@ -412,7 +412,7 @@ class ThreadSelfManage(commands.Cog):
         if not isinstance(channel, discord.Thread):
             await interaction.response.send_message("此指令仅在子区内有效", ephemeral=True)
             return
-        
+
         # 验证是否是子区所有者
         if not interaction.user.id == channel.owner_id:
             await interaction.response.send_message("不能在他人子区内使用此指令", ephemeral=True)
@@ -422,7 +422,7 @@ class ThreadSelfManage(commands.Cog):
         if not message_link:
             await interaction.response.send_message("请提供要操作的消息链接", ephemeral=True)
             return
-            
+
         # 尝试获取消息
         try:
             message_id_int = int(message_link.strip().split("/")[-1])
@@ -437,20 +437,20 @@ class ThreadSelfManage(commands.Cog):
             if message.pinned:
                 await interaction.response.send_message("此消息已经被标注", ephemeral=True)
                 return
-                
+
             # 置顶消息
             try:
                 await message.pin(reason=f"由 {interaction.user} 标注")
                 await interaction.response.send_message("✅ 消息已标注", ephemeral=True)
             except discord.HTTPException as e:
                 await interaction.response.send_message(f"❌ 标注失败: {str(e)}", ephemeral=True)
-        
+
         elif action.value == "unpin":
             # 检查是否已经置顶
             if not message.pinned:
                 await interaction.response.send_message("此消息未被标注", ephemeral=True)
                 return
-                
+
             # 取消置顶
             try:
                 await message.unpin(reason=f"由 {interaction.user} 取消标注")
@@ -458,5 +458,7 @@ class ThreadSelfManage(commands.Cog):
             except discord.HTTPException as e:
                 await interaction.response.send_message(f"❌ 取消标注失败: {str(e)}", ephemeral=True)
 
-async def setup(bot):
+# ---- setup函数 ----
+async def setup(bot: commands.Bot):
+    """当扩展被加载时，discord.py 会调用这个函数。"""
     await bot.add_cog(ThreadSelfManage(bot))
