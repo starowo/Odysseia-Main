@@ -14,6 +14,7 @@ import src.thread_manage.cog as thread_manage
 import src.bot_manage.cog as bot_manage
 import src.admin.cog as admin
 import src.verify.cog as verify
+import src.voting_manage.cog as voting_manage
 
 # 加载环境变量
 load_dotenv()
@@ -188,7 +189,6 @@ class OdysseiaBot(commands.Bot):
             activity = discord.Activity(type=discord.ActivityType.watching, name=status_text)
         elif status_type == 'listening':
             activity = discord.Activity(type=discord.ActivityType.listening, name=status_text)
-            
         if activity:
             await self.change_presence(activity=activity)
 
@@ -241,7 +241,8 @@ class CogManager:
             "thread_manage": thread_manage.ThreadSelfManage(bot),
             "bot_manage": bot_manage.BotManageCommands(bot),
             "admin": admin.AdminCommands(bot),
-            "verify": verify.VerifyCommands(bot)
+            "verify": verify.VerifyCommands(bot),
+            "voting_manage": voting_manage.VotingManageCommands(bot)
         }
     
     async def load_all_enabled(self):
