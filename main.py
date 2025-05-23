@@ -153,7 +153,7 @@ class OdysseiaBot(commands.Bot):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
-        super().__init__(command_prefix=CONFIG.get('prefix', '!'), intents=intents,proxy="htto://127.0.0.1:7890")
+        super().__init__(command_prefix=CONFIG.get('prefix', '!'), intents=intents)
     # on_ready sync all commands to main guild
 
     async def on_ready(self):
@@ -189,8 +189,6 @@ class OdysseiaBot(commands.Bot):
             activity = discord.Activity(type=discord.ActivityType.watching, name=status_text)
         elif status_type == 'listening':
             activity = discord.Activity(type=discord.ActivityType.listening, name=status_text)
-        else:
-            activity = discord.Activity(type=discord.ActivityType.unknown, name=status_text)
         if activity:
             await self.change_presence(activity=activity)
 

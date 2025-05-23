@@ -60,7 +60,6 @@ def load_vote_data(message_id: int) -> dict | None:
 
 def delete_vote_data(message_id: int):
     """删除投票数据的 JSON 文件"""
-    # 在删除前可以先加载一下，获取UUID用于日志
     vote_data = load_vote_data(message_id)
     uuid_val = vote_data.get('uuid', 'N/A') if vote_data else 'N/A'
 
@@ -210,7 +209,7 @@ class VotingManageCommands(commands.Cog):
         self._timed_task_started = False
 
     def cog_unload(self):
-        """Cog 卸载时调用，取消定时任务"""
+        """模块卸载时调用，取消定时任务"""
         self.check_timed_votes.cancel()
 
     def is_vote_initiator(self, user: discord.Member | discord.User) -> bool:
@@ -328,7 +327,7 @@ class VotingManageCommands(commands.Cog):
         # --- 子区创建和配置 ---
         created_thread = None
         thread_creation_log = ""
-        is_private_thread_flag = False  # 用于保存到 vote_data
+        is_private_thread_flag = False
 
         try:
             thread_name = f"汴京大战区 - {topic[:80]}"
@@ -456,7 +455,6 @@ class VotingManageCommands(commands.Cog):
         vote_uuid = vote_data.get('uuid', 'N/A')  # 获取UUID用于日志
 
         vote_data["active"] = False
-        # 如果是手动结束，并且原定结束时间晚于现在，或者没有原定结束时间，则用现在时间
         if "end_time" not in vote_data or vote_data["end_time"] is None or \
                 (ended_by_user_id and vote_data["end_time"] and datetime.datetime.fromisoformat(
                     vote_data["end_time"]) > datetime.datetime.now(datetime.timezone.utc)):
@@ -486,7 +484,7 @@ class VotingManageCommands(commands.Cog):
             vote_message = await channel.fetch_message(message_id)
             original_embed = vote_message.embeds[0]
 
-            ended_title = f"🚫 已结束 - {original_embed.title.replace('🗳️ 投票辩诉: ', '')}"  # 避免重复前缀
+            ended_title = f"🚫 已结束 - {original_embed.title.replace('🗳️ 投票辩诉: ', '')}"
             if not original_embed.title.startswith("🚫 已结束 - "):
                 original_embed.title = ended_title
 
@@ -494,8 +492,7 @@ class VotingManageCommands(commands.Cog):
 
             footer_text_parts = []
             if original_embed.footer.text:
-                # "投票发起人: User (ID) | UUID: XXXXX | 结束于: YYYY"
-                # "投票发起人: User (ID) | UUID: XXXXX | 投票无固定结束时间"
+
                 parts = original_embed.footer.text.split(" | ")
                 for part in parts:
                     if not part.startswith("结束于:") and not part.startswith("投票无固定结束时间"):
@@ -570,10 +567,10 @@ class VotingManageCommands(commands.Cog):
                 self.logger.error(
                     f"结束投票 {message_id} (UUID: {vote_uuid}) 时，处理子区 {vote_data['thread_id']} 出错: {e}",
                     exc_info=True)
-        return True  # 表示投票结束流程（大部分）成功
+        return True
 
     @vote_admin.command(name="end", description="手动结束一个投票辩诉")
-    @app_commands.describe(vote_identifier="投票消息的ID、链接或其UUID")  # <--- 接受UUID
+    @app_commands.describe(vote_identifier="投票消息的ID、链接或其UUID")
     async def end_vote_command(self, interaction: discord.Interaction, vote_identifier: str):
         """手动结束投票的命令"""
         is_admin = interaction.user.id in BOT_CONFIG.get('admins', [])
@@ -581,9 +578,9 @@ class VotingManageCommands(commands.Cog):
         msg_id_to_process = None
         target_vote_data = None
 
-        # 尝试将 vote_identifier 解析为消息 ID
+
         try:
-            if '/' in vote_identifier:  # 可能是消息链接
+            if '/' in vote_identifier:
                 msg_id_to_process = int(vote_identifier.split('/')[-1])
             else:  # 可能是纯数字消息ID
                 msg_id_to_process = int(vote_identifier)
@@ -652,12 +649,12 @@ class VotingManageCommands(commands.Cog):
     @tasks.loop(minutes=1)
     async def check_timed_votes(self):
         """后台任务，定时检查并结束到期的投票"""
-        await self.bot.wait_until_ready()  # 确保机器人完全就绪
+        await self.bot.wait_until_ready()
         now = datetime.datetime.now(datetime.timezone.utc)
 
         for vote_file_path in VOTE_DATA_DIR.glob("*.json"):
             try:
-                msg_id = int(vote_file_path.stem)  # 文件名是 message_id
+                msg_id = int(vote_file_path.stem)
                 vote_data = load_vote_data(msg_id)
 
                 if vote_data and vote_data.get("active") and vote_data.get("end_time"):
@@ -667,14 +664,14 @@ class VotingManageCommands(commands.Cog):
                         self.logger.info(
                             f"定时投票 '{vote_data['topic']}' (ID: {msg_id}, UUID: {vote_uuid}) 已到期。正在结束...")
                         await self._conclude_vote(msg_id)
-            except ValueError:  # 文件名不是整数
+            except ValueError:
                 self.logger.warning(f"check_timed_votes: 跳过非整数的投票文件名: {vote_file_path.name}")
             except Exception as e:
                 self.logger.error(f"check_timed_votes 处理文件 {vote_file_path.name} 时出错: {e}", exc_info=True)
 
 
 async def setup(bot: commands.Bot):
-    """Cog 的标准入口函数"""
+    """模块标准入口函数"""
     if not hasattr(bot, 'logger'):
 
         bot.logger = module_logger
