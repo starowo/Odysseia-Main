@@ -547,6 +547,51 @@ class AdminCommands(commands.Cog):
         except discord.Forbidden:
             await interaction.followup.send("❌ 无修改权限", ephemeral=True)
 
+    # ---- 一键删帖 ----
+    @admin.command(name="一键删帖", description="一键删除某成员发布的全部帖子")
+    @is_admin()
+    @app_commands.describe(member="要删除帖子的成员", channel="要删除帖子的频道")
+    @app_commands.rename(member="成员id", channel="频道")
+    async def delete_all_threads(self, interaction: discord.Interaction, member: str, channel: "discord.ForumChannel"):
+        await interaction.response.defer(ephemeral=True)
+        # confirm view
+        confirmed = await confirm_view(
+            interaction,
+            title="确认删除",
+            description=f"确定要删除 {member} 发布的全部帖子吗？",
+            colour=discord.Color.red()
+        )
+
+        if not confirmed:
+            return
+        deleted = []
+        # 获取频道内全部子区
+        threads : List[discord.Thread] = channel.threads
+        for thread in threads:
+            if thread.owner_id == int(member):
+                deleted.append(thread.name)
+                await thread.delete()
+        before = None
+        while True:
+            threads = [
+                m async for m in channel.archived_threads(limit=100, before=before)
+            ]
+            if len(threads) == 0:
+                break
+            before = threads[-1].archive_timestamp
+            for thread in threads:
+                if thread.owner_id == int(member):
+                    deleted.append(thread.name)
+                    await thread.delete()
+            
+        embed = discord.Embed(
+            title="删除结果",
+            description=f"已删除以下帖子：\n" + "\n".join(deleted) + f"\n共删除 {len(deleted)} 个帖子",
+            colour=discord.Color.green()
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+
     # ---- 子区管理 ----
     thread_manage_group = app_commands.Group(name="子区管理", description="子区线程管理", parent=admin)
 

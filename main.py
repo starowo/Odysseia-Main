@@ -196,6 +196,7 @@ class OdysseiaBot(commands.Bot):
 
 bot = OdysseiaBot()
 bot.logger = logger
+bot.config = CONFIG
 
 # ---- 添加Discord日志处理器 ----
 # 全局变量用于存储处理器实例

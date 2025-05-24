@@ -1,4 +1,6 @@
 import asyncio
+import json
+import pathlib
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -6,20 +8,51 @@ from src.utils.confirm_view import confirm_view
 from src.thread_manage.thread_clear import clear_thread_members
 from typing import Optional
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 class ThreadSelfManage(commands.Cog):
     def __init__(self, bot):
-        self.bot = bot
+        self.bot : commands.Bot = bot
         self.logger = bot.logger
         self.name = "自助管理"
+        # 线程禁言记录缓存目录: data/thread_mute/<guild_id>/<thread_id>/<user_id>.json
+        # 内存缓存：键为 (guild_id, thread_id, user_id)
+        self._mute_cache: dict[tuple[int,int,int], dict] = {}
+        # 禁言记录将在 on_ready 时加载到内存缓存
 
     self_manage = app_commands.Group(name="自助管理", description="在贴内进行权限操作，仅在自己子贴内有效")
+
+    def _load_mute_cache(self):
+        """加载所有禁言记录到内存缓存"""
+        base = pathlib.Path("data") / "thread_mute"
+        if not base.exists():
+            return
+        for guild_dir in base.iterdir():
+            if not guild_dir.is_dir():
+                continue
+            for thread_dir in guild_dir.iterdir():
+                if not thread_dir.is_dir():
+                    continue
+                for file in thread_dir.glob("*.json"):
+                    try:
+                        user_id = int(file.stem)
+                        with open(file, 'r', encoding='utf-8') as f:
+                            record = json.load(f)
+                        key = (int(guild_dir.name), int(thread_dir.name), user_id)
+                        self._mute_cache[key] = record
+                    except Exception as e:
+                        if self.logger:
+                            self.logger.error(f"加载禁言缓存出错: {file} - {e}")
 
     @commands.Cog.listener()
     async def on_ready(self):
         if self.logger:
             self.logger.info("自助管理指令加载成功")
+        # 预加载禁言缓存
+        self._load_mute_cache()
+        self.bot.add_listener(self.on_message, name="on_message")
+        if self.logger:
+            self.logger.info(f"已加载禁言缓存: 共 {len(self._mute_cache)} 条记录")
 
     @self_manage.command(name="清理子区", description="清理子区内不活跃成员")
     @app_commands.describe(threshold="阈值(默认900，最低800)")
@@ -458,5 +491,165 @@ class ThreadSelfManage(commands.Cog):
             except discord.HTTPException as e:
                 await interaction.response.send_message(f"❌ 取消标注失败: {str(e)}", ephemeral=True)
 
-async def setup(bot):
-    await bot.add_cog(ThreadSelfManage(bot))
+    def _get_mute_record(self, guild_id: int, thread_id: int, user_id: int) -> dict:
+        key = (guild_id, thread_id, user_id)
+        # 从内存缓存获取或初始化
+        record = self._mute_cache.get(key)
+        if record is None:
+            record = {"muted_until": None, "violations": 0}
+            self._mute_cache[key] = record
+        return record
+
+    def _save_mute_record(self, guild_id: int, thread_id: int, user_id: int, record: dict):
+        # 更新内存缓存
+        key = (guild_id, thread_id, user_id)
+        self._mute_cache[key] = record
+        # 持久化到文件
+        data_dir = pathlib.Path("data") / "thread_mute" / str(guild_id) / str(thread_id)
+        data_dir.mkdir(parents=True, exist_ok=True)
+        file_path = data_dir / f"{user_id}.json"
+        if not record:
+            if file_path.exists():
+                file_path.unlink()
+            return
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(record, f, ensure_ascii=False, indent=2)
+
+    def _parse_time(self, time_str: str) -> tuple[int, str]:
+        if time_str.endswith("m"):
+            return int(time_str[:-1]) * 60, time_str[:-1] + "分钟"
+        elif time_str.endswith("h"):
+            return int(time_str[:-1]) * 3600, time_str[:-1] + "小时"
+        elif time_str.endswith("d"):
+            return int(time_str[:-1]) * 86400, time_str[:-1] + "天"
+        else:
+            return -1, "未知时间"
+
+    def _is_thread_muted(self, guild_id: int, thread_id: int, user_id: int) -> bool:
+        rec = self._get_mute_record(guild_id, thread_id, user_id)
+        mu = rec.get("muted_until")
+        if mu == -1:
+            return True
+        if mu:
+            until = datetime.fromisoformat(mu)
+            return datetime.now() < until
+        return False
+
+    def _increment_violations(self, guild_id: int, thread_id: int, user_id: int) -> int:
+        rec = self._get_mute_record(guild_id, thread_id, user_id)
+        rec["violations"] = rec.get("violations", 0) + 1
+        self._save_mute_record(guild_id, thread_id, user_id, rec)
+        return rec["violations"]
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if message.author.bot:
+            return
+        guild = message.guild
+        channel = message.thread or message.channel
+        if not isinstance(channel, discord.Thread):
+            return
+        user = message.author
+        # 管理组豁免
+        admins = getattr(self.bot, 'config', {}).get('admins', [])
+        for admin in admins:
+            for role in user.roles:
+                if role.id == int(admin):
+                    return
+        # 检查是否在子区禁言
+        if self._is_thread_muted(guild.id, channel.id, user.id):
+            # 删除消息
+            try:
+                await message.delete()
+            except:
+                pass
+            # 警告用户
+            rec = self._get_mute_record(guild.id, channel.id, user.id)
+            mu = rec.get('muted_until')
+            if mu:
+                if mu == -1:
+                    warn_text = f"您在子区 {channel.name} 已被永久禁言，请联系子区所有者。"
+                else:
+                    until = datetime.fromisoformat(mu)
+                    remain = until - datetime.now()
+                    mins = int(remain.total_seconds() // 60) + 1
+                    warn_text = f"您在子区 {channel.name} 已被禁言，还剩 {mins} 分钟解除。请勿发言。"
+            else:
+                warn_text = f"您在子区 {channel.name} 已被禁言，请联系子区所有者。"
+            try:
+                await user.send(warn_text)
+            except:
+                pass
+            # 记录违规并全服禁言
+            vcount = self._increment_violations(guild.id, channel.id, user.id)
+            if vcount == 3:
+                secs, label = 10*60, '10分钟'
+            elif vcount == 4:
+                secs, label = 60*60, '1小时'
+            elif vcount >= 5:
+                secs, label = 24*3600, '1天'
+            if secs > 0:
+                try:
+                    await user.timeout(timedelta(seconds=secs), reason=f"子区禁言违规({vcount}次)")
+                    try:
+                        await user.send(f"因多次违规，您已被全服禁言 {label}")
+                    except:
+                        pass
+                except:
+                    pass
+            return
+
+    @self_manage.command(name="禁言", description="在本子区禁言成员")
+    @app_commands.describe(member="要禁言的成员", duration="时长(如10m,1h,1d，可选)", reason="原因(可选)")
+    async def mute(self, interaction: discord.Interaction, member: discord.Member, duration: str = None, reason: str = None):
+        channel = interaction.channel
+        if not isinstance(channel, discord.Thread):
+            await interaction.response.send_message("此指令仅在子区内有效", ephemeral=True)
+            return
+        if interaction.user.id != channel.owner_id:
+            await interaction.response.send_message("只有子区所有者可执行此操作", ephemeral=True)
+            return
+        # 管理组豁免
+        admins = getattr(self.bot, 'config', {}).get('admins', [])
+        if str(member.id) in admins:
+            await interaction.response.send_message("无法禁言管理组成员", ephemeral=True)
+            return
+        if duration:
+            sec, human = self._parse_time(duration)
+            if sec < 0:
+                await interaction.response.send_message("❌ 无效时长，请使用m/h/d结尾", ephemeral=True)
+                return
+            until = datetime.now() + timedelta(seconds=sec)
+            muted_until = until.isoformat()
+        else:
+            muted_until = -1 # 永久禁言
+        rec = self._get_mute_record(channel.guild.id, channel.id, member.id)
+        rec['muted_until'] = muted_until
+        self._save_mute_record(channel.guild.id, channel.id, member.id, rec)
+        msg = f"✅ 已在子区禁言 {member.mention}"
+        if duration:
+            msg += f" 持续 {human}"
+        await interaction.response.send_message(msg, ephemeral=True)
+
+    @self_manage.command(name="解除禁言", description="在本子区解除禁言成员")
+    @app_commands.describe(member="要解除禁言的成员")
+    async def unmute(self, interaction: discord.Interaction, member: discord.Member):
+        channel = interaction.channel
+        if not isinstance(channel, discord.Thread):
+            await interaction.response.send_message("此指令仅在子区内有效", ephemeral=True)
+            return
+        if interaction.user.id != channel.owner_id:
+            await interaction.response.send_message("只有子区所有者可执行此操作", ephemeral=True)
+            return
+        data_dir = pathlib.Path("data") / "thread_mute" / str(channel.guild.id) / str(channel.id)
+        data_dir.mkdir(parents=True, exist_ok=True)
+        file_path = data_dir / f"{member.id}.json"
+        if file_path.exists():
+            file_path.unlink()
+            # 清理缓存
+            key = (channel.guild.id, channel.id, member.id)
+            self._mute_cache.pop(key, None)
+            self._save_mute_record(channel.guild.id, channel.id, member.id, None)
+            await interaction.response.send_message(f"✅ 已解除 {member.mention} 的子区禁言", ephemeral=True)
+        else:
+            await interaction.response.send_message("该成员未被禁言", ephemeral=True)

@@ -16,6 +16,9 @@ class MiscCommands(commands.Cog):
         # 用户最后发送通知时间缓存，单位为UTC datetime
         self.announce_cooldowns: dict[int, datetime.datetime] = {}
 
+    async def on_ready(self):
+        self.bot.logger.info(f"杂项命令已加载")
+
     @app_commands.command(name="发送通知", description="发送公告通知，使用粉色 embed")
     @app_commands.describe(
         title="标题",
