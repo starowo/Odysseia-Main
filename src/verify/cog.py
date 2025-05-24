@@ -161,6 +161,9 @@ class VerifyCommands(commands.Cog):
         self._load_questions()
         if self.logger:
             self.logger.info("答题验证模块已加载")
+        # 注册持久化按钮视图
+        self.bot.add_view(VerifyButtonView(self, "zh_cn"))
+        self.bot.add_view(VerifyButtonView(self, "en_us"))
 
     verify = app_commands.Group(name="验证", description="答题验证相关命令")
 
@@ -429,7 +432,16 @@ class VerifyButtonView(discord.ui.View):
         super().__init__(timeout=None)
         self.cog = cog
         self.language = language
+        # 设置固定 custom_id 以支持持久化
+        custom_id = f"verify:start_quiz:{language}"
+        button = discord.ui.Button(
+            label="开始答题 / Start Quiz",
+            style=discord.ButtonStyle.primary,
+            emoji="🎯",
+            custom_id=custom_id
+        )
+        button.callback = self._start_quiz_callback
+        self.add_item(button)
 
-    @discord.ui.button(label="开始答题 / Start Quiz", style=discord.ButtonStyle.primary, emoji="🎯")
-    async def start_quiz_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def _start_quiz_callback(self, interaction: discord.Interaction):
         await self.cog.start_quiz(interaction, self.language)

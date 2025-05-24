@@ -48,6 +48,36 @@ class ConfirmView(discord.ui.View):
 
 # ───────────────────────────────────────────────────────────────
 
+async def confirm_view_embed(
+    interaction: discord.Interaction,
+    embed: discord.Embed,
+    timeout: int = 120,
+) -> bool:
+    view = ConfirmView(original_interaction=interaction, author=interaction.user, timeout=timeout)
+    await interaction.edit_original_response(embed=embed, view=view)
+    await view.wait()
+    if view.value is None:
+        await interaction.edit_original_response(
+            content="⏱ 超时未确认，操作已取消。",
+            embed=None,
+            view=None,
+        )
+        return False
+    elif view.value:
+        await interaction.edit_original_response(
+            content="✅ 已确认，开始执行……",
+            embed=None,
+            view=None,
+        )
+        return True
+    else:
+        await interaction.edit_original_response(
+            content="🚫 已取消操作。",
+            embed=None,
+            view=None,
+        )
+        return False
+
 async def confirm_view(
     interaction: discord.Interaction,
     *,

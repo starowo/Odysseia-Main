@@ -14,6 +14,7 @@ import src.thread_manage.cog as thread_manage
 import src.bot_manage.cog as bot_manage
 import src.admin.cog as admin
 import src.verify.cog as verify
+import src.misc.cog as misc
 
 # 加载环境变量
 load_dotenv()
@@ -84,6 +85,7 @@ class SingleEmbedLogHandler(logging.Handler):
                 # 仅当已初始化时才更新消息
                 if self._initialized and self._message:
                     await self._edit_message()
+                    await asyncio.sleep(5)
             except Exception:
                 print(f"更新日志 Embed 失败: {traceback.format_exc()}")
             finally:
@@ -241,7 +243,8 @@ class CogManager:
             "thread_manage": thread_manage.ThreadSelfManage(bot),
             "bot_manage": bot_manage.BotManageCommands(bot),
             "admin": admin.AdminCommands(bot),
-            "verify": verify.VerifyCommands(bot)
+            "verify": verify.VerifyCommands(bot),
+            "misc": misc.MiscCommands(bot)
         }
     
     async def load_all_enabled(self):
