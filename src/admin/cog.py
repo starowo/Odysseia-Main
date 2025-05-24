@@ -1,4 +1,3 @@
-#src\admin\cog.py
 import asyncio
 import discord
 from discord.ext import commands
@@ -9,6 +8,7 @@ import datetime
 import pathlib
 from typing import List, Tuple
 import traceback
+import discord.utils
 
 from src.utils.confirm_view import confirm_view
 
@@ -583,7 +583,12 @@ class AdminCommands(commands.Cog):
 
         if record["type"] == "mute":
             try:
-                if user_obj.timed_out: # 检查是否处于禁言状态
+                is_timed_out = (
+                    getattr(user_obj, 'communication_disabled_until', None) and 
+                    user_obj.communication_disabled_until > discord.utils.utcnow()
+                )
+                
+                if is_timed_out: # 检查是否处于禁言状态
                     await user_obj.timeout(None, reason=reason or "撤销处罚")
                     self.logger.info(f"已解除 {user_obj.display_name} 的禁言。")
                 else:
@@ -678,13 +683,13 @@ class AdminCommands(commands.Cog):
             app_commands.Choice(name="15秒", value=15),
             app_commands.Choice(name="30秒", value=30),
             app_commands.Choice(name="1分钟", value=60),
-            app_commands.Choice(name="5分钟", value=300),
-            app_commands.Choice(name="10分钟", value=600),
-            app_commands.Choice(name="15分钟", value=900),
-            app_commands.Choice(name="30分钟", value=1800),
-            app_commands.Choice(name="1小时", value=3600),
-            app_commands.Choice(name="2小时", value=7200),
-            app_commands.Choice(name="6小时", value=21600),
+            app_commands.Choice(name="5分钟", value=300), # 新增
+            app_commands.Choice(name="10分钟", value=600), # 新增
+            app_commands.Choice(name="15分钟", value=900), # 新增
+            app_commands.Choice(name="30分钟", value=1800), # 新增
+            app_commands.Choice(name="1小时", value=3600), # 新增
+            app_commands.Choice(name="2小时", value=7200), # 新增
+            app_commands.Choice(name="6小时", value=21600), # 新增
         ],
         auto_archive=[
             app_commands.Choice(name="1小时", value=60), 
