@@ -163,8 +163,12 @@ cython_debug/
 config.json
 main_config.json
 
+# Project Data
 config/
 data/
 logs/
-
 token.txt
+
+# PyTest files
+.pytest_cache/
+test_report.json
