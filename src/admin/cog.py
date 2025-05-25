@@ -34,16 +34,19 @@ class AdminCommands(commands.Cog):
         while True:
             # 每小时检查一次
             await asyncio.sleep(60 * 60)
-            guild = self.bot.get_guild(int(self.config.get("guild_id", 0)))
-            # 遍历警告文件，时间到则移除并删除文件
-            warn_dir = pathlib.Path("data") / "warn" / str(guild.id)
-            if warn_dir.exists():
-                for file in warn_dir.glob("*.json"):
-                    with open(file, "r", encoding="utf-8") as f:
-                        warn_record = json.load(f)
-                        if warn_record.get("until", None) and datetime.datetime.now(datetime.timezone.utc) > datetime.datetime.fromisoformat(warn_record["until"]):
-                            await guild.remove_roles(warn_record["user_id"], reason=f"警告移除 by {self.bot.user}")
-                            file.unlink(missing_ok=True)
+            base_dir = pathlib.Path("data") / "warn"
+            for guild_id in base_dir.glob("*"):
+                guild = self.bot.get_guild(int(guild_id))
+                if guild:
+                    # 遍历警告文件，时间到则移除并删除文件
+                    warn_dir = base_dir / guild_id
+                    if warn_dir.exists():
+                        for file in warn_dir.glob("*.json"):
+                            with open(file, "r", encoding="utf-8") as f:
+                                warn_record = json.load(f)
+                                if warn_record.get("until", None) and datetime.datetime.now(datetime.timezone.utc) > datetime.datetime.fromisoformat(warn_record["until"]):
+                                    await guild.remove_roles(warn_record["user_id"], reason=f"警告移除 by {self.bot.user}")
+                                    file.unlink(missing_ok=True)
 
     @property
     def config(self):
@@ -66,7 +69,12 @@ class AdminCommands(commands.Cog):
             try:
                 cog = ctx.cog
                 config = getattr(cog, 'config', {})
-                return ctx.author.id in config.get('admins', [])
+                for admin in config.get('admins', []):
+                    role = ctx.guild.get_role(admin)
+                    if role:
+                        if role in ctx.author.roles:
+                            return True
+                return False
             except Exception:
                 return False
         return commands.check(predicate)
@@ -253,13 +261,12 @@ class AdminCommands(commands.Cog):
         if not confirmed:
             return
 
-        affected = 0
-
         members = await guild.fetch_members()
         # 如果有数量限制，则先按加入时间排序
         if limit > 0:
             members.sort(key=lambda x: x.joined_at)
-            members = members[:limit]
+
+        affected = 0
 
         for member in members:
             if source_role in member.roles and target_role not in member.roles:
@@ -270,6 +277,8 @@ class AdminCommands(commands.Cog):
                     affected += 1
                     if affected % 50 == 0:
                         await interaction.edit_original_response(content=f"已转移 {affected} 名成员")
+                    if affected >= limit:
+                        break
                 except discord.Forbidden:
                     continue
         await interaction.edit_original_response(content=f"✅ 已对 {affected} 名成员完成身份组转移")

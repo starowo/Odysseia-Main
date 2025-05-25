@@ -147,10 +147,13 @@ class VerifyCommands(commands.Cog):
     def is_admin():
         async def predicate(ctx):
             try:
-                # 加载主配置文件
-                with open('config.json', 'r', encoding='utf-8') as f:
-                    config = json.load(f)
-                return ctx.author.id in config.get('admins', [])
+                config = ctx.cog.bot.config
+                for admin in config.get('admins', []):
+                    role = ctx.guild.get_role(admin)
+                    if role:
+                        if role in ctx.author.roles:
+                            return True
+                return False
             except Exception:
                 return False
         return commands.check(predicate)
@@ -164,6 +167,16 @@ class VerifyCommands(commands.Cog):
         # 注册持久化按钮视图
         self.bot.add_view(VerifyButtonView(self, "zh_cn"))
         self.bot.add_view(VerifyButtonView(self, "en_us"))
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if message.channel.id == self.config.get("channel_id"):
+            # 如果不是管理员则删除消息
+            try:
+                if not message.author.guild_permissions.administrator:
+                    await message.delete()
+            except Exception:
+                pass
 
     verify = app_commands.Group(name="验证", description="答题验证相关命令")
 
@@ -236,6 +249,10 @@ class VerifyCommands(commands.Cog):
 
         guild = interaction.guild
         user = interaction.user
+
+        if not guild or not user:
+            await interaction.response.send_message("❌ 系统错误，请稍后再试", ephemeral=True)
+            return
 
         # 检查是否在禁言期
         if self._is_user_in_timeout(guild.id, user.id):

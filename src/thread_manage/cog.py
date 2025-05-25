@@ -50,7 +50,6 @@ class ThreadSelfManage(commands.Cog):
             self.logger.info("自助管理指令加载成功")
         # 预加载禁言缓存
         self._load_mute_cache()
-        self.bot.add_listener(self.on_message, name="on_message")
         if self.logger:
             self.logger.info(f"已加载禁言缓存: 共 {len(self._mute_cache)} 条记录")
 
@@ -222,12 +221,12 @@ class ThreadSelfManage(commands.Cog):
             message_id_int = int(message_link.strip().split("/")[-1])
             message = await channel.fetch_message(message_id_int)
         except (ValueError, discord.NotFound, discord.HTTPException):
-            await interaction.edit_original_response("找不到指定的消息，请确认消息ID是否正确", ephemeral=True)
+            await interaction.edit_original_response("找不到指定的消息，请确认消息ID是否正确")
             return
 
         # 验证是否有权限删除（只能删除自己的消息或者子区内的所有消息）
         if message.author.id != interaction.user.id and not channel.owner_id == interaction.user.id:
-            await interaction.edit_original_response("你只能删除自己的消息", ephemeral=True)
+            await interaction.edit_original_response("你只能删除自己的消息")
             return
 
         # 删除消息
@@ -545,10 +544,11 @@ class ThreadSelfManage(commands.Cog):
     async def on_message(self, message: discord.Message):
         if message.author.bot:
             return
-        guild = message.guild
-        channel = message.thread or message.channel
+        # 只处理子区（Thread）中的消息
+        channel = message.channel
         if not isinstance(channel, discord.Thread):
             return
+        guild = message.guild
         user = message.author
         # 管理组豁免
         admins = getattr(self.bot, 'config', {}).get('admins', [])
@@ -556,6 +556,9 @@ class ThreadSelfManage(commands.Cog):
             for role in user.roles:
                 if role.id == int(admin):
                     return
+        # 自己禁言自己
+        if user.id == channel.owner_id:
+            return
         # 检查是否在子区禁言
         if self._is_thread_muted(guild.id, channel.id, user.id):
             # 删除消息
@@ -582,6 +585,7 @@ class ThreadSelfManage(commands.Cog):
                 pass
             # 记录违规并全服禁言
             vcount = self._increment_violations(guild.id, channel.id, user.id)
+            secs = 0
             if vcount == 3:
                 secs, label = 10*60, '10分钟'
             elif vcount == 4:
@@ -613,6 +617,10 @@ class ThreadSelfManage(commands.Cog):
         admins = getattr(self.bot, 'config', {}).get('admins', [])
         if str(member.id) in admins:
             await interaction.response.send_message("无法禁言管理组成员", ephemeral=True)
+            return
+        # 自己禁言自己
+        if member.id == interaction.user.id:
+            await interaction.response.send_message("无法禁言自己", ephemeral=True)
             return
         if duration:
             sec, human = self._parse_time(duration)

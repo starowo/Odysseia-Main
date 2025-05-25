@@ -15,6 +15,7 @@ import src.bot_manage.cog as bot_manage
 import src.admin.cog as admin
 import src.verify.cog as verify
 import src.misc.cog as misc
+import src.event.cog as event
 
 # 加载环境变量
 load_dotenv()
@@ -245,7 +246,8 @@ class CogManager:
             "bot_manage": bot_manage.BotManageCommands(bot),
             "admin": admin.AdminCommands(bot),
             "verify": verify.VerifyCommands(bot),
-            "misc": misc.MiscCommands(bot)
+            "misc": misc.MiscCommands(bot),
+            "event": event.EventCommands(bot)
         }
     
     async def load_all_enabled(self):
