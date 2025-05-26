@@ -36,7 +36,7 @@ class AdminCommands(commands.Cog):
             await asyncio.sleep(60 * 60)
             base_dir = pathlib.Path("data") / "warn"
             for guild_id in base_dir.glob("*"):
-                guild = self.bot.get_guild(int(guild_id))
+                guild = self.bot.get_guild(int(guild_id.name.replace(".json", "")))
                 if guild:
                     # 遍历警告文件，时间到则移除并删除文件
                     warn_dir = base_dir / guild_id
@@ -261,7 +261,15 @@ class AdminCommands(commands.Cog):
         if not confirmed:
             return
 
-        members = await guild.fetch_members()
+        await interaction.edit_original_response(content="正在加载成员...")
+
+        
+        
+        members = source_role.members
+
+        await interaction.edit_original_response(content=f"已加载 {len(members)} 名成员")
+            
+            
         # 如果有数量限制，则先按加入时间排序
         if limit > 0:
             members.sort(key=lambda x: x.joined_at)
@@ -269,18 +277,17 @@ class AdminCommands(commands.Cog):
         affected = 0
 
         for member in members:
-            if source_role in member.roles and target_role not in member.roles:
-                try:
-                    await member.add_roles(target_role, reason=f"批量转移身份组 by {interaction.user}")
-                    if remove_source:
-                        await member.remove_roles(source_role, reason=f"批量转移身份组 remove source by {interaction.user}")
-                    affected += 1
-                    if affected % 50 == 0:
-                        await interaction.edit_original_response(content=f"已转移 {affected} 名成员")
-                    if affected >= limit:
-                        break
-                except discord.Forbidden:
-                    continue
+            try:
+                await member.add_roles(target_role, reason=f"批量转移身份组 by {interaction.user}")
+                if remove_source:
+                    await member.remove_roles(source_role, reason=f"批量转移身份组 remove source by {interaction.user}")
+                affected += 1
+                if affected % 10 == 0:
+                    await interaction.edit_original_response(content=f"已转移 {affected} 名成员")
+                if affected >= limit:
+                    break
+            except discord.Forbidden:
+                continue
         await interaction.edit_original_response(content=f"✅ 已对 {affected} 名成员完成身份组转移")
 
     # ---- 禁言 ----
