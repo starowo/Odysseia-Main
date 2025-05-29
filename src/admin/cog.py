@@ -789,21 +789,22 @@ class AdminCommands(commands.Cog):
     async def quiz_punish(self, interaction, member: "discord.Member", reason: str = None):
         await interaction.response.defer(ephemeral=True)
         # TODO: 移至独立配置文件
-        role_id = int(self.config.get("quiz_role_id", 0))
-        highest_role_id = int(self.config.get("quiz_punish_highest_role_id", 0))
+        role_id = int(self.config.get("verified_role_id", 0))
+        buffer_role_id = int(self.config.get("buffer_role_id", 0))
+        whitelist = self.config.get("quiz_punish_whitelist", [])
         role = interaction.guild.get_role(role_id)
-        highest_role = interaction.guild.get_role(highest_role_id)
+        buffer_role = interaction.guild.get_role(buffer_role_id)
         if role is None:
-            await interaction.followup.send("❌ 未找到答题区身份组", ephemeral=True)
+            await interaction.response.send("❌ 未找到已验证/缓冲区身份组", ephemeral=True)
             return
         try:
-            if role in member.roles:
+            if (role in member.roles) or (buffer_role in member.roles):
                 for r in member.roles:
-                    # 持有高于指定身份组的身份组，则无权处罚
-                    if r.position >= highest_role.position:
-                        await interaction.followup.send("❌ 无权处罚", ephemeral=True)
+                    # 持有白名单身份组则无权处罚
+                    if r.id in whitelist
+                        await interaction.followup.send("❌ 无法处罚此用户", ephemeral=True)
                         return
-                await member.remove_roles(role, reason=f"答题处罚 by {interaction.user}")
+                await member.remove_roles(role, buffer_role, reason=f"答题处罚 by {interaction.user}")
                 # 私聊通知
                 try:    
                     await member.send(embed=discord.Embed(title="🔴 答题处罚", description=f"您因 {reason} 被移送答题区。请重新阅读规则并遵守。"))
@@ -811,8 +812,8 @@ class AdminCommands(commands.Cog):
                     pass
                 await interaction.followup.send(f"✅ 已移除 {member.display_name} 的身份组并要求重新阅读规则", ephemeral=True)
                 # 当前频道公示
-                await interaction.followup.send(embed=discord.Embed(title="🔴 答题处罚", description=f"{member.mention} 因 {reason} 被移送答题区。请注意遵守社区规则。"), ephemeral=False)
+                await interaction.guild.send(embed=discord.Embed(title="🔴 答题处罚", description=f"{member.mention} 因 {reason} 被 {interaction.user.mention} 移送答题区。请注意遵守社区规则。"))
             else:
-                await interaction.followup.send("成员不包含该身份组", ephemeral=True)
+                await interaction.followup.send("成员不在已验证/缓冲区身份组", ephemeral=True)
         except discord.Forbidden:
             await interaction.followup.send("❌ 无权限移除身份组", ephemeral=True)
