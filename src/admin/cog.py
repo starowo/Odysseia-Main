@@ -812,7 +812,7 @@ class AdminCommands(commands.Cog):
                     pass
                 await interaction.followup.send(f"✅ 已移除 {member.display_name} 的身份组并要求重新阅读规则", ephemeral=True)
                 # 当前频道公示
-                await interaction.guild.send(embed=discord.Embed(title="🔴 答题处罚", description=f"{member.mention} 因 {reason} 被 {interaction.user.mention} 移送答题区。请注意遵守社区规则。"))
+                await interaction.channel.send(embed=discord.Embed(title="🔴 答题处罚", description=f"{member.mention} 因 {reason} 被 {interaction.user.mention} 移送答题区。请注意遵守社区规则。"))
             else:
                 await interaction.followup.send("成员不在已验证/缓冲区身份组", ephemeral=True)
         except discord.Forbidden:
