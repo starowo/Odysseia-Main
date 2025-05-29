@@ -801,7 +801,7 @@ class AdminCommands(commands.Cog):
             if (role in member.roles) or (buffer_role in member.roles):
                 for r in member.roles:
                     # 持有白名单身份组则无权处罚
-                    if r.id in whitelist
+                    if r.id in whitelist:
                         await interaction.followup.send("❌ 无法处罚此用户", ephemeral=True)
                         return
                 await member.remove_roles(role, buffer_role, reason=f"答题处罚 by {interaction.user}")
