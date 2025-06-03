@@ -142,6 +142,9 @@ def main():
         print("\n⏹️ 检查已取消")
     
     print("\n💡 如果权限检查通过，你就可以在任何频道和子区使用匿名反馈功能了！")
+    print("📋 匿名反馈系统需要论坛频道支持，请确保服务器中有论坛频道")
+    print("🔧 使用 get_new_server_info.py 获取完整的服务器配置建议")
+    print("✅ 使用 config_validator.py 验证配置文件的正确性")
 
 if __name__ == "__main__":
     main() 
