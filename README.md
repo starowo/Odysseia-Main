@@ -212,7 +212,7 @@ Odysseia-Main-new/
     
     // 必填项
     "event_managers": [赛事管理员用户ID列表],
-    "highest_role_available": 最高可管理身份组ID  // 设为0表示无限制
+    "highest_role_available": 最高可管理身份组ID  // 设为0表示无限制，如果设置为"版主"身份组ID，赛事管理员只能创建"版主"及以下级别身份组的自助发放，无法创建"管理员"或"服主"等更高级别身份组的自助发放
 }
 ```
 
