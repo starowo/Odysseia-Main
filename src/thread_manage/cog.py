@@ -100,7 +100,7 @@ class ThreadSelfManage(commands.Cog):
         if not confirmed:
             return
 
-        # ── 进行清理，实时更新进度 ──────────────────────────────
+        # 进行清理，实时更新进度
 
         # 先发一个初始 embed
         progress_embed = discord.Embed(
@@ -551,11 +551,18 @@ class ThreadSelfManage(commands.Cog):
         guild = message.guild
         user = message.author
         # 管理组豁免
-        admins = getattr(self.bot, 'config', {}).get('admins', [])
-        for admin in admins:
-            for role in user.roles:
-                if role.id == int(admin):
+        try:
+            config = getattr(self.bot, 'config', {})
+            guild_configs = config.get("guild_configs", {})
+            guild_config = guild_configs.get(str(guild.id), {})
+            admin_roles = guild_config.get('admins', config.get('admins', []))
+            
+            for admin_role_id in admin_roles:
+                role = guild.get_role(int(admin_role_id))
+                if role and role in user.roles:
                     return
+        except Exception:
+            pass
         # 自己禁言自己
         if user.id == channel.owner_id:
             return
@@ -614,10 +621,19 @@ class ThreadSelfManage(commands.Cog):
             await interaction.response.send_message("只有子区所有者可执行此操作", ephemeral=True)
             return
         # 管理组豁免
-        admins = getattr(self.bot, 'config', {}).get('admins', [])
-        if str(member.id) in admins:
-            await interaction.response.send_message("无法禁言管理组成员", ephemeral=True)
-            return
+        try:
+            config = getattr(self.bot, 'config', {})
+            guild_configs = config.get("guild_configs", {})
+            guild_config = guild_configs.get(str(interaction.guild.id), {})
+            admin_roles = guild_config.get('admins', config.get('admins', []))
+            
+            for admin_role_id in admin_roles:
+                role = interaction.guild.get_role(int(admin_role_id))
+                if role and role in member.roles:
+                    await interaction.response.send_message("无法禁言管理组成员", ephemeral=True)
+                    return
+        except Exception:
+            pass
         # 自己禁言自己
         if member.id == interaction.user.id:
             await interaction.response.send_message("无法禁言自己", ephemeral=True)

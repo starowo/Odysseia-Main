@@ -1,0 +1,100 @@
+{
+    "_comment": "Odysseia Discord Bot 配置文件示例",
+    "_description": "复制此文件为 config.json 并修改相应配置",
+    
+    "token": "你的机器人Token_从Discord开发者门户获取",
+    "prefix": "!",
+    "status": "watching",
+    "status_text": "多服务器管理中",
+    
+    "_global_admins_comment": "全局管理员用户ID列表，拥有所有服务器的最高权限",
+    "admins": [
+        123456789012345678
+    ],
+    
+    "_cogs_comment": "功能模块配置，可以选择性启用或禁用",
+    "cogs": {
+        "thread_manage": {
+            "enabled": true
+        },
+        "admin": {
+            "enabled": true
+        },
+        "anonymous_feedback": {
+            "enabled": true
+        },
+        "verify": {
+            "enabled": true
+        },
+        "misc": {
+            "enabled": true
+        },
+        "event": {
+            "enabled": true
+        },
+        "bot_manage": {
+            "enabled": true
+        }
+    },
+    
+    "_guild_configs_comment": "服务器特定配置，每个服务器独立配置",
+    "guild_configs": {
+        "你的服务器ID_字符串格式": {
+            "_comment": "示例服务器配置",
+            "name": "我的Discord服务器",
+            
+            "_admins_comment": "该服务器的管理员身份组ID列表（注意：这里是身份组ID，不是用户ID）",
+            "admins": [
+                123456789012345678,
+                987654321098765432
+            ],
+            
+            "_roles_comment": "身份组配置 - 这些身份组需要在Discord服务器中预先创建",
+            "verified_role_id": 123456789012345679,
+            "buffer_role_id": 123456789012345680,
+            "quiz_role_id": 123456789012345681,
+            "warned_role_id": 123456789012345682,
+            
+            "_channels_comment": "频道配置 - 这些频道需要在Discord服务器中预先创建",
+            "punish_announce_channel_id": 123456789012345683,
+            
+            "_logging_comment": "日志系统配置",
+            "logging": {
+                "enabled": true,
+                "channel_id": 123456789012345684
+            },
+            
+            "_event_comment": "赛事管理配置（可选）",
+            "event_managers": [
+                123456789012345678
+            ],
+            "highest_role_available": 123456789012345688
+        },
+        
+        "_additional_servers_comment": "可以添加更多服务器配置",
+        "另一个服务器ID": {
+            "name": "第二个服务器",
+            "admins": [123456789012345678],
+            "verified_role_id": 223456789012345679,
+            "buffer_role_id": 223456789012345680,
+            "warned_role_id": 223456789012345681,
+            "punish_announce_channel_id": 223456789012345683,
+            "logging": {
+                "enabled": true,
+                "channel_id": 223456789012345684
+            }
+        }
+    },
+    
+    "_notes": [
+        "配置说明：",
+        "1. 匿名反馈系统完全自动化，在论坛频道的帖子内可用，无需任何配置",
+        "2. 验证系统的具体配置（问题、消息等）在代码中硬编码，无需在此配置",
+        "3. 权限配置：全局管理员使用用户ID，服务器管理员使用身份组ID",
+        "4. 所有以下划线开头的字段都是注释，机器人会忽略",
+        "5. ID都应该是数字格式，服务器ID在guild_configs中必须是字符串格式",
+        "6. 频道和身份组需要在Discord服务器中预先创建",
+        "7. 修改配置后需要重启机器人才能生效",
+        "8. 如需帮助请查看部署指南.md或运行快速部署.py"
+    ]
+} 

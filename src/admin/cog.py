@@ -64,16 +64,33 @@ class AdminCommands(commands.Cog):
                 self.logger.error(f"加载配置文件失败: {e}")
             return {}
     
+    def get_guild_config(self, guild_id: int, key: str, default=None):
+        """获取服务器特定的配置值"""
+        config = self.config
+        
+        guild_configs = config.get("guild_configs", {})
+        guild_config = guild_configs.get(str(guild_id), {})
+        if key in guild_config:
+            return guild_config[key]
+        
+        return default
+    
     def is_admin():
         async def predicate(ctx):
             try:
+                guild = ctx.guild
+                if not guild:
+                    return False
+                    
                 cog = ctx.cog
-                config = getattr(cog, 'config', {})
-                for admin in config.get('admins', []):
-                    role = ctx.guild.get_role(admin)
-                    if role:
-                        if role in ctx.author.roles:
-                            return True
+                # 优先使用服务器特定的admin配置
+                admin_roles = cog.get_guild_config(guild.id, 'admins', [])
+                
+                # 检查用户是否拥有任何管理员身份组
+                for admin_role_id in admin_roles:
+                    role = guild.get_role(int(admin_role_id))
+                    if role and role in ctx.author.roles:
+                        return True
                 return False
             except Exception:
                 return False
@@ -330,7 +347,8 @@ class AdminCommands(commands.Cog):
         try:
             if duration.total_seconds() > 0:
                 await member.timeout(duration, reason=reason or "管理员禁言")
-            warned_role = guild.get_role(int(self.config.get("warned_role_id", 0)))
+            warned_role_id = self.get_guild_config(guild.id, "warned_role_id", 0)
+            warned_role = guild.get_role(int(warned_role_id))
             if warned_role and warn > 0:
                 await member.add_roles(warned_role, reason=f"处罚附加警告 {warn} 天")
         except discord.Forbidden:
@@ -378,8 +396,8 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(embed=discord.Embed(title="⚠️ 警告处罚", description=f"{member.mention} 因 {reason} 被警告 {warn} 天。请注意遵守社区规则。"), ephemeral=False)
 
         # 公示频道
-        channel_id = int(self.config.get("punish_announce_channel_id", 0))
-        announce_channel = guild.get_channel(channel_id)
+        channel_id = self.get_guild_config(guild.id, "punish_announce_channel_id", 0)
+        announce_channel = guild.get_channel(int(channel_id))
         if announce_channel:
             embed = discord.Embed(title="🔇 禁言处罚" if duration.total_seconds() > 0 else "⚠️ 警告处罚", color=discord.Color.orange())
             if duration.total_seconds() > 0:
@@ -440,8 +458,8 @@ class AdminCommands(commands.Cog):
         await interaction.followup.send(embed=discord.Embed(title="⛔ 永久封禁", description=f"{member.mention} 因 {reason} 被永久封禁。请注意遵守社区规则。"), ephemeral=False)
 
         # 公示频道
-        channel_id = int(self.config.get("punish_announce_channel_id", 0))
-        announce_channel = guild.get_channel(channel_id)
+        channel_id = self.get_guild_config(guild.id, "punish_announce_channel_id", 0)
+        announce_channel = guild.get_channel(int(channel_id))
         if announce_channel:
             embed = discord.Embed(title="⛔ 永久封禁", color=discord.Color.red())
             embed.add_field(name="成员", value=f"{member} ({member.id})")
@@ -464,50 +482,85 @@ class AdminCommands(commands.Cog):
             return
 
         await interaction.response.defer(ephemeral=True)
-        record, path = self._get_punish_record(guild.id, punish_id)
-        if record is None:
-            await interaction.followup.send("❌ 未找到对应处罚记录", ephemeral=True)
-            return
-
-        user_id = int(record["user_id"])
-        user_obj = guild.get_member(user_id) or await guild.fetch_member(user_id)
-
-        if record["type"] == "mute":
-            try:
-                await user_obj.timeout(None, reason="撤销处罚")
-                if record["warn"] > 0:
-                    warned_role = guild.get_role(int(self.config.get("warned_role_id", 0)))
-                    await user_obj.remove_roles(warned_role, reason=f"撤销处罚附加警告 {record['warn']} 天")
-            except discord.Forbidden:
-                await interaction.followup.send("❌ 无权限解除禁言", ephemeral=True)
-                return
-        elif record["type"] == "ban":
-            try:
-                await guild.unban(discord.Object(id=user_id), reason="撤销处罚")
-            except discord.Forbidden:
-                await interaction.followup.send("❌ 无权限解除封禁", ephemeral=True)
-                return
-        else:
-            await interaction.followup.send("❌ 未知处罚类型", ephemeral=True)
-            return
-
-        # 删除记录文件
+        
         try:
-            path.unlink(missing_ok=True)
-        except Exception:
-            pass
+            record, path = self._get_punish_record(guild.id, punish_id)
+            if record is None:
+                await interaction.followup.send("❌ 未找到对应处罚记录", ephemeral=True)
+                return
 
-        # 公示
-        channel_id = int(self.config.get("punish_announce_channel_id", 0))
-        announce_channel = guild.get_channel(channel_id)
-        if announce_channel:
-            embed = discord.Embed(title="🔓 撤销处罚", color=discord.Color.green())
-            embed.add_field(name="处罚ID", value=punish_id)
-            embed.add_field(name="成员", value=user_obj.mention)
-            embed.add_field(name="原因", value=reason or "未提供", inline=False)
-            await announce_channel.send(embed=embed)
+            user_id = int(record["user_id"])
+            user_obj = None
+            user_mention = f"<@{user_id}>"  # 默认mention，防止获取用户失败
+            
+            if record["type"] == "mute":
+                # 对于禁言，需要获取用户对象
+                try:
+                    user_obj = guild.get_member(user_id) or await guild.fetch_member(user_id)
+                    user_mention = user_obj.mention
+                except discord.NotFound:
+                    await interaction.followup.send("❌ 未找到对应用户", ephemeral=True)
+                    return
+                
+                try:
+                    await user_obj.timeout(None, reason="撤销处罚")
+                    if record.get("warn", 0) > 0:
+                        warned_role_id = self.get_guild_config(guild.id, "warned_role_id", 0)
+                        warned_role = guild.get_role(int(warned_role_id))
+                        if warned_role:
+                            await user_obj.remove_roles(warned_role, reason=f"撤销处罚附加警告 {record['warn']} 天")
+                except discord.Forbidden:
+                    await interaction.followup.send("❌ 无权限解除禁言", ephemeral=True)
+                    return
+                    
+            elif record["type"] == "ban":
+                # 对于封禁，直接使用user_id进行解封
+                try:
+                    await guild.unban(discord.Object(id=user_id), reason="撤销处罚")
+                    # 尝试获取用户信息用于公示（如果失败则使用默认mention）
+                    try:
+                        user_obj = await self.bot.fetch_user(user_id)
+                        user_mention = user_obj.mention
+                    except Exception:
+                        # 如果获取用户失败，继续使用默认mention
+                        pass
+                except discord.Forbidden:
+                    await interaction.followup.send("❌ 无权限解除封禁", ephemeral=True)
+                    return
+                except discord.NotFound:
+                    await interaction.followup.send("❌ 未找到对应封禁记录", ephemeral=True)
+                    return
+            else:
+                await interaction.followup.send("❌ 未知处罚类型", ephemeral=True)
+                return
 
-        await interaction.followup.send(f"✅ 已撤销处罚 {punish_id}", ephemeral=True)
+            # 删除记录文件
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+            # 公示
+            channel_id = self.get_guild_config(guild.id, "punish_announce_channel_id", 0)
+            announce_channel = guild.get_channel(int(channel_id))
+            if announce_channel:
+                embed = discord.Embed(title="🔓 撤销处罚", color=discord.Color.green())
+                embed.add_field(name="处罚ID", value=punish_id)
+                embed.add_field(name="成员", value=user_mention)
+                embed.add_field(name="原因", value=reason or "未提供", inline=False)
+                try:
+                    await announce_channel.send(embed=embed)
+                except Exception as e:
+                    if self.logger:
+                        self.logger.warning(f"发送撤销处罚公示失败: {e}")
+
+            await interaction.followup.send(f"✅ 已撤销处罚 {punish_id}", ephemeral=True)
+            
+        except Exception as e:
+            # 捕获所有未预期的异常，防止交互卡死
+            if self.logger:
+                self.logger.error(f"撤销处罚时发生错误: {e}")
+            await interaction.followup.send("❌ 撤销处罚时发生错误，请检查处罚ID是否正确", ephemeral=True)
 
     # ---- 频道管理 ----
     @admin.command(name="频道管理", description="编辑频道属性")
@@ -521,6 +574,7 @@ class AdminCommands(commands.Cog):
     )
     @app_commands.choices(
         slowmode=[
+            app_commands.Choice(name="关闭", value=0),
             app_commands.Choice(name="5秒", value=5),
             app_commands.Choice(name="10秒", value=10),
             app_commands.Choice(name="15秒", value=15),
@@ -788,29 +842,48 @@ class AdminCommands(commands.Cog):
     @app_commands.rename(member="成员", reason="原因")
     async def quiz_punish(self, interaction, member: "discord.Member", reason: str = None):
         await interaction.response.defer(ephemeral=True)
-        # TODO: 移至独立配置文件
-        role_id = int(self.config.get("verified_role_id", 0))
-        buffer_role_id = int(self.config.get("buffer_role_id", 0))
-        whitelist = self.config.get("quiz_punish_whitelist", [])
-        role = interaction.guild.get_role(role_id)
-        buffer_role = interaction.guild.get_role(buffer_role_id)
-        if role is None:
-            await interaction.response.send("❌ 未找到已验证/缓冲区身份组", ephemeral=True)
+        guild = interaction.guild
+        
+        # 使用服务器特定配置而不是全局配置
+        role_id = self.get_guild_config(guild.id, "verified_role_id", 0)
+        buffer_role_id = self.get_guild_config(guild.id, "buffer_role_id", 0)
+        whitelist = self.get_guild_config(guild.id, "quiz_punish_whitelist", [])
+        
+        role = guild.get_role(int(role_id)) if role_id else None
+        buffer_role = guild.get_role(int(buffer_role_id)) if buffer_role_id else None
+        
+        if role is None and buffer_role is None:
+            await interaction.followup.send("❌ 未找到已验证/缓冲区身份组", ephemeral=True)
             return
+            
         try:
-            if (role in member.roles) or (buffer_role in member.roles):
+            has_role = False
+            roles_to_remove = []
+            
+            if role and role in member.roles:
+                has_role = True
+                roles_to_remove.append(role)
+            if buffer_role and buffer_role in member.roles:
+                has_role = True
+                roles_to_remove.append(buffer_role)
+                
+            if has_role:
                 for r in member.roles:
                     # 持有白名单身份组则无权处罚
                     if r.id in whitelist:
                         await interaction.followup.send("❌ 无法处罚此用户", ephemeral=True)
                         return
-                await member.remove_roles(role, buffer_role, reason=f"答题处罚 by {interaction.user}")
+                        
+                await member.remove_roles(*roles_to_remove, reason=f"答题处罚 by {interaction.user}")
+                
                 # 私聊通知
                 try:    
                     await member.send(embed=discord.Embed(title="🔴 答题处罚", description=f"您因 {reason} 被移送答题区。请重新阅读规则并遵守。"))
                 except discord.Forbidden:
                     pass
+                    
                 await interaction.followup.send(f"✅ 已移除 {member.display_name} 的身份组并要求重新阅读规则", ephemeral=True)
+                
                 # 当前频道公示
                 await interaction.channel.send(embed=discord.Embed(title="🔴 答题处罚", description=f"{member.mention} 因 {reason} 被 {interaction.user.mention} 移送答题区。请注意遵守社区规则。"))
             else:

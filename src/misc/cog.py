@@ -19,7 +19,54 @@ class MiscCommands(commands.Cog):
     async def on_ready(self):
         self.bot.logger.info(f"杂项命令已加载")
 
+    # 权限检查装饰器
+    def is_admin():
+        async def predicate(ctx):
+            try:
+                guild = ctx.guild
+                if not guild:
+                    return False
+                    
+                cog = ctx.cog
+                # 优先使用服务器特定的admin配置
+                admin_roles = cog.get_guild_config(guild.id, 'admins', [])
+                
+                # 检查用户是否拥有任何管理员身份组
+                for admin_role_id in admin_roles:
+                    role = guild.get_role(int(admin_role_id))
+                    if role and role in ctx.author.roles:
+                        return True
+                return False
+            except Exception:
+                return False
+        return commands.check(predicate)
+
+    @property
+    def config(self):
+        """读取配置文件并缓存，只有在文件修改后重新加载"""
+        try:
+            path = pathlib.Path('config.json')
+            with open(path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"加载配置文件失败: {e}")
+            return {}
+    
+    def get_guild_config(self, guild_id: int, key: str, default=None):
+        """获取服务器特定的配置值"""
+        config = self.config
+        
+        # 从服务器特定配置获取
+        guild_configs = config.get("guild_configs", {})
+        guild_config = guild_configs.get(str(guild_id), {})
+        if key in guild_config:
+            return guild_config[key]
+        
+        return default
+
     @app_commands.command(name="发送通知", description="发送公告通知，使用粉色 embed")
+    @is_admin()
     @app_commands.describe(
         title="标题",
         content="内容",
@@ -38,27 +85,6 @@ class MiscCommands(commands.Cog):
         # 获取用户与时间
         user = interaction.user
         now = datetime.datetime.now(datetime.timezone.utc)
-
-        # 读取管理员列表
-        admins: list[int] = []
-        try:
-            config_path = pathlib.Path("config.json")
-            if config_path.exists():
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    cfg = json.load(f)
-                admins = cfg.get("admins", [])
-        except Exception:
-            pass
-
-        # 非管理员用户一分钟限速
-        if user.id not in admins:
-            last_time = self.announce_cooldowns.get(user.id)
-            if last_time and (now - last_time).total_seconds() < 60:
-                await interaction.response.send_message(
-                    "❌ 发送通知频率过高，请一分钟后再试", ephemeral=True
-                )
-                return
-            self.announce_cooldowns[user.id] = now
 
         # 构造粉色 embed
         embed = discord.Embed(

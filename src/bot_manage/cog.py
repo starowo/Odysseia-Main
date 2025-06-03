@@ -28,11 +28,26 @@ class BotManageCommands(commands.Cog):
     
     def is_bot_manager():
         async def predicate(ctx):
-            # 在运行时重新加载配置以获取最新的管理员列表
             try:
+                guild = ctx.guild
+                if not guild:
+                    return False
+                    
+                # 在运行时重新加载配置以获取最新的管理员列表
                 with open('config.json', 'r', encoding='utf-8') as f:
                     config = json.load(f)
-                return ctx.author.id in config.get('admins', [])
+                
+                # 优先使用服务器特定的admin配置
+                guild_configs = config.get("guild_configs", {})
+                guild_config = guild_configs.get(str(guild.id), {})
+                admin_roles = guild_config.get('admins', config.get('admins', []))
+                
+                # 检查用户是否拥有任何管理员身份组
+                for admin_role_id in admin_roles:
+                    role = guild.get_role(int(admin_role_id))
+                    if role and role in ctx.author.roles:
+                        return True
+                return False
             except Exception:
                 return False
         return commands.check(predicate)
@@ -44,8 +59,19 @@ class BotManageCommands(commands.Cog):
         """列出所有可用模块及其状态"""
         embed = discord.Embed(title="可用模块", color=discord.Color.blue())
         
+        # 导入cog_manager来获取实际的cog实例
+        from main import cog_manager
+        
         for cog_name, cog_config in self.config.get('cogs', {}).items():
-            status = "✅ 已启用" if cog_name in self.bot.cogs else "❌ 已禁用"
+            # 检查模块是否在cog_manager中存在
+            if cog_name in cog_manager.cog_map:
+                cog_instance = cog_manager.cog_map[cog_name]
+                # 检查该cog类是否已加载到bot中（通过类名检查）
+                cog_class_name = cog_instance.__class__.__name__
+                status = "✅ 已启用" if cog_class_name in self.bot.cogs else "❌ 已禁用"
+            else:
+                status = "❌ 未知模块"
+            
             description = cog_config.get('description', '无描述')
             
             embed.add_field(
