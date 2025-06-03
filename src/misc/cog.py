@@ -19,7 +19,44 @@ class MiscCommands(commands.Cog):
     async def on_ready(self):
         self.bot.logger.info(f"杂项命令已加载")
 
+    # 权限检查装饰器
+    def is_admin():
+        async def predicate(ctx):
+            try:
+                guild = ctx.guild
+                if not guild:
+                    return False
+                    
+                cog = ctx.cog
+                config = getattr(cog, 'config', {})
+                for admin in config.get('admins', []):
+                    role = guild.get_role(admin)
+                    if role:
+                        if role in ctx.author.roles:
+                            return True
+                return False
+            except Exception:
+                return False
+        return commands.check(predicate)
+
+    @property
+    def config(self):
+        """读取配置文件并缓存，只有在文件修改后重新加载"""
+        try:
+            path = pathlib.Path('config.json')
+            mtime = path.stat().st_mtime
+            if self._config_cache_mtime != mtime:
+                with open(path, 'r', encoding='utf-8') as f:
+                    self._config_cache = json.load(f)
+                self._config_cache_mtime = mtime
+            return self._config_cache
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"加载配置文件失败: {e}")
+            return {}
+
     @app_commands.command(name="发送通知", description="发送公告通知，使用粉色 embed")
+    @is_admin()
     @app_commands.describe(
         title="标题",
         content="内容",
@@ -38,27 +75,6 @@ class MiscCommands(commands.Cog):
         # 获取用户与时间
         user = interaction.user
         now = datetime.datetime.now(datetime.timezone.utc)
-
-        # 读取管理员列表
-        admins: list[int] = []
-        try:
-            config_path = pathlib.Path("config.json")
-            if config_path.exists():
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    cfg = json.load(f)
-                admins = cfg.get("admins", [])
-        except Exception:
-            pass
-
-        # 非管理员用户一分钟限速
-        if user.id not in admins:
-            last_time = self.announce_cooldowns.get(user.id)
-            if last_time and (now - last_time).total_seconds() < 60:
-                await interaction.response.send_message(
-                    "❌ 发送通知频率过高，请一分钟后再试", ephemeral=True
-                )
-                return
-            self.announce_cooldowns[user.id] = now
 
         # 构造粉色 embed
         embed = discord.Embed(

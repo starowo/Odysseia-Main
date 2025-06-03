@@ -157,10 +157,19 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send("❌ 无法操作比自己权限高的身份组", ephemeral=True)
             return
 
-        if action == "添加":
-            await member.add_roles(role, reason=reason)
-        elif action == "移除":
-            await member.remove_roles(role, reason=reason)
+        # 使用同步功能
+        sync_cog = self.bot.get_cog("ServerSyncCommands")
+        if sync_cog:
+            if action == "添加":
+                await sync_cog.sync_add_role(guild, member, role, reason)
+            elif action == "移除":
+                await sync_cog.sync_remove_role(guild, member, role, reason)
+        else:
+            # 如果没有同步功能，使用普通方式
+            if action == "添加":
+                await member.add_roles(role, reason=reason)
+            elif action == "移除":
+                await member.remove_roles(role, reason=reason)
         
         await interaction.followup.send(f"✅ 已{action}身份组 {role.mention} {member.mention}", ephemeral=True)
 
@@ -182,22 +191,28 @@ class AdminCommands(commands.Cog):
         if channel is None:
             await interaction.followup.send("此命令只能在频道中使用", ephemeral=True)
             return
-        start_message = await channel.fetch_message(int(start_message.split("/")[-1]))
-        end_message = await channel.fetch_message(int(end_message.split("/")[-1]))
-        if start_message.channel.id != channel.id or end_message.channel.id != channel.id:
+        
+        try:
+            start_message_obj = await channel.fetch_message(int(start_message.split("/")[-1]))
+            end_message_obj = await channel.fetch_message(int(end_message.split("/")[-1]))
+        except (ValueError, discord.NotFound):
+            await interaction.followup.send("❌ 无效的消息链接或消息不存在", ephemeral=True)
+            return
+            
+        if start_message_obj.channel.id != channel.id or end_message_obj.channel.id != channel.id:
             await interaction.followup.send("消息必须在当前频道", ephemeral=True)
             return
-        if start_message.created_at > end_message.created_at:
+        if start_message_obj.created_at > end_message_obj.created_at:
             await interaction.followup.send("开始消息必须在结束消息之前", ephemeral=True)
             return
         
-                # 调用统一的确认视图
+        # 调用统一的确认视图
         confirmed = await confirm_view(
             interaction,
             title="批量删除消息",
             description="\n".join(
                 [
-                    f"确定要删除从 {start_message.created_at} 到 {end_message.created_at} 的消息吗？",
+                    f"确定要删除从 {start_message_obj.created_at} 到 {end_message_obj.created_at} 的消息吗？",
                 ]
             ),
             colour=discord.Colour(0x808080),
@@ -208,19 +223,62 @@ class AdminCommands(commands.Cog):
             return
 
         deleted = 0
-        # 一次100条，分批删除，从start_message开始，到end_message结束
+        current_after = start_message_obj.created_at - datetime.timedelta(seconds=1)  # 稍早于起始消息以包含它
+        
+        # 分批删除消息
         while True:
-            fetched: List[discord.Message] = [
-                m async for m in channel.history(limit=100, after=start_message, before=end_message)
-            ]
+            fetched: List[discord.Message] = []
+            async for message in channel.history(limit=100, after=current_after, before=end_message_obj.created_at + datetime.timedelta(seconds=1)):
+                # 确保消息在时间范围内
+                if start_message_obj.created_at <= message.created_at <= end_message_obj.created_at:
+                    fetched.append(message)
+                    
             if len(fetched) == 0:
                 break
-            await channel.delete_messages(fetched)
-            start_message = fetched[-1]
-            deleted += len(fetched)
+                
+            try:
+                # Discord批量删除有限制，超过14天的消息需要单独删除
+                bulk_delete_messages = []
+                old_messages = []
+                now = datetime.datetime.now(datetime.timezone.utc)
+                
+                for msg in fetched:
+                    if (now - msg.created_at).days < 14:
+                        bulk_delete_messages.append(msg)
+                    else:
+                        old_messages.append(msg)
+                
+                # 批量删除新消息
+                if bulk_delete_messages:
+                    await channel.delete_messages(bulk_delete_messages)
+                    deleted += len(bulk_delete_messages)
+                
+                # 单独删除旧消息
+                for msg in old_messages:
+                    try:
+                        await msg.delete()
+                        deleted += 1
+                    except discord.NotFound:
+                        # 消息已被删除，跳过
+                        pass
+                        
+            except discord.Forbidden:
+                await interaction.followup.send("❌ 没有删除消息的权限", ephemeral=True)
+                return
+            except Exception as e:
+                await interaction.followup.send(f"❌ 删除消息时出错: {str(e)}", ephemeral=True)
+                return
+            
+            # 更新进度
             await interaction.edit_original_response(content=f"已删除 {deleted} 条消息")
+            
+            # 更新current_after为最后一条处理的消息时间
+            if fetched:
+                current_after = fetched[-1].created_at
+            else:
+                break
+                
         await interaction.followup.send(f"✅ 已删除 {deleted} 条消息", ephemeral=True)
-        
 
     # ---- 批量转移身份组 ----
     @admin.command(name="批量转移身份组", description="给具有指定身份组的成员添加新身份组，可选是否移除原身份组")
@@ -330,7 +388,8 @@ class AdminCommands(commands.Cog):
         try:
             if duration.total_seconds() > 0:
                 await member.timeout(duration, reason=reason or "管理员禁言")
-            warned_role = guild.get_role(int(self.config.get("warned_role_id", 0)))
+            warned_role_id = self.config.get("warned_role_id", 0)
+            warned_role = guild.get_role(int(warned_role_id))
             if warned_role and warn > 0:
                 await member.add_roles(warned_role, reason=f"处罚附加警告 {warn} 天")
         except discord.Forbidden:
@@ -356,6 +415,20 @@ class AdminCommands(commands.Cog):
                 "until": (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=warn)).isoformat(),
             })
 
+        # 同步处罚到其他服务器
+        sync_cog = self.bot.get_cog("ServerSyncCommands")
+        if sync_cog:
+            await sync_cog.sync_punishment(
+                guild=guild,
+                punishment_type="mute",
+                member=member,
+                moderator=interaction.user,
+                reason=reason,
+                duration=duration.total_seconds() if duration.total_seconds() > 0 else None,
+                warn_days=warn,
+                punishment_id=record_id,
+                img=img
+            )
 
         await interaction.followup.send(f"✅ 已禁言 {member.mention} ({mute_time_str})。处罚ID: `{record_id}`", ephemeral=True)
 
@@ -378,8 +451,8 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(embed=discord.Embed(title="⚠️ 警告处罚", description=f"{member.mention} 因 {reason} 被警告 {warn} 天。请注意遵守社区规则。"), ephemeral=False)
 
         # 公示频道
-        channel_id = int(self.config.get("punish_announce_channel_id", 0))
-        announce_channel = guild.get_channel(channel_id)
+        channel_id = self.config.get("punish_announce_channel_id", 0)
+        announce_channel = guild.get_channel(int(channel_id))
         if announce_channel:
             embed = discord.Embed(title="🔇 禁言处罚" if duration.total_seconds() > 0 else "⚠️ 警告处罚", color=discord.Color.orange())
             if duration.total_seconds() > 0:
@@ -433,15 +506,27 @@ class AdminCommands(commands.Cog):
             "reason": reason,
         })
 
-        await interaction.followup.send(f"✅ 已永久封禁 {member.name}。处罚ID: `{record_id}`", ephemeral=True)
+        # 同步处罚到其他服务器
+        sync_cog = self.bot.get_cog("ServerSyncCommands")
+        if sync_cog:
+            await sync_cog.sync_punishment(
+                guild=guild,
+                punishment_type="ban",
+                member=member,
+                moderator=interaction.user,
+                reason=reason,
+                punishment_id=record_id,
+                img=img
+            )
 
+        await interaction.followup.send(f"✅ 已永久封禁 {member.name}。处罚ID: `{record_id}`", ephemeral=True)
 
         # 当前频道公示
         await interaction.followup.send(embed=discord.Embed(title="⛔ 永久封禁", description=f"{member.mention} 因 {reason} 被永久封禁。请注意遵守社区规则。"), ephemeral=False)
 
         # 公示频道
-        channel_id = int(self.config.get("punish_announce_channel_id", 0))
-        announce_channel = guild.get_channel(channel_id)
+        channel_id = self.config.get("punish_announce_channel_id", 0)
+        announce_channel = guild.get_channel(int(channel_id))
         if announce_channel:
             embed = discord.Embed(title="⛔ 永久封禁", color=discord.Color.red())
             embed.add_field(name="成员", value=f"{member} ({member.id})")
@@ -464,50 +549,90 @@ class AdminCommands(commands.Cog):
             return
 
         await interaction.response.defer(ephemeral=True)
-        record, path = self._get_punish_record(guild.id, punish_id)
-        if record is None:
-            await interaction.followup.send("❌ 未找到对应处罚记录", ephemeral=True)
-            return
-
-        user_id = int(record["user_id"])
-        user_obj = guild.get_member(user_id) or await guild.fetch_member(user_id)
-
-        if record["type"] == "mute":
-            try:
-                await user_obj.timeout(None, reason="撤销处罚")
-                if record["warn"] > 0:
-                    warned_role = guild.get_role(int(self.config.get("warned_role_id", 0)))
-                    await user_obj.remove_roles(warned_role, reason=f"撤销处罚附加警告 {record['warn']} 天")
-            except discord.Forbidden:
-                await interaction.followup.send("❌ 无权限解除禁言", ephemeral=True)
-                return
-        elif record["type"] == "ban":
-            try:
-                await guild.unban(discord.Object(id=user_id), reason="撤销处罚")
-            except discord.Forbidden:
-                await interaction.followup.send("❌ 无权限解除封禁", ephemeral=True)
-                return
-        else:
-            await interaction.followup.send("❌ 未知处罚类型", ephemeral=True)
-            return
-
-        # 删除记录文件
+        
         try:
-            path.unlink(missing_ok=True)
-        except Exception:
-            pass
+            record, path = self._get_punish_record(guild.id, punish_id)
+            if record is None:
+                await interaction.followup.send("❌ 未找到对应处罚记录", ephemeral=True)
+                return
 
-        # 公示
-        channel_id = int(self.config.get("punish_announce_channel_id", 0))
-        announce_channel = guild.get_channel(channel_id)
-        if announce_channel:
-            embed = discord.Embed(title="🔓 撤销处罚", color=discord.Color.green())
-            embed.add_field(name="处罚ID", value=punish_id)
-            embed.add_field(name="成员", value=user_obj.mention)
-            embed.add_field(name="原因", value=reason or "未提供", inline=False)
-            await announce_channel.send(embed=embed)
+            user_id = int(record["user_id"])
+            user_obj = None
+            user_mention = f"<@{user_id}>"  # 默认mention，防止获取用户失败
+            
+            if record["type"] == "mute":
+                # 对于禁言，需要获取用户对象
+                try:
+                    user_obj = guild.get_member(user_id) or await guild.fetch_member(user_id)
+                    user_mention = user_obj.mention
+                except discord.NotFound:
+                    await interaction.followup.send("❌ 未找到对应用户", ephemeral=True)
+                    return
+                
+                try:
+                    await user_obj.timeout(None, reason="撤销处罚")
+                    if record.get("warn", 0) > 0:
+                        warned_role_id = self.config.get("warned_role_id", 0)
+                        warned_role = guild.get_role(int(warned_role_id))
+                        if warned_role:
+                            await user_obj.remove_roles(warned_role, reason=f"撤销处罚附加警告 {record['warn']} 天")
+                except discord.Forbidden:
+                    await interaction.followup.send("❌ 无权限解除禁言", ephemeral=True)
+                    return
+                    
+            elif record["type"] == "ban":
+                # 对于封禁，直接使用user_id进行解封
+                try:
+                    await guild.unban(discord.Object(id=user_id), reason="撤销处罚")
+                    # 尝试获取用户信息用于公示（如果失败则使用默认mention）
+                    try:
+                        user_obj = await self.bot.fetch_user(user_id)
+                        user_mention = user_obj.mention
+                    except Exception:
+                        # 如果获取用户失败，继续使用默认mention
+                        pass
+                except discord.Forbidden:
+                    await interaction.followup.send("❌ 无权限解除封禁", ephemeral=True)
+                    return
+                except discord.NotFound:
+                    await interaction.followup.send("❌ 未找到对应封禁记录", ephemeral=True)
+                    return
+            else:
+                await interaction.followup.send("❌ 未知处罚类型", ephemeral=True)
+                return
 
-        await interaction.followup.send(f"✅ 已撤销处罚 {punish_id}", ephemeral=True)
+            # 删除记录文件
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+            # 同步撤销处罚到其他服务器
+            sync_cog = self.bot.get_cog("ServerSyncCommands")
+            if sync_cog:
+                await sync_cog.sync_revoke_punishment(guild, punish_id, interaction.user, reason)
+
+            # 公示
+            channel_id = self.config.get("punish_announce_channel_id", 0)
+            announce_channel = guild.get_channel(int(channel_id))
+            if announce_channel:
+                embed = discord.Embed(title="🔓 撤销处罚", color=discord.Color.green())
+                embed.add_field(name="处罚ID", value=punish_id)
+                embed.add_field(name="成员", value=user_mention)
+                embed.add_field(name="原因", value=reason or "未提供", inline=False)
+                try:
+                    await announce_channel.send(embed=embed)
+                except Exception as e:
+                    if self.logger:
+                        self.logger.warning(f"发送撤销处罚公示失败: {e}")
+
+            await interaction.followup.send(f"✅ 已撤销处罚 {punish_id}", ephemeral=True)
+            
+        except Exception as e:
+            # 捕获所有未预期的异常，防止交互卡死
+            if self.logger:
+                self.logger.error(f"撤销处罚时发生错误: {e}")
+            await interaction.followup.send("❌ 撤销处罚时发生错误，请检查处罚ID是否正确", ephemeral=True)
 
     # ---- 频道管理 ----
     @admin.command(name="频道管理", description="编辑频道属性")
@@ -521,6 +646,7 @@ class AdminCommands(commands.Cog):
     )
     @app_commands.choices(
         slowmode=[
+            app_commands.Choice(name="关闭", value=0),
             app_commands.Choice(name="5秒", value=5),
             app_commands.Choice(name="10秒", value=10),
             app_commands.Choice(name="15秒", value=15),
@@ -566,47 +692,116 @@ class AdminCommands(commands.Cog):
     # ---- 一键删帖 ----
     @admin.command(name="一键删帖", description="一键删除某成员发布的全部帖子")
     @is_admin()
-    @app_commands.describe(member="要删除帖子的成员", channel="要删除帖子的频道")
+    @app_commands.describe(member="要删除帖子的成员ID", channel="要删除帖子的频道")
     @app_commands.rename(member="成员id", channel="频道")
     async def delete_all_threads(self, interaction: discord.Interaction, member: str, channel: "discord.ForumChannel"):
         await interaction.response.defer(ephemeral=True)
+        
+        # 验证成员ID格式
+        try:
+            member_id = int(member)
+        except ValueError:
+            await interaction.followup.send("❌ 请提供有效的成员ID（纯数字）", ephemeral=True)
+            return
+        
         # confirm view
         confirmed = await confirm_view(
             interaction,
             title="确认删除",
-            description=f"确定要删除 {member} 发布的全部帖子吗？",
+            description=f"确定要删除用户ID {member_id} 发布的全部帖子吗？",
             colour=discord.Color.red()
         )
 
         if not confirmed:
             return
+            
         deleted = []
-        # 获取频道内全部子区
-        threads : List[discord.Thread] = channel.threads
-        for thread in threads:
-            if thread.owner_id == int(member):
-                deleted.append(thread.name)
-                await thread.delete()
-        before = None
-        while True:
-            threads = [
-                m async for m in channel.archived_threads(limit=100, before=before)
-            ]
-            if len(threads) == 0:
-                break
-            before = threads[-1].archive_timestamp
-            for thread in threads:
-                if thread.owner_id == int(member):
+        
+        # 获取频道内当前活跃的线程
+        for thread in channel.threads:
+            if thread.owner_id == member_id:
+                try:
                     deleted.append(thread.name)
                     await thread.delete()
+                    if self.logger:
+                        self.logger.info(f"删除活跃线程: {thread.name} (ID: {thread.id}) by {member_id}")
+                except discord.Forbidden:
+                    if self.logger:
+                        self.logger.warning(f"没有删除线程权限: {thread.name}")
+                except Exception as e:
+                    if self.logger:
+                        self.logger.error(f"删除线程失败: {thread.name}, 错误: {e}")
+        
+        # 获取归档的线程
+        before = None
+        page_count = 0
+        max_pages = 50  # 防止无限循环，最多检查50页
+        
+        while page_count < max_pages:
+            try:
+                archived_threads = []
+                async for thread in channel.archived_threads(limit=100, before=before):
+                    archived_threads.append(thread)
+                
+                if len(archived_threads) == 0:
+                    break
+                    
+                # 处理这一页的归档线程
+                for thread in archived_threads:
+                    if thread.owner_id == member_id:
+                        try:
+                            deleted.append(thread.name)
+                            await thread.delete()
+                            if self.logger:
+                                self.logger.info(f"删除归档线程: {thread.name} (ID: {thread.id}) by {member_id}")
+                        except discord.Forbidden:
+                            if self.logger:
+                                self.logger.warning(f"没有删除归档线程权限: {thread.name}")
+                        except Exception as e:
+                            if self.logger:
+                                self.logger.error(f"删除归档线程失败: {thread.name}, 错误: {e}")
+                
+                # 更新before为最后一个线程的归档时间
+                if archived_threads:
+                    before = archived_threads[-1].archive_timestamp
+                    page_count += 1
+                    
+                    # 每处理10页更新一次进度
+                    if page_count % 10 == 0:
+                        await interaction.edit_original_response(content=f"正在扫描归档线程...已处理 {page_count} 页，找到 {len(deleted)} 个帖子")
+                else:
+                    break
+                    
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(f"获取归档线程失败: {e}")
+                break
+        
+        # 构建结果显示
+        if deleted:
+            # 限制显示的帖子名称数量，避免消息过长
+            display_names = deleted[:20]  # 只显示前20个
+            description_parts = [f"已删除以下帖子："]
+            description_parts.extend([f"• {name}" for name in display_names])
+            
+            if len(deleted) > 20:
+                description_parts.append(f"...还有 {len(deleted) - 20} 个帖子")
+            
+            description_parts.append(f"\n**总计删除: {len(deleted)} 个帖子**")
+            description = "\n".join(description_parts)
+        else:
+            description = f"未找到用户ID {member_id} 发布的帖子"
             
         embed = discord.Embed(
             title="删除结果",
-            description=f"已删除以下帖子：\n" + "\n".join(deleted) + f"\n共删除 {len(deleted)} 个帖子",
-            colour=discord.Color.green()
+            description=description,
+            colour=discord.Color.green() if deleted else discord.Color.orange()
         )
+        
         await interaction.followup.send(embed=embed, ephemeral=True)
-
+        
+        if self.logger:
+            self.logger.info(f"一键删帖完成: 用户{member_id}，共删除{len(deleted)}个帖子，操作者: {interaction.user.id}")
 
     # ---- 子区管理 ----
     thread_manage_group = app_commands.Group(name="子区管理", description="子区线程管理", parent=admin)
@@ -788,29 +983,48 @@ class AdminCommands(commands.Cog):
     @app_commands.rename(member="成员", reason="原因")
     async def quiz_punish(self, interaction, member: "discord.Member", reason: str = None):
         await interaction.response.defer(ephemeral=True)
-        # TODO: 移至独立配置文件
-        role_id = int(self.config.get("verified_role_id", 0))
-        buffer_role_id = int(self.config.get("buffer_role_id", 0))
+        guild = interaction.guild
+        
+        # 使用服务器特定配置而不是全局配置
+        role_id = self.config.get("verified_role_id", 0)
+        buffer_role_id = self.config.get("buffer_role_id", 0)
         whitelist = self.config.get("quiz_punish_whitelist", [])
-        role = interaction.guild.get_role(role_id)
-        buffer_role = interaction.guild.get_role(buffer_role_id)
-        if role is None:
-            await interaction.response.send("❌ 未找到已验证/缓冲区身份组", ephemeral=True)
+        
+        role = guild.get_role(int(role_id)) if role_id else None
+        buffer_role = guild.get_role(int(buffer_role_id)) if buffer_role_id else None
+        
+        if role is None and buffer_role is None:
+            await interaction.followup.send("❌ 未找到已验证/缓冲区身份组", ephemeral=True)
             return
+            
         try:
-            if (role in member.roles) or (buffer_role in member.roles):
+            has_role = False
+            roles_to_remove = []
+            
+            if role and role in member.roles:
+                has_role = True
+                roles_to_remove.append(role)
+            if buffer_role and buffer_role in member.roles:
+                has_role = True
+                roles_to_remove.append(buffer_role)
+                
+            if has_role:
                 for r in member.roles:
                     # 持有白名单身份组则无权处罚
                     if r.id in whitelist:
                         await interaction.followup.send("❌ 无法处罚此用户", ephemeral=True)
                         return
-                await member.remove_roles(role, buffer_role, reason=f"答题处罚 by {interaction.user}")
+                        
+                await member.remove_roles(*roles_to_remove, reason=f"答题处罚 by {interaction.user}")
+                
                 # 私聊通知
                 try:    
                     await member.send(embed=discord.Embed(title="🔴 答题处罚", description=f"您因 {reason} 被移送答题区。请重新阅读规则并遵守。"))
                 except discord.Forbidden:
                     pass
+                    
                 await interaction.followup.send(f"✅ 已移除 {member.display_name} 的身份组并要求重新阅读规则", ephemeral=True)
+                
                 # 当前频道公示
                 await interaction.channel.send(embed=discord.Embed(title="🔴 答题处罚", description=f"{member.mention} 因 {reason} 被 {interaction.user.mention} 移送答题区。请注意遵守社区规则。"))
             else:
