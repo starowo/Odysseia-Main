@@ -158,9 +158,19 @@ class AdminCommands(commands.Cog):
             return
 
         if action == "添加":
-            await member.add_roles(role, reason=reason)
+            # 检查是否启用同步模块
+            sync_cog = self.bot.get_cog("ServerSyncCommands")
+            if sync_cog:
+                await sync_cog.sync_add_role(guild, member, role, reason)
+            else:
+                await member.add_roles(role, reason=reason)
         elif action == "移除":
-            await member.remove_roles(role, reason=reason)
+            # 检查是否启用同步模块
+            sync_cog = self.bot.get_cog("ServerSyncCommands")
+            if sync_cog:
+                await sync_cog.sync_remove_role(guild, member, role, reason)
+            else:
+                await member.remove_roles(role, reason=reason)
         
         await interaction.followup.send(f"✅ 已{action}身份组 {role.mention} {member.mention}", ephemeral=True)
 
@@ -278,9 +288,16 @@ class AdminCommands(commands.Cog):
 
         for member in members:
             try:
-                await member.add_roles(target_role, reason=f"批量转移身份组 by {interaction.user}")
-                if remove_source:
-                    await member.remove_roles(source_role, reason=f"批量转移身份组 remove source by {interaction.user}")
+                # 检查是否启用同步模块
+                sync_cog = self.bot.get_cog("ServerSyncCommands")
+                if sync_cog:
+                    await sync_cog.sync_add_role(guild, member, target_role, f"批量转移身份组 by {interaction.user}")
+                    if remove_source:
+                        await sync_cog.sync_remove_role(guild, member, source_role, f"批量转移身份组 remove source by {interaction.user}")
+                else:
+                    await member.add_roles(target_role, reason=f"批量转移身份组 by {interaction.user}")
+                    if remove_source:
+                        await member.remove_roles(source_role, reason=f"批量转移身份组 remove source by {interaction.user}")
                 affected += 1
                 if affected % 10 == 0:
                     await interaction.edit_original_response(content=f"已转移 {affected} 名成员")
@@ -346,6 +363,21 @@ class AdminCommands(commands.Cog):
             "warn": warn,
             "duration": duration.total_seconds(),
         })
+
+        # 检查是否启用处罚同步
+        sync_cog = self.bot.get_cog("ServerSyncCommands")
+        if sync_cog:
+            await sync_cog.sync_punishment(
+                guild=guild,
+                punishment_type="mute",
+                member=member,
+                moderator=interaction.user,
+                reason=reason,
+                duration=int(duration.total_seconds()) if duration.total_seconds() > 0 else None,
+                warn_days=warn,
+                punishment_id=record_id,
+                img=img
+            )
 
         if warn > 0:
             self._save_warn_record(guild.id, {
@@ -433,6 +465,19 @@ class AdminCommands(commands.Cog):
             "reason": reason,
         })
 
+        # 检查是否启用处罚同步
+        sync_cog = self.bot.get_cog("ServerSyncCommands")
+        if sync_cog:
+            await sync_cog.sync_punishment(
+                guild=guild,
+                punishment_type="ban",
+                member=member,
+                moderator=interaction.user,
+                reason=reason,
+                punishment_id=record_id,
+                img=img
+            )
+
         await interaction.followup.send(f"✅ 已永久封禁 {member.name}。处罚ID: `{record_id}`", ephemeral=True)
 
 
@@ -496,6 +541,11 @@ class AdminCommands(commands.Cog):
             path.unlink(missing_ok=True)
         except Exception:
             pass
+
+        # 检查是否启用处罚同步
+        sync_cog = self.bot.get_cog("ServerSyncCommands")
+        if sync_cog:
+            await sync_cog.sync_revoke_punishment(guild, punish_id, interaction.user, reason)
 
         # 公示
         channel_id = int(self.config.get("punish_announce_channel_id", 0))
@@ -575,7 +625,8 @@ class AdminCommands(commands.Cog):
             interaction,
             title="确认删除",
             description=f"确定要删除 {member} 发布的全部帖子吗？",
-            colour=discord.Color.red()
+            colour=discord.Color.red(),
+            timeout=60
         )
 
         if not confirmed:
@@ -767,9 +818,7 @@ class AdminCommands(commands.Cog):
         confirmed = await confirm_view(
             interaction,
             title="🔴 删除子区",
-            description=f"确定要删除 【{thread.name}】 吗？",
-            confirm_text="确定",
-            cancel_text="取消"
+            description=f"确定要删除 【{thread.name}】 吗？"
         )
 
         if not confirmed:
@@ -804,7 +853,14 @@ class AdminCommands(commands.Cog):
                     if r.id in whitelist:
                         await interaction.followup.send("❌ 无法处罚此用户", ephemeral=True)
                         return
-                await member.remove_roles(role, buffer_role, reason=f"答题处罚 by {interaction.user}")
+                # 检查是否启用同步模块
+                sync_cog = self.bot.get_cog("ServerSyncCommands")
+                if sync_cog:
+                    await sync_cog.sync_remove_role(interaction.guild, member, role, f"答题处罚 by {interaction.user}")
+                    if buffer_role:
+                        await sync_cog.sync_remove_role(interaction.guild, member, buffer_role, f"答题处罚 by {interaction.user}")
+                else:
+                    await member.remove_roles(role, buffer_role, reason=f"答题处罚 by {interaction.user}")
                 # 私聊通知
                 try:    
                     await member.send(embed=discord.Embed(title="🔴 答题处罚", description=f"您因 {reason} 被移送答题区。请重新阅读规则并遵守。"))
