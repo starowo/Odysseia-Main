@@ -49,18 +49,49 @@ async def get_ids():
             print(f"\n👥 服务器成员:")
             for member in guild.members:
                 if not member.bot:  # 只显示真实用户
-                    print(f"   - {member.display_name} ({member.name}) - ID: {member.id}")
+                    status = "👑 所有者" if member.id == guild.owner_id else "👤 成员"
+                    print(f"   - {member.display_name} ({member.name}) - ID: {member.id} {status}")
             
             print(f"\n🎭 服务器角色:")
             for role in guild.roles:
                 if role.name != "@everyone":  # 跳过@everyone角色
-                    print(f"   - {role.name} - ID: {role.id}")
+                    perms_info = ""
+                    if role.permissions.administrator:
+                        perms_info = " [管理员]"
+                    elif role.permissions.manage_guild:
+                        perms_info = " [管理服务器]"
+                    print(f"   - {role.name} - ID: {role.id}{perms_info}")
+            
+            # 新增：检查论坛频道（匿名反馈专用）
+            forum_channels = [ch for ch in guild.channels if isinstance(ch, discord.ForumChannel)]
+            if forum_channels:
+                print(f"\n📋 论坛频道 (匿名反馈系统可用):")
+                for channel in forum_channels:
+                    print(f"   - 💬 {channel.name} - ID: {channel.id}")
+            else:
+                print(f"\n📋 论坛频道:")
+                print(f"   ⚠️ 未检测到论坛频道")
+                print(f"   💡 匿名反馈系统需要论坛频道才能工作")
             
             print(f"\n💡 配置建议:")
-            print(f"要将你自己设为管理员，请:")
-            print(f"1. 在config.json中找到 'admins' 字段")
-            print(f"2. 将你的用户ID或管理员角色ID添加到列表中")
-            print(f"3. 例如: \"admins\": [{guild.owner_id}]  # 服务器所有者ID")
+            print(f"【管理员配置】")
+            print(f"在config.json中设置 'admins' 字段:")
+            print(f"\"admins\": [{guild.owner_id}],  # 服务器所有者ID")
+            
+            print(f"\n【赛事管理配置】")
+            print(f"如需使用赛事管理功能，设置:")
+            print(f"\"event_managers\": [],  # 赛事管理员用户ID")
+            print(f"\"highest_role_available\": 0,  # 最高可管理身份组ID (0=无限制)")
+            
+            if forum_channels:
+                print(f"\n【匿名反馈配置】")
+                print(f"✅ 检测到论坛频道，匿名反馈系统可用")
+                print(f"📋 在cogs配置中启用:")
+                print(f"\"anonymous_feedback\": {{\"enabled\": true}}")
+            else:
+                print(f"\n【匿名反馈配置】")
+                print(f"⚠️ 需要先创建论坛频道来使用匿名反馈功能")
+                print(f"💡 在Discord服务器设置中创建一个论坛频道")
             
         await bot.close()
     
