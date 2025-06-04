@@ -157,19 +157,6 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send("❌ 无法操作比自己权限高的身份组", ephemeral=True)
             return
 
-        # 使用同步功能
-        sync_cog = self.bot.get_cog("ServerSyncCommands")
-        if sync_cog:
-            if action == "添加":
-                await sync_cog.sync_add_role(guild, member, role, reason)
-            elif action == "移除":
-                await sync_cog.sync_remove_role(guild, member, role, reason)
-        else:
-            # 如果没有同步功能，使用普通方式
-            if action == "添加":
-                await member.add_roles(role, reason=reason)
-            elif action == "移除":
-
         if action == "添加":
             # 检查是否启用同步模块
             sync_cog = self.bot.get_cog("ServerSyncCommands")
