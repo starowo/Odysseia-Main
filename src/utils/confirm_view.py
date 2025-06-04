@@ -6,10 +6,10 @@ class ConfirmView(discord.ui.View):
     def __init__(self, original_interaction: discord.Interaction, author: discord.User, timeout: int = 60):
         super().__init__(timeout=timeout)
         self.original_interaction = original_interaction
-        self.author = author          # 只有触发 slash 的人能点
+        self.author = author
         self.value: bool = None
 
-    # ── 权限检查：只让 author 点击 ───────────────────────
+    # 权限检查：只让author点击
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author.id:
             await interaction.response.send_message(
@@ -18,7 +18,7 @@ class ConfirmView(discord.ui.View):
             return False
         return True
 
-    # ── ✅ 按钮 ─────────────────────────────────────────
+    # ✅ 按钮
     @discord.ui.button(
         label="确认", style=discord.ButtonStyle.success, custom_id="confirm_yes"
     )
@@ -26,11 +26,11 @@ class ConfirmView(discord.ui.View):
         self, button: discord.ui.Button, interaction: discord.Interaction
     ):
         self.value = True
-        self.disable_all_items()      # 点完就禁用按钮
+        self.disable_all_items()
         await self.original_interaction.edit_original_response(view=self)
-        self.stop()                   # 结束 .wait()
+        self.stop()
 
-    # ── ❌ 按钮 ─────────────────────────────────────────
+    # ❌ 按钮
     @discord.ui.button(
         label="取消", style=discord.ButtonStyle.danger, custom_id="confirm_no"
     )
@@ -46,7 +46,6 @@ class ConfirmView(discord.ui.View):
         for item in self.children:
             item.disabled = True
 
-# ───────────────────────────────────────────────────────────────
 
 async def confirm_view_embed(
     interaction: discord.Interaction,

@@ -7,29 +7,26 @@ from typing import Dict, List, Callable, Awaitable, Optional
 import discord
 from discord.ext import commands
 
-# ────────────────────────────────────────────────────────────────
 # 本文件实现：
-#   1. 统计子区内聊天记录（分批每次 100 条）。
-#   2. 将统计结果缓存到 data/thread_cache/{thread_id}.json，
-#      下次运行时仅增量统计。
-#   3. 根据阈值移除未发言成员，若仍超阈值则移除发言最少成员。
-#   4. 不移除贴主和机器人账号。
+#   1. 统计子区内聊天记录（分批每次 100 条）
+#   2. 将统计结果缓存到 data/thread_cache/{thread_id}.json，下次运行时仅增量统计
+#   3. 根据阈值移除未发言成员，若仍超阈值则移除发言最少成员
+#   4. 不移除贴主和机器人账号
 #
 # 公开函数：
 #   clear_thread_members(channel, threshold, bot, logger=None) -> dict
-# ────────────────────────────────────────────────────────────────
 
 # 缓存目录
 _CACHE_DIR = Path("data/thread_cache")
 _CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-# ------------------------- 工具函数 ----------------------------
+# 工具函数
 async def _update_message_cache(
     channel: discord.Thread,
     logger=None,
     progress_cb: Optional[Callable[[int, int, Optional[discord.Member], str], Awaitable[None]]] = None,
 ) -> Dict[int, int]:
-    """增量统计子区消息数并返回 {user_id: msg_count} 字典。"""
+    """增量统计子区消息数并返回 {user_id: msg_count} 字典"""
 
     cache_path = _CACHE_DIR / f"{channel.id}.json"
 
@@ -109,7 +106,7 @@ async def _update_message_cache(
 
     return message_counts
 
-# ------------------------- 主功能函数 --------------------------
+# 主功能函数
 async def clear_thread_members(
     channel: discord.Thread,
     threshold: int,

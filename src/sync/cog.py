@@ -54,13 +54,21 @@ class ServerSyncCommands(commands.Cog):
     def is_admin():
         async def predicate(ctx):
             try:
+                guild = ctx.guild
+                if not guild:
+                    return False
+                    
+                # 使用统一的配置系统
                 cog = ctx.cog
-                config = getattr(cog.bot, 'config', {})
-                for admin in config.get('admins', []):
-                    role = ctx.guild.get_role(admin)
-                    if role:
-                        if role in ctx.author.roles:
-                            return True
+                config = getattr(cog, 'config', {})
+                admin_roles = config.get('admins', [])
+                
+                # 检查用户是否拥有任何管理员身份组
+                for admin_role_id in admin_roles:
+                    role = guild.get_role(int(admin_role_id))
+                    if role and role in ctx.author.roles:
+                        return True
+                      
                 return False
             except Exception:
                 return False
@@ -564,8 +572,12 @@ class ServerSyncCommands(commands.Cog):
                     await user_obj.timeout(None, reason=f"同步撤销处罚: {reason}")
                     # 移除警告身份组
                     if record.get("warn_days", 0) > 0:
-                        # 这里需要从主配置获取warned_role_id
-                        warned_role_id = getattr(self.bot, 'config', {}).get("warned_role_id")
+
+                        # 从多服务器配置获取warned_role_id
+                        guild_configs = getattr(self.bot, 'config', {}).get('guild_configs', {})
+                        guild_config = guild_configs.get(str(guild.id), {})
+                        warned_role_id = guild_config.get("warned_role_id")
+
                         if warned_role_id:
                             warned_role = guild.get_role(int(warned_role_id))
                             if warned_role and warned_role in user_obj.roles:
@@ -644,7 +656,10 @@ class PunishmentConfirmView(discord.ui.View):
                 if warn_days > 0:
                     sync_cog = interaction.client.get_cog("ServerSyncCommands")
                     if sync_cog:
-                        warned_role_id = getattr(sync_cog.bot, 'config', {}).get("warned_role_id")
+                        guild_configs = getattr(sync_cog.bot, 'config', {}).get('guild_configs', {})
+                        guild_config = guild_configs.get(str(guild.id), {})
+                        warned_role_id = guild_config.get("warned_role_id")
+                        
                         if warned_role_id:
                             warned_role = guild.get_role(int(warned_role_id))
                             if warned_role:
@@ -723,4 +738,5 @@ class PunishmentConfirmView(discord.ui.View):
 
 
 async def setup(bot):
-    await bot.add_cog(ServerSyncCommands(bot))
+    await bot.add_cog(ServerSyncCommands(bot)) 
+
