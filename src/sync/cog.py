@@ -68,6 +68,7 @@ class ServerSyncCommands(commands.Cog):
                     role = guild.get_role(int(admin_role_id))
                     if role and role in ctx.author.roles:
                         return True
+                      
                 return False
             except Exception:
                 return False
@@ -571,10 +572,12 @@ class ServerSyncCommands(commands.Cog):
                     await user_obj.timeout(None, reason=f"同步撤销处罚: {reason}")
                     # 移除警告身份组
                     if record.get("warn_days", 0) > 0:
+
                         # 从多服务器配置获取warned_role_id
                         guild_configs = getattr(self.bot, 'config', {}).get('guild_configs', {})
                         guild_config = guild_configs.get(str(guild.id), {})
                         warned_role_id = guild_config.get("warned_role_id")
+
                         if warned_role_id:
                             warned_role = guild.get_role(int(warned_role_id))
                             if warned_role and warned_role in user_obj.roles:
@@ -656,6 +659,7 @@ class PunishmentConfirmView(discord.ui.View):
                         guild_configs = getattr(sync_cog.bot, 'config', {}).get('guild_configs', {})
                         guild_config = guild_configs.get(str(guild.id), {})
                         warned_role_id = guild_config.get("warned_role_id")
+                        
                         if warned_role_id:
                             warned_role = guild.get_role(int(warned_role_id))
                             if warned_role:
@@ -735,3 +739,4 @@ class PunishmentConfirmView(discord.ui.View):
 
 async def setup(bot):
     await bot.add_cog(ServerSyncCommands(bot)) 
+

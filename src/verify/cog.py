@@ -318,14 +318,23 @@ class VerifyCommands(commands.Cog):
                 if buffer_mode and buffer_role_id and buffer_role_id != "请填入缓冲区身份组ID":
                     role = guild.get_role(int(buffer_role_id))
                     if role:
-                        await user.add_roles(role, reason="答题验证通过")
+                        # 检查是否启用同步模块
+                        sync_cog = self.bot.get_cog("ServerSyncCommands")
+                        if sync_cog:
+                            await sync_cog.sync_add_role(guild, user, role, "答题验证通过")
+                        else:
+                            await user.add_roles(role, reason="答题验证通过")
                         success_msg += "\n✅ 已添加缓冲区身份组\n服务器当前处于缓冲准入模式，您可浏览资源区，但只能在有慢速限制的答疑频道发言。\n服务器会适时将缓冲状态用户转移到可正常发言的身份组。" if language == "zh_cn" else "\n✅ Buffer role added\nThe server is currently in buffer access mode, you can browse the resource area, but you can only speak in the slow-speed restricted answer channel.\nThe server will transfer buffer status users to the normal speaking identity group at the appropriate time."
                 else:
-                    if verified_role_id and verified_role_id != "请填入已验证身份组ID":
-                        role = guild.get_role(int(verified_role_id))
-                        if role:
+                    role = guild.get_role(int(verified_role_id))
+                    if role:
+                        # 检查是否启用同步模块
+                        sync_cog = self.bot.get_cog("ServerSyncCommands")
+                        if sync_cog:
+                            await sync_cog.sync_add_role(guild, user, role, "答题验证通过")
+                        else:
                             await user.add_roles(role, reason="答题验证通过")
-                            success_msg += "\n✅ 已添加已验证身份组" if language == "zh_cn" else "\n✅ Verified role added"
+                        success_msg += "\n✅ 已添加已验证身份组" if language == "zh_cn" else "\n✅ Verified role added"
             except discord.Forbidden:
                 error_msg = "\n⚠️ 无法添加身份组，请联系管理员" if language == "zh_cn" else "\n⚠️ Cannot add role, please contact administrators"
                 success_msg += error_msg
