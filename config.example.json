@@ -1,0 +1,90 @@
+{
+    "_comment": "Odysseia Discord Bot 配置文件示例",
+    "_description": "复制此文件为 config.json 并修改相应配置",
+    
+    "token": "你的机器人Token_从Discord开发者门户获取",
+    "status": "watching",
+    "status_text": "子区里的一切",
+    
+    "_global_admins_comment": "管理员用户ID列表，拥有机器人最高权限",
+    "admins": [
+        123456789012345678
+    ],
+    
+    "_logging_comment": "日志系统配置",
+    "logging": {
+        "enabled": true,
+        "guild_id": 123456789012345678,
+        "channel_id": 123456789012345684,
+        "level": "INFO"
+    },
+    
+    "_cogs_comment": "功能模块配置，可以选择性启用或禁用",
+    "cogs": {
+        "thread_manage": {
+            "enabled": true,
+            "description": "子区自助管理功能"
+        },
+        "admin": {
+            "enabled": true,
+            "description": "管理员功能"
+        },
+        "anonymous_feedback": {
+            "enabled": true,
+            "description": "匿名反馈系统"
+        },
+        "verify": {
+            "enabled": true,
+            "description": "验证系统"
+        },
+        "misc": {
+            "enabled": true,
+            "description": "杂项功能"
+        },
+        "event": {
+            "enabled": true,
+            "description": "赛事管理功能"
+        },
+        "bot_manage": {
+            "enabled": true,
+            "description": "机器人管理功能"
+        },
+        "sync": {
+            "enabled": true,
+            "description": "服务器同步功能"
+        }
+    },
+    
+    "_roles_comment": "身份组配置 - 这些身份组需要在Discord服务器中预先创建",
+    "verified_role_id": 123456789012345679,
+    "buffer_role_id": 123456789012345680,
+    "quiz_role_id": 123456789012345681,
+    "warned_role_id": 123456789012345682,
+    
+    "_channels_comment": "频道配置 - 这些频道需要在Discord服务器中预先创建",
+    "punish_announce_channel_id": 123456789012345683,
+    
+    "_event_comment": "赛事管理配置（必填项）",
+    "event_managers": [
+        123456789012345678
+    ],
+    "highest_role_available": 0,
+    
+    "_sync_comment": "服务器同步功能配置（可选）",
+    "_sync_note": "启用同步功能需要在 config/server_sync/config.json 中详细配置同步服务器",
+    "_sync_guide": "详细配置指南请参考 docs/sync_guide.md",
+    
+    "_notes": [
+        "配置说明：",
+        "1. 本机器人使用斜杠命令（/），无需配置命令前缀",
+        "2. 匿名反馈系统完全自动化，在论坛频道的帖子内可用，无需任何配置",
+        "3. 验证系统的具体配置（问题、消息等）在代码中硬编码，无需在此配置",
+        "4. admins字段现在支持用户ID和身份组ID双重检查",
+        "5. 所有以下划线开头的字段都是注释，机器人会忽略",
+        "6. ID都应该是数字格式",
+        "7. 频道和身份组需要在Discord服务器中预先创建",
+        "8. 修改配置后需要重启机器人才能生效",
+        "9. event_managers和highest_role_available为必填项,设为0表示无限制",如果设置为"版主"身份组ID,赛事管理员只能创建"版主"及以下级别身份组的自助发放,无法创建"管理员"或"服主"等更高级别身份组的自助发放,
+        "10. 如需帮助请查看部署指南.md或运行快速部署.py"
+    ]
+} 

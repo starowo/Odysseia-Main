@@ -1,34 +1,38 @@
-import datetime
-import json
-import pathlib
-
-import discord
+import asyncio
 from discord.ext import commands
 from discord import app_commands
-
+import discord
+import json
+import datetime
+import pathlib
+from typing import List, Tuple
 
 class EventCommands(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.logger = getattr(bot, 'logger', None)
         self.name = "赛事命令"
-        self.config = None
+        # 初始化配置缓存
+        self._config_cache = {}
+        self._config_cache_mtime = None
+        # 初始化views属性
+        self.views = []
 
-    def _load_config(self):
-        """加载赛事配置文件"""
+    @property
+    def config(self):
+        """读取配置文件并缓存，只有在文件修改后重新加载"""
         try:
-            config_path = pathlib.Path("config/event/config.json")
-            if config_path.exists():
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    self.config = json.load(f)
-                if self.logger:
-                    self.logger.info("赛事配置已加载")
-            else:
-                if self.logger:
-                    self.logger.error("赛事配置文件不存在")
+            path = pathlib.Path('config.json')
+            mtime = path.stat().st_mtime
+            if self._config_cache_mtime != mtime:
+                with open(path, 'r', encoding='utf-8') as f:
+                    self._config_cache = json.load(f)
+                self._config_cache_mtime = mtime
+            return self._config_cache
         except Exception as e:
             if self.logger:
-                self.logger.error(f"加载赛事配置失败: {e}")
+                self.logger.error(f"加载配置文件失败: {e}")
+            return {}
 
     def _load_views(self):
         """加载视图"""
@@ -36,27 +40,51 @@ class EventCommands(commands.Cog):
         views_dir = pathlib.Path("data/event/views.json")
         if views_dir.exists():
             with open(views_dir, "r", encoding="utf-8") as f:
-                self.views = json.load(f)
-                for view in self.views["views"]:
-                    self.bot.add_view(RoleButtonView(view["role_id"]))
+                data = json.load(f)
+                # 如果data是字典且包含"views"键，则使用"views"列表
+                if isinstance(data, dict) and "views" in data:
+                    self.views = data["views"]
+                    for view in self.views:
+                        self.bot.add_view(RoleButtonView(view["role_id"]))
+                # 如果data直接是列表，则直接使用
+                elif isinstance(data, list):
+                    self.views = data
+                    for view in self.views:
+                        self.bot.add_view(RoleButtonView(view["role_id"]))
+                else:
+                    # 如果格式不正确，初始化为空列表
+                    self.views = []
         else:
-            self.views = {}
+            # 如果文件不存在，初始化为空列表
+            self.views = []
+            # 创建目录（如果不存在）
+            views_dir.parent.mkdir(parents=True, exist_ok=True)
 
     def _add_view(self, view):
         """添加视图"""
         self.bot.add_view(view)
         view_dict = {
-            "role_id": view.role_id,
-            "view": view
+            "role_id": view.role_id
         }
+        # 确保self.views是列表，如果不存在则初始化
+        if not hasattr(self, 'views') or not isinstance(self.views, list):
+            self.views = []
+        
         self.views.append(view_dict)
         views_dir = pathlib.Path("data/event/views.json")
+        # 创建目录（如果不存在）
+        views_dir.parent.mkdir(parents=True, exist_ok=True)
+        
+        # 保存为包含"views"键的字典结构，以便与可能的其他数据兼容
+        data_to_save = {
+            "views": self.views
+        }
+        
         with open(views_dir, "w", encoding="utf-8") as f:
-            json.dump(self.views, f, ensure_ascii=False, indent=2)
+            json.dump(data_to_save, f, ensure_ascii=False, indent=2)
 
     @commands.Cog.listener()
     async def on_ready(self):
-        self._load_config()
         self._load_views()
         if self.logger:
             self.logger.info("赛事模块已加载")
@@ -65,11 +93,28 @@ class EventCommands(commands.Cog):
         async def predicate(ctx):
             try:
                 cog = ctx.cog
-                config = getattr(cog, 'config', {}) or {}
-                for role_id in config.get("event_managers", []):
-                    role = ctx.guild.get_role(int(role_id))
-                    if role and role in ctx.author.roles:
-                        return True
+                guild_id = ctx.guild.id if ctx.guild else None
+                if not guild_id:
+                    return False
+                
+                # 直接从主配置获取赛事管理员列表
+                config = cog.config
+                event_managers = config.get("event_managers", [])
+                
+                # 检查用户ID是否在管理员列表中
+                if ctx.author.id in event_managers:
+                    return True
+                
+                # 检查用户是否拥有管理员身份组
+                for role_id in event_managers:
+                    try:
+                        role = ctx.guild.get_role(int(role_id))
+                        if role and role in ctx.author.roles:
+                            return True
+                    except (ValueError, TypeError):
+                        # 如果无法转换为int，说明是用户ID而非身份组ID
+                        continue
+                
                 return False
             except Exception:
                 return False
@@ -85,12 +130,11 @@ class EventCommands(commands.Cog):
                         role: discord.Role, title: str,
                         content: str, thumbnail: discord.Attachment = None):
         """创建自助身份组获取/放弃Embed和按钮"""
-        if not self.config:
-            await interaction.response.send_message("❌ 赛事配置未加载", ephemeral=True)
-            return
         guild = interaction.guild
+        
         # 检查最高可管理权限
-        highest_id = self.config.get("highest_role_available")
+        config = self.config
+        highest_id = config.get("highest_role_available")
         highest_role = guild.get_role(int(highest_id)) if highest_id else None
         if highest_role and role.position > highest_role.position:
             await interaction.response.send_message(
@@ -118,9 +162,6 @@ class EventCommands(commands.Cog):
     async def check_post(self, interaction: discord.Interaction,
                          role: discord.Role, channel: discord.ForumChannel, channel2: discord.ForumChannel = None, channel3: discord.ForumChannel = None):
         """检查指定身份组成员是否在指定频道发过贴"""
-        if not self.config:
-            await interaction.response.send_message("❌ 赛事配置未加载", ephemeral=True)
-            return
         guild = interaction.guild
 
         members = role.members
@@ -281,3 +322,7 @@ class PaginationView(discord.ui.View):
         self.next_btn.disabled = (self.current == len(self.pages) - 1)
         embed = self.pages[self.current]
         await interaction.response.edit_message(embed=embed, view=self)
+
+
+async def setup(bot):
+    await bot.add_cog(EventCommands(bot))

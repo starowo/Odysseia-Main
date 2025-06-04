@@ -16,12 +16,13 @@ import src.admin.cog as admin
 import src.verify.cog as verify
 import src.misc.cog as misc
 import src.event.cog as event
+import src.anonymous_feedback.cog as anonymous_feedback
 import src.sync.cog as sync
 
 # 加载环境变量
 load_dotenv()
 
-# ---- 配置加载 ----
+# 配置加载
 def load_config():
     """加载配置文件"""
     try:
@@ -36,11 +37,9 @@ if not CONFIG:
     print("无法加载配置，程序终止")
     exit(1)
 
-# ---- 日志设置 ----
-# ── 日志处理器：单 Embed 维护 ──────────────────────────────
-
+# 日志设置
 class SingleEmbedLogHandler(logging.Handler):
-    """将日志集中写入指定频道中的同一个 Embed 消息 (最多 100 行)。"""
+    """将日志集中写入指定频道中的同一个 Embed 消息 (最多 100 行)"""
 
     def __init__(self, bot: commands.Bot, guild_id: int, channel_id: int, max_lines: int = 100):
         super().__init__()
@@ -51,56 +50,69 @@ class SingleEmbedLogHandler(logging.Handler):
 
         self._queue: asyncio.Queue[str] = asyncio.Queue()
         self._task: asyncio.Task = None
-
-        self._message: discord.Message = None  # 日志 Embed 消息
-        self._lines: list[str] = []  # 当前行缓存
-        self._initialized = False  # 标记是否已初始化频道和消息
+        self._message: discord.Message = None
+        self._lines: list[str] = []
+        self._initialized = False
+        self._last_update = 0
+        self._update_interval = 10
 
     async def setup(self):
-        # 启动后台任务
         self._task = asyncio.create_task(self._worker())
 
-    # -------- handler 接口 --------
     def emit(self, record: logging.LogRecord):
-        # 格式化单行日志
         line = self.format(record)
-        # 即使bot还没准备好，也将日志放入队列中缓存
         asyncio.create_task(self._queue.put(line))
 
-    # -------- 后台任务 --------
     async def _worker(self):
         await self.bot.wait_until_ready()
-        
-        # 初始化频道和消息 (仅在bot准备好后进行)
         await self._ensure_message()
         self._initialized = True
 
         while True:
-            line: str = await self._queue.get()
             try:
-                # 添加行并裁剪
-                ts = datetime.now().strftime('%H:%M:%S')
-                self._lines.append(f"[{ts}] {line}")
-                if len(self._lines) > self.max_lines:
-                    self._lines = self._lines[-self.max_lines :]
-
-                # 仅当已初始化时才更新消息
-                if self._initialized and self._message:
+                lines_batch = []
+                line = await self._queue.get()
+                lines_batch.append(line)
+                
+                try:
+                    while len(lines_batch) < 10:
+                        extra_line = self._queue.get_nowait()
+                        lines_batch.append(extra_line)
+                except asyncio.QueueEmpty:
+                    pass
+                
+                for log_line in lines_batch:
+                    ts = datetime.now().strftime('%H:%M:%S')
+                    self._lines.append(f"[{ts}] {log_line}")
+                    if len(self._lines) > self.max_lines:
+                        self._lines = self._lines[-self.max_lines:]
+                
+                current_time = asyncio.get_event_loop().time()
+                if (self._initialized and self._message and 
+                    current_time - self._last_update >= self._update_interval):
                     await self._edit_message()
-                    await asyncio.sleep(5)
-            except Exception:
-                print(f"更新日志 Embed 失败: {traceback.format_exc()}")
-            finally:
-                self._queue.task_done()
+                    self._last_update = current_time
+                    
+                for _ in lines_batch:
+                    self._queue.task_done()
+                    
+                await asyncio.sleep(2)
+                
+            except Exception as e:
+                print(f"日志处理器错误: {e}")
+                try:
+                    for _ in lines_batch:
+                        self._queue.task_done()
+                except:
+                    pass
+                await asyncio.sleep(5)
 
-    # -------- 私有工具 --------
     async def _ensure_message(self):
         guild = self.bot.get_guild(self.guild_id)
         channel = guild.get_channel(self.channel_id) if guild else None
         if channel is None:
             raise RuntimeError("无法找到日志频道，请检查配置 guild_id / channel_id")
 
-        # 寻找已固定的日志消息 (标题为 'Bot Logs')
         pinned = await channel.pins()
         for msg in pinned:
             if msg.author == self.bot.user and msg.embeds and msg.embeds[0].title == 'Bot Logs':
@@ -119,17 +131,37 @@ class SingleEmbedLogHandler(logging.Handler):
         if self._message is None:
             return
 
-        desc = "```\n" + "\n".join(self._lines) + "\n```"
-        # discord embed description 最大 4096 字符
-        if len(desc) > 4000:
-            # 超长时截断开头
-            desc = desc[-4000:]
+        try:
+            desc = "```\n" + "\n".join(self._lines[-50:]) + "\n```"
+            if len(desc) > 4000:
+                desc = desc[-4000:]
 
-        embed = self._message.embeds[0]
-        embed.description = desc
-        embed.timestamp = datetime.now()
+            embed = self._message.embeds[0].copy()
+            embed.description = desc
+            embed.timestamp = datetime.now()
 
-        await self._message.edit(embed=embed)
+            await self._message.edit(embed=embed)
+        except discord.HTTPException as e:
+            if e.code == 30046:
+                print("日志消息编辑次数超限，创建新消息")
+                try:
+                    await self._message.unpin()
+                except:
+                    pass
+                
+                channel = self._message.channel
+                embed = discord.Embed(title='Bot Logs', description='```\n' + '\n'.join(self._lines[-50:]) + '\n```', color=discord.Color.green())
+                embed.timestamp = datetime.now()
+                
+                self._message = await channel.send(embed=embed)
+                try:
+                    await self._message.pin()
+                except:
+                    pass
+            else:
+                print(f"更新日志消息失败: {e}")
+        except Exception as e:
+            print(f"更新日志消息时出现未知错误: {e}")
 
 # 设置日志记录器
 logger = logging.getLogger('bot')
@@ -151,27 +183,54 @@ file_handler = logging.FileHandler(
 file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
 logger.addHandler(file_handler)
 
+# Discord日志处理器（如果配置了）
+_discord_handler = None
+if CONFIG.get('logging', {}).get('enabled', False):
+    guild_id = CONFIG['logging'].get('guild_id')
+    channel_id = CONFIG['logging'].get('channel_id')
+    
+    if guild_id and channel_id:
+        _discord_handler = SingleEmbedLogHandler(None, guild_id, channel_id)
+        _discord_handler.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
+        
+        level_str = CONFIG['logging'].get('level', 'INFO').upper()
+        level_map = {
+            'DEBUG': logging.DEBUG,
+            'INFO': logging.INFO,
+            'WARNING': logging.WARNING,
+            'ERROR': logging.ERROR,
+            'CRITICAL': logging.CRITICAL
+        }
+        
+        _discord_handler.setLevel(level_map.get(level_str, logging.INFO))
+
 class OdysseiaBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
-        super().__init__(command_prefix=CONFIG.get('prefix', '!'), intents=intents)
-    # on_ready sync all commands to main guild
+        # 由于本机器人只使用斜杠命令，前缀设置为默认值即可
+        super().__init__(command_prefix='!', intents=intents)
 
     async def on_ready(self):
+        # 设置Discord日志处理器的bot引用
+        global _discord_handler
+        if _discord_handler:
+            _discord_handler.bot = self
+            await _discord_handler.setup()
+            logger.addHandler(_discord_handler)
+        
         guild = self.get_guild(CONFIG.get('logging', {}).get('guild_id'))
-        # 加载所有启用的Cog
+        
         await cog_manager.load_all_enabled()
         
-        # 确保bot_manage模块始终加载，因为它包含bot管理命令
-        if "bot_manage" not in self.cogs:
+        if "BotManageCommands" not in self.cogs:
             bot_manage_cog = cog_manager.cog_map["bot_manage"]
             await cog_manager.load_cog(bot_manage_cog)
             logger.info("已加载管理命令模块")
 
-        logger.info(f"同步命令到主服务器: {guild.name} ({guild.id})")
         if guild:
+            logger.info(f"同步命令到主服务器: {guild.name} ({guild.id})")
             synced = await self.tree.sync()
             synced_guild = await self.tree.sync(guild=guild)
             logger.info(f"已同步 {len(synced)} 个全局命令")
@@ -180,8 +239,9 @@ class OdysseiaBot(commands.Bot):
                 logger.info(f"已同步全局命令: {command.name}")
             for command in synced_guild:
                 logger.info(f"已同步服务器命令: {command.name}")
+        else:
+            logger.warning("未找到主服务器配置，跳过命令同步")
             
-        # 设置机器人状态
         status_type = CONFIG.get('status', 'watching').lower()
         status_text = CONFIG.get('status_text', '子区里的一切')
             
@@ -198,44 +258,7 @@ class OdysseiaBot(commands.Bot):
 
 bot = OdysseiaBot()
 bot.logger = logger
-bot.config = CONFIG
 
-# ---- 添加Discord日志处理器 ----
-# 全局变量用于存储处理器实例
-_discord_handler = None
-
-# 提前创建Discord日志处理器
-if CONFIG.get('logging', {}).get('enabled', False):
-    guild_id = CONFIG['logging']['guild_id']
-    channel_id = CONFIG['logging']['channel_id']
-    
-    _discord_handler = SingleEmbedLogHandler(bot, guild_id, channel_id)
-    _discord_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-    
-    # 设置日志级别
-    level_str = CONFIG['logging'].get('level', 'INFO').upper()
-    level_map = {
-        'DEBUG': logging.DEBUG,
-        'INFO': logging.INFO,
-        'WARNING': logging.WARNING,
-        'ERROR': logging.ERROR,
-        'CRITICAL': logging.CRITICAL
-    }
-    _discord_handler.setLevel(level_map.get(level_str, logging.INFO))
-    
-    # 提前添加到logger，这样在bot ready前的日志也会被缓存
-    logger.addHandler(_discord_handler)
-    
-    @bot.listen('on_ready')
-    async def setup_logging_on_ready():
-        """当机器人准备就绪时，设置Discord日志处理器"""
-        global _discord_handler
-        if _discord_handler is not None:
-            # 只在ready时设置handler的频道和消息
-            await _discord_handler.setup()
-            logger.info(f"{bot.user}已连接到Discord! 机器人ID: {bot.user.id}")
-
-# ---- Cog管理 ----
 class CogManager:
     """Cog管理器，处理Cog的加载、卸载和重载"""
     def __init__(self, bot: commands.Bot, config: dict):
@@ -249,6 +272,7 @@ class CogManager:
             "verify": verify.VerifyCommands(bot),
             "misc": misc.MiscCommands(bot),
             "event": event.EventCommands(bot),
+            "anonymous_feedback": anonymous_feedback.AnonymousFeedbackCog(bot),
             "sync": sync.ServerSyncCommands(bot)
         }
     
@@ -266,74 +290,54 @@ class CogManager:
         try:
             await self.bot.add_cog(cog)
             self.loaded_cogs.add(cog)
-            await cog.on_ready()
-            return True, f"✅ 已加载: {cog.name}"
+            cog_name = getattr(cog, 'name', type(cog).__name__)
+            logger.info(f"已加载模块: {cog_name}")
         except Exception as e:
-            logger.error(f"加载 {cog.name} 失败: {str(e)}")
-            # traceback
-            logger.error(traceback.format_exc())
-            return False, f"❌ 加载失败: {cog.name} - {str(e)}"
+            cog_name = getattr(cog, 'name', type(cog).__name__)
+            logger.error(f"加载模块 {cog_name} 失败: {e}")
     
     async def unload_cog(self, cog):
         """卸载指定的Cog"""
         try:
-            await self.bot.remove_cog(cog.name)
+            await self.bot.remove_cog(cog.qualified_name)
             self.loaded_cogs.discard(cog)
-            logger.info(f"已卸载: {cog.name}")
-            return True, f"✅ 已卸载: {cog.name}"
+            cog_name = getattr(cog, 'name', type(cog).__name__)
+            logger.info(f"已卸载模块: {cog_name}")
         except Exception as e:
-            logger.error(f"卸载 {cog.name} 失败: {str(e)}")
-            return False, f"❌ 卸载失败: {cog.name} - {str(e)}"
+            cog_name = getattr(cog, 'name', type(cog).__name__)
+            logger.error(f"卸载模块 {cog_name} 失败: {e}")
     
     async def reload_cog(self, cog):
         """重载指定的Cog"""
         try:
-            # 先卸载再加载
+            cog_name = getattr(cog, 'name', type(cog).__name__)
             await self.unload_cog(cog)
             await self.load_cog(cog)
-            logger.info(f"已重载: {cog.name}")
-            return True, f"✅ 已重载: {cog.name}"
+            logger.info(f"已重载模块: {cog_name}")
         except Exception as e:
-            logger.error(f"重载 {cog.name} 失败: {str(e)}")
-            # 尝试重新加载
-            try:
-                await self.bot.add_cog(cog)
-                self.loaded_cogs.add(cog)
-                return True, f"✅ 重载失败但已重新加载: {cog.name}"
-            except Exception as reload_error:
-                logger.error(f"重新加载 {cog.name} 也失败: {str(reload_error)}")
-                return False, f"❌ 重载失败: {cog.name} - {str(e)}"
+            cog_name = getattr(cog, 'name', type(cog).__name__)
+            logger.error(f"重载模块 {cog_name} 失败: {e}")
 
-# 创建Cog管理器
 cog_manager = CogManager(bot, CONFIG)
 
 @bot.event
 async def on_command_error(ctx, error):
-    """全局命令错误处理"""
+    """全局错误处理"""
     if isinstance(error, commands.CommandNotFound):
         return
     
-    if isinstance(error, commands.CheckFailure):
-        await ctx.send("❌ 你没有权限执行此命令")
-        return
-    
-    logger.error(f"命令 {ctx.command} 执行时出错: {error}")
-    await ctx.send(f"❌ 命令执行时出错: {str(error)}")
+    logger.error(f"命令错误: {error}")
+    if hasattr(ctx, 'send'):
+        await ctx.send(f"执行命令时发生错误: {error}")
 
-
-# ---- 运行机器人 ----
 def main():
-    """主要运行功能"""
-    bot.logger = logger
+    """主函数"""
+    try:
+        bot.run(CONFIG['token'])
+    except KeyboardInterrupt:
+        logger.info("机器人被手动停止")
+    except Exception as e:
+        logger.error(f"机器人运行出错: {e}")
 
-    # 启动机器人
-    token = CONFIG.get('token')
-    if not token or token == "在此填入你的Discord Token":
-        print("请在config.json中设置有效的Discord Token")
-        return
-
-    bot.run(token)
-
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
