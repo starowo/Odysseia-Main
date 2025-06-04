@@ -198,6 +198,45 @@ class ThreadSelfManage(commands.Cog):
         await interaction.edit_original_response(embed=final_embed)
         await interaction.followup.send("✅ 子区清理完成", embed=final_embed, ephemeral=False)
 
+    # ---- 删除消息反应 ----
+    @self_manage.command(name="删除消息反应", description="删除指定消息的反应")
+    @app_commands.describe(message_link="要删除反应的消息链接", reaction="要删除的反应")
+    @app_commands.rename(message_link="消息链接", reaction="反应")
+    async def delete_reaction(self, interaction: discord.Interaction, message_link: str, reaction: str = None):
+        # 验证是否在子区内
+        channel = interaction.channel
+        if not isinstance(channel, discord.Thread):
+            await interaction.response.send_message("此指令仅在子区内有效", ephemeral=True)
+            return
+        
+        # 验证是否是子区所有者
+        if not interaction.user.id == channel.owner_id:
+            await interaction.response.send_message("不能在他人子区内使用此指令", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        # 尝试获取消息
+        try:
+            message_id_int = int(message_link.strip().split("/")[-1])
+            message = await channel.fetch_message(message_id_int)
+        except (ValueError, discord.NotFound, discord.HTTPException):
+            await interaction.edit_original_response("找不到指定的消息，请确认消息ID是否正确")
+            return
+
+        # 如果反应为空，则删除消息的所有反应
+        if not reaction:
+            await message.clear_reactions()
+            await interaction.edit_original_response("已删除消息的所有反应")
+            return
+        
+        # 删除指定反应
+        try:
+            await message.clear_reaction(reaction)
+            await interaction.edit_original_response(f"已删除消息的 {reaction} 反应")
+        except discord.HTTPException:
+            await interaction.edit_original_response("删除反应失败，请确认反应是否存在")
+
     # ---- 删除单条消息 ----
     @self_manage.command(name="删除消息", description="删除指定消息")
     @app_commands.describe(message_link="要删除的消息链接")
