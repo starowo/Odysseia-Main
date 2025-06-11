@@ -1,5 +1,4 @@
 import asyncio
-import functools
 import json
 from pathlib import Path
 
@@ -52,17 +51,83 @@ CC_LICENSES = {
     },
 }
 
+HUB_VIEW_CONTENT = (
+    "请选择你希望如何设置你的授权协议：\n\n"
+    "📝 **创建或编辑自定义协议**\n"
+    "> 在这里，你可以完全手动控制每一项条款。最终生成的将是你独有的“自定义协议”。\n\n"
+    "📜 **应用一个标准的CC协议**\n"
+    "> 从官方的 Creative Commons 协议中选择一个来应用。\n"
+    "> **注意：** 选择后，你当前的设置将被一个标准的CC协议模板所**覆盖**。\n"
+    "> CC协议的核心条款是标准化的，任何附加的限制性条款都可能被视为无效。\n"
+    "> 了解更多： https://creativecommons.org"
+)
+
 
 def get_default_license_details(user_id: int) -> dict:
     """返回一份标准的、全新的默认授权协议详情字典"""
     return {
-        "type": "custom",  # 新增字段，用于区分是 "custom" 还是 "cc"
+        "type": "custom",
         "reproduce": "询问作者",
         "derive": "询问作者",
         "commercial": "禁止",
         "attribution": f"<@{user_id}>",
         "notes": "无"
     }
+
+
+# ============================================
+#            命令与本地化配置
+# ============================================
+COMMAND_CONFIG = {
+    "group": {
+        "name": "license",
+        "description": "管理你的内容授权协议"
+    },
+    "remind": {
+        "name": "remind",
+        "description": "在当前帖子中重新发送授权助手提醒"
+    },
+    "edit": {
+        "name": "edit",
+        "description": "创建或修改你的默认授权协议"
+    },
+    "settings": {
+        "name": "settings",
+        "description": "配置授权助手机器人的行为"
+    },
+    "show": {
+        "name": "show",
+        "description": "查看你当前的默认授权协议"
+    }
+}
+
+# 如果你想完全使用中文，可以这样配置：
+COMMAND_CONFIG_ZH = {
+    "group": {
+        "name": "内容授权",
+        "description": "管理你的内容授权协议"
+    },
+    "remind": {
+        "name": "重新发送提醒",
+        "description": "在当前帖子中重新发送授权助手提醒"
+    },
+    "edit": {
+        "name": "编辑",
+        "description": "创建或修改你的默认授权协议"
+    },
+    "settings": {
+        "name": "设置",
+        "description": "配置授权助手机器人的行为"
+    },
+    "show": {
+        "name": "查看",
+        "description": "查看你当前的默认授权协议"
+    }
+}
+
+# 在代码中，我们选择一套配置来使用
+# 为了演示，我们使用中文版
+ACTIVE_COMMAND_CONFIG = COMMAND_CONFIG_ZH
 
 
 # --- 数据模型与存储 ---
@@ -91,30 +156,48 @@ class LicenseConfig:
 
 
 class LicenseDB:
-    """处理用户授权配置的读写"""
+    """处理用户授权配置的读写（V2版：带内存缓存）"""
 
     def __init__(self):
         self.data_path = Path("data/licenses")
         self.data_path.mkdir(parents=True, exist_ok=True)
+        # --- 引入缓存 ---
+        self._cache: dict[int, LicenseConfig] = {}
 
     def _get_user_file(self, user_id: int) -> Path:
         return self.data_path / f"{user_id}.json"
 
     def get_config(self, user_id: int) -> LicenseConfig:
-        """获取用户的配置，如果不存在则返回默认配置"""
+        """
+        获取用户的配置。优先从缓存读取，否则从文件加载。
+        这是获取用户配置的唯一入口。
+        """
+        # 1. 查缓存
+        if user_id in self._cache:
+            return self._cache[user_id]
+
+        # 2. 缓存未命中，从文件加载
         user_file = self._get_user_file(user_id)
         if not user_file.exists():
-            return LicenseConfig(user_id)
-        try:
-            with user_file.open('r', encoding='utf-8') as f:
-                data = json.load(f)
-            return LicenseConfig(user_id, data)
-        except (json.JSONDecodeError, IOError):
-            # 文件损坏或读取错误，返回默认值
-            return LicenseConfig(user_id)
+            # 文件不存在，创建新的默认配置
+            config = LicenseConfig(user_id)
+        else:
+            try:
+                with user_file.open('r', encoding='utf-8') as f:
+                    data = json.load(f)
+                config = LicenseConfig(user_id, data)
+            except (json.JSONDecodeError, IOError):
+                # 文件损坏，使用默认配置
+                config = LicenseConfig(user_id)
+
+        # 3. 存入缓存
+        self._cache[user_id] = config
+        return config
 
     def save_config(self, config: LicenseConfig):
-        """保存用户的配置"""
+        """
+        保存用户的配置到文件，并更新缓存。
+        """
         user_file = self._get_user_file(config.user_id)
         data = {
             "bot_enabled": config.bot_enabled,
@@ -125,57 +208,84 @@ class LicenseDB:
         with user_file.open('w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
 
+        # --- 关键：同时更新缓存 ---
+        self._cache[config.user_id] = config
+
+    def delete_config(self, user_id: int):
+        """
+        删除用户的配置文件和缓存。
+        """
+        # 1. 删除文件
+        user_file = self._get_user_file(user_id)
+        if user_file.exists():
+            try:
+                user_file.unlink()
+            except OSError as e:
+                # 可以选择在这里打日志或抛出异常
+                print(f"Error deleting file {user_file}: {e}")
+                # 即使文件删除失败，我们依然尝试清理缓存
+
+        # 2. --- 关键：从缓存中移除 ---
+        if user_id in self._cache:
+            del self._cache[user_id]
+
 
 # --- 交互界面 (Modals & Views) ---
 
 class LicenseEditHubView(ui.View):
-    """一个让用户选择如何编辑协议的“枢纽”视图"""
+    """枢纽视图（V3版：完全融入主界面替换模型）"""
 
-    def __init__(self, db: LicenseDB, config: LicenseConfig, ephemeral: bool, callback: callable):
+    def __init__(self, db: LicenseDB, config: LicenseConfig, callback: callable, on_cancel: callable):
         super().__init__(timeout=300)
         self.db = db
         self.config = config
-        self.ephemeral = ephemeral  # 决定消息是否为私密
-        self.callback = callback  # 操作完成后的回调函数
-
-    async def send(self, interaction: discord.Interaction):
-        """一个辅助方法，用于发送或编辑消息以显示此视图"""
-        content = "请选择你希望如何设置你的授权协议："
-        if self.ephemeral:
-            await interaction.response.send_message(content, view=self, ephemeral=True)
-        else:
-            await interaction.response.edit_message(content=content, view=self)
+        self.callback = callback  # 顶层回调，接收 (interaction, new_details)
+        self.on_cancel = on_cancel  # 顶层“取消”回调，接收 (interaction)
 
     @ui.button(label="📝 使用自定义文本填写", style=discord.ButtonStyle.primary, row=0)
     async def set_with_custom(self, interaction: discord.Interaction, button: ui.Button):
-        # 传递回调函数
+        # 弹出不响应的 Modal，并将顶层回调传给它
         modal = CustomLicenseEditModal(self.db, self.config, callback=self.callback)
         await interaction.response.send_modal(modal)
-        self.stop()
 
     @ui.button(label="📜 从CC协议模板中选择", style=discord.ButtonStyle.secondary, row=0)
     async def set_with_cc(self, interaction: discord.Interaction, button: ui.Button):
-        # 传递回调函数
+        # 准备下一个不响应的视图
         cc_view = CCLicenseSelectView(self.db, self.config, callback=self.callback)
-        await interaction.response.edit_message(content="请从下面的模板中选择一个CC协议：", view=cc_view)
-        self.stop()
+        # 关键：用 cc_view 替换当前枢纽视图，这是对按钮点击的响应
+        cc_select_content = (
+            "你正在选择一个标准的CC协议模板。\n\n"
+            "- 你选择的协议将**覆盖**你当前的授权设置。\n"
+            "- 你可以修改后续弹出的“署名要求”和“附加说明”，但这些不会改变CC协议的核心条款。\n"
+            "- 如果你想在CC协议的基础上做更多修改，请返回并选择“创建或编辑自定义协议”，然后手动输入你的条款。"
+        )
+        await interaction.response.edit_message(
+            content=cc_select_content,
+            view=cc_view
+        )
+
+    @ui.button(label="取消", style=discord.ButtonStyle.danger, row=1)
+    async def cancel(self, interaction: discord.Interaction, button: ui.Button):
+        # 直接调用顶层的“取消”回调
+        await self.on_cancel(interaction)
 
 
 class AttributionNotesModal(ui.Modal, title="填写署名与备注"):
     """一个只询问署名和备注的简单Modal"""
 
-    def __init__(self, default_attribution: str, default_notes: str):
+    def __init__(self, default_attribution: str, default_notes: str, final_callback: callable):
         super().__init__()
         self.attribution = ui.TextInput(label="署名要求", default=default_attribution)
         self.notes = ui.TextInput(label="附加说明 (可选)", default=default_notes if default_notes != "无" else "", required=False,
                                   style=discord.TextStyle.paragraph)
         self.add_item(self.attribution)
         self.add_item(self.notes)
+        self.submitted = False
+        self.final_callback = final_callback  # 直接接收最终的回调
 
     async def on_submit(self, interaction: discord.Interaction):
-        # 这个 modal 不直接保存，它只把结果返回给调用它的 View
-        await interaction.response.defer()  # 响应交互，但不发送任何消息
-        self.stop()
+        # 直接调用回调，把新鲜的 interaction 传出去
+        await self.final_callback(interaction, self.attribution.value, self.notes.value or "无")
 
 
 class CustomLicenseEditModal(ui.Modal, title="编辑自定义授权协议"):
@@ -202,16 +312,18 @@ class CustomLicenseEditModal(ui.Modal, title="编辑自定义授权协议"):
         self.add_item(self.notes)
 
     async def on_submit(self, interaction: discord.Interaction):
-        self.config.license_details = {
-            "type": "custom",
+        # 1. 构建数据
+        new_details = {
+            "type": "custom",  # 明确这是自定义协议
             "reproduce": self.reproduce.value,
             "derive": self.derive.value,
             "commercial": self.commercial.value,
             "attribution": self.attribution.value,
             "notes": self.notes.value or "无"
         }
-        self.db.save_config(self.config)
-        await self.callback(interaction, self.config.license_details)
+
+        # 2. 直接调用回调，把新鲜的 interaction 传出去
+        await self.callback(interaction, new_details)
 
 
 class CCLicenseSelectView(ui.View):
@@ -236,30 +348,50 @@ class CCLicenseSelectView(ui.View):
         selected_cc = interaction.data["values"][0]
         cc_data = CC_LICENSES[selected_cc]
 
-        # 弹出简单的 Modal 来获取署名和备注
+        # 定义一个“中介”回调函数，它负责组合数据
+        async def modal_submit_callback(modal_interaction, attribution, notes):
+            final_details = {
+                "type": selected_cc,
+                "reproduce": cc_data["reproduce"],
+                "derive": cc_data["derive"],
+                "commercial": cc_data["commercial"],
+                "attribution": attribution,
+                "notes": notes or "无"
+            }
+            # 调用最上层的回调
+            await self.callback(modal_interaction, final_details)
+
+        # 弹出 Modal，并把我们的“中介”回调传给它
         modal = AttributionNotesModal(
-            default_attribution=self.config.license_details.get("attribution", f"<@{self.config.user_id}>"),
-            default_notes=self.config.license_details.get("notes", "无")
+            default_attribution=self.config.license_details.get("attribution", f"<@{interaction.user.id}>"),
+            default_notes=self.config.license_details.get("notes", "无"),
+            final_callback=modal_submit_callback
         )
         await interaction.response.send_modal(modal)
-        await modal.wait()
 
-        # Modal 提交后，组合所有数据并保存
-        self.config.license_details = {
-            "type": selected_cc,
-            "reproduce": cc_data["reproduce"],
-            "derive": cc_data["derive"],
-            "commercial": cc_data["commercial"],
-            "attribution": modal.attribution.value,
-            "notes": modal.notes.value or "无"
-        }
-        self.db.save_config(self.config)
 
-        # 调用回调而不是直接保存
-        await self.callback(interaction, self.config.license_details)
-        # 清理选择界面
-        await interaction.edit_original_response(content=f"已选择协议：**{selected_cc}**，正在处理...", view=None)
-        self.stop()
+class ConfirmPostView(ui.View):
+    """一个简单的、只用于在主界面进行确认的视图"""
+
+    def __init__(self, author_id: int, on_confirm: callable, on_cancel: callable):
+        super().__init__(timeout=300)
+        self.author_id = author_id
+        self.on_confirm = on_confirm
+        self.on_cancel = on_cancel
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("❌ 这不是你的确认按钮哦。", ephemeral=True)
+            return False
+        return True
+
+    @ui.button(label="✅ 确认发布", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, button: ui.Button):
+        await self.on_confirm(interaction)
+
+    @ui.button(label="❌ 返回", style=discord.ButtonStyle.danger)
+    async def cancel(self, interaction: discord.Interaction, button: ui.Button):
+        await self.on_cancel(interaction)
 
 
 class CustomConfirmView(ui.View):
@@ -291,14 +423,27 @@ class CustomConfirmView(ui.View):
 
 
 class InitialActionView(ui.View):
-    """在新帖下询问作者操作的视图（功能增强版）"""
-
-    def __init__(self, db: LicenseDB, config: LicenseConfig, thread: discord.Thread):
+    def __init__(self, cog: 'LicenseCog', db: LicenseDB, config: LicenseConfig, thread: discord.Thread):
         super().__init__(timeout=3600)
+        self.cog = cog
         self.db = db
         self.config = config
         self.thread = thread
         self.owner_id = thread.owner_id
+        # 保存原始embed，以便随时可以“返回”
+        self.original_embed = self.build_original_embed()
+
+    def build_original_embed(self) -> discord.Embed:
+        """构建主界面的Embed"""
+        embed = discord.Embed(
+            title=f"👋 你好, {self.cog.bot.get_user(self.owner_id).display_name}！",
+            description="我注意到你发布了一个新作品。你希望如何处理内容的授权协议呢？",
+            color=discord.Color.blue()
+        )
+        cmd_name = ACTIVE_COMMAND_CONFIG["group"]["name"]
+        cmd_name_remind = ACTIVE_COMMAND_CONFIG["remind"]["name"]
+        embed.set_footer(text=f"{HELPER_SIGNATURE} | 如果按钮失效，请使用 /{cmd_name} {cmd_name_remind}")
+        return embed
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.owner_id:
@@ -314,69 +459,130 @@ class InitialActionView(ui.View):
         await interaction.followup.send("✅ 你的默认协议已永久更新！", ephemeral=True)
         # 如果这是在主助手消息上操作的，可以考虑刷新它，但对于私密消息来说，这就足够了。
 
-    async def _post_once_callback(self, interaction: discord.Interaction, new_details: dict):
-        """回调：用于一次性发布协议"""
-        # 创建一个临时的 config 对象来构建 embed
-        temp_config = LicenseConfig(self.config.user_id)
-        temp_config.license_details = new_details
+    # --- 核心：统一的确认流程 ---
+    async def show_confirmation_view(self, interaction: discord.Interaction, config_to_show: LicenseConfig):
+        """
+        在主界面上显示预览和确认按钮。
+        :param interaction: 触发此流程的交互。
+        :param config_to_show: 要预览和发布的配置。
+        """
+        final_embed = build_license_embed(config_to_show, interaction.user)
+        preview_embed = final_embed.copy()
+        preview_embed.title = f"🔍 预览：{preview_embed.title}"
+        preview_embed.description = "**请预览你将要发布的协议。**\n确认后将发布到帖子中，并关闭此面板。"
 
-        temp_license_embed = build_license_embed(temp_config, interaction.user)
-        await self.thread.send(embed=temp_license_embed)
+        # 定义确认和取消的行为
+        async def do_post(post_interaction: discord.Interaction):
+            await self.thread.send(embed=final_embed)
+            await post_interaction.response.edit_message(
+                content="✅ 协议已发布。", embed=None, view=None
+            )
+            self.stop()
 
-        # 更新原始助手消息，告知操作完成
-        # 注意：这里我们不能用 interaction.edit_original_response，因为它编辑的是枢纽视图的消息。
-        # 我们需要找到原始的助手消息并编辑它。但这会让逻辑变得复杂。
-        # 一个更简单的做法是，直接在频道里发送一个确认消息。
-        await self.thread.send(f"✅ {interaction.user.mention}，你的一次性协议已发布。你的默认协议未被更改。")
+        async def do_cancel(cancel_interaction: discord.Interaction):
+            # 取消就直接调用返回主菜单的方法
+            await self.back_to_main_menu(cancel_interaction)
 
-        # 同时，在私密消息流中给用户一个最终确认
-        if not interaction.response.is_done():
-            await interaction.response.edit_message(content="✅ 操作完成！", view=None)
-        else:
-            await interaction.followup.send("✅ 操作完成！", ephemeral=True)
+        # 创建并显示确认视图
+        confirm_view = ConfirmPostView(
+            author_id=interaction.user.id,
+            on_confirm=do_post,
+            on_cancel=do_cancel
+        )
 
+        # 因为我们保证了传入的 interaction 总是“新鲜的”，所以可以直接响应
+        await interaction.response.edit_message(embed=preview_embed, view=confirm_view)
+
+    # --- “返回主菜单”的逻辑 ---
+    async def back_to_main_menu(self, interaction: discord.Interaction):
+        """
+        一个可复用的方法，用于将UI完全恢复到初始状态。
+        """
+        # 确保 self.original_embed 是最新的
+        if not self.original_embed:
+            self.original_embed = self.build_original_embed()
+
+        # --- 核心修改：明确地将 content 设为 None ---
+        await interaction.response.edit_message(
+            content=None,  # <-- 关键！清除掉所有可能存在的上层文本。
+            embed=self.original_embed,
+            view=self
+        )
+
+    # --- 发布默认协议 ---
     @ui.button(label="发布默认协议", style=discord.ButtonStyle.success, row=0)
     async def post_default(self, interaction: discord.Interaction, button: ui.Button):
-        # ... (此部分代码与你上一版“造轮子”的方案完全相同，此处省略以节省空间) ...
-        # ... (核心逻辑是：显示预览 -> 使用CustomConfirmView -> 根据结果发布或返回) ...
-        original_embed = interaction.message.embeds[0]
-        license_embed = build_license_embed(self.config, interaction.user)
-        preview_embed = license_embed.copy()
-        preview_embed.title = "🔍 协议预览与确认"
-        preview_embed.description = "**你确定要以以下协议发布吗？**\n\n(此为预览，确认后将公开发布)"
-        confirmation_view = CustomConfirmView(author=interaction.user, timeout=120)
-        await interaction.response.edit_message(embed=preview_embed, view=confirmation_view)
-        await confirmation_view.wait()
-        if confirmation_view.value is True:
-            await interaction.edit_original_response(content="✅ 已确认，协议已发布。", embed=None, view=None)
-            await self.thread.send(embed=license_embed)
-            self.stop()
-        else:
-            await interaction.edit_original_response(embed=original_embed, view=self)
+        await self.show_confirmation_view(interaction, self.config)
 
+    # --- 编辑并发布(仅本次) ---
+    # --- “一次性发布”按钮 ---
     @ui.button(label="编辑并发布(仅本次)", style=discord.ButtonStyle.primary, row=0)
     async def edit_and_post_once(self, interaction: discord.Interaction, button: ui.Button):
-        """核心新功能：一次性编辑并发布"""
-        hub_view = LicenseEditHubView(
-            db=self.db,
-            config=self.config,
-            ephemeral=True,
-            callback=self._post_once_callback  # 传入“一次性发布”的回调
-        )
-        await hub_view.send(interaction)
-        # 这里的交互是临时的，不影响主视图
-        # 主视图 (InitialActionView) 会继续等待操作
+        # 定义编辑完成后的行为：进入确认流程
+        async def on_edit_complete(edit_interaction: discord.Interaction, temp_details: dict):
+            temp_config = LicenseConfig(self.owner_id)
+            temp_config.license_details = temp_details
+            await self.show_confirmation_view(edit_interaction, temp_config)
 
+        # 定义取消编辑的行为：返回主菜单
+        async def on_edit_cancel(cancel_interaction: discord.Interaction):
+            await self.back_to_main_menu(cancel_interaction)
+
+        # 创建枢纽视图，把行为传进去
+        hub_view = LicenseEditHubView(
+            db=self.db, config=self.config,
+            callback=on_edit_complete,
+            on_cancel=on_edit_cancel
+        )
+
+        # 用枢纽视图替换主菜单视图
+        await interaction.response.edit_message(
+            content=(
+                "你正在为你**本次发布**编辑一个临时协议。\n"
+                "这个操作**不会**更改你保存的默认协议。\n"
+                f"{HUB_VIEW_CONTENT}"
+            ),
+            embed=None,  # 清理掉主菜单的embed
+            view=hub_view
+        )
+
+    # --- “永久编辑”按钮 ---
     @ui.button(label="永久编辑默认协议", style=discord.ButtonStyle.secondary, row=1)
     async def edit_default_license(self, interaction: discord.Interaction, button: ui.Button):
+        # 定义编辑完成后的行为：保存并返回主菜单
+        async def on_edit_complete(edit_interaction: discord.Interaction, new_details: dict):
+            # 1. 保存数据
+            self.config.license_details = new_details
+            self.db.save_config(self.config)
+
+            # 2. 更新主菜单的Embed以反映变化 (可选但推荐)
+            self.original_embed = self.build_original_embed()  # 也许这里可以加个“已保存”的提示
+
+            # 3. 返回主菜单，并给一个私密确认消息
+            await self.back_to_main_menu(edit_interaction)
+            await edit_interaction.followup.send("✅ 你的默认协议已永久保存！", ephemeral=True)
+
+        # 定义取消编辑的行为：返回主菜单
+        async def on_edit_cancel(cancel_interaction: discord.Interaction):
+            await self.back_to_main_menu(cancel_interaction)
+
+        # 创建枢纽视图
         hub_view = LicenseEditHubView(
-            db=self.db,
-            config=self.config,
-            ephemeral=True,
-            callback=self._save_and_confirm_callback  # 传入“永久保存”的回调
+            db=self.db, config=self.config,
+            callback=on_edit_complete,
+            on_cancel=on_edit_cancel
         )
-        await hub_view.send(interaction)
-        # 同样是临时交互
+
+        # 用枢纽视图替换主菜单视图
+        await interaction.response.edit_message(
+            content=(
+                "你正在**永久编辑**你的默认协议。\n"
+                "保存后，这将成为你未来的默认设置。\n"
+                f"{HUB_VIEW_CONTENT}"
+            ),
+            embed=None,
+            view=hub_view
+        )
 
     # --- 新增的按钮 ---
     @ui.button(label="预览协议", style=discord.ButtonStyle.primary, row=0)
@@ -397,13 +603,21 @@ class InitialActionView(ui.View):
 
     @ui.button(label="机器人设置", style=discord.ButtonStyle.secondary, row=1)
     async def settings(self, interaction: discord.Interaction, button: ui.Button):
-        # 跳转到增强版的设置视图
-        view = SettingsView(db=self.db, config=self.config)
-        await view.send(interaction)
+        # 这里的逻辑和斜杠命令完全一样
+        config = self.db.get_config(interaction.user.id)
+        view = SettingsView(self.db, config, self.cog)  # 传入 self.cog
+
+        embed = discord.Embed(
+            title="⚙️ 机器人设置",
+            description="在这里管理授权助手的所有行为。\n完成后，点击下方的“关闭面板”即可。",
+            color=discord.Color.blurple()
+        )
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     @ui.button(label="本次跳过", style=discord.ButtonStyle.secondary, row=1)
     async def skip_for_now(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.edit_message(content="好的，你随时可以通过 `/license` 命令来设置你的授权协议。", view=None)
+        cmd_name = ACTIVE_COMMAND_CONFIG["group"]["name"]
+        await interaction.response.edit_message(content=f"好的，你随时可以通过 `/{cmd_name}` 命令来设置你的授权协议。", view=None)
         self.stop()
 
     @ui.button(label="别再打扰我", style=discord.ButtonStyle.danger, row=1)
@@ -412,8 +626,10 @@ class InitialActionView(ui.View):
         config = self.db.get_config(self.owner_id)
         config.bot_enabled = False
         self.db.save_config(config)
+        cmd_name = ACTIVE_COMMAND_CONFIG["group"]["name"]
+        cmd_name_setting = ACTIVE_COMMAND_CONFIG["settings"]["name"]
         await interaction.response.edit_message(
-            content="好的，我以后不会再主动打扰你了。\n你可以随时使用 `/license settings` 命令重新启用我。",
+            content=f"好的，我以后不会再主动打扰你了。\n你可以随时使用 `/{cmd_name} {cmd_name_setting}` 命令重新启用我。",
             view=None
         )
         self.stop()
@@ -465,108 +681,153 @@ class PostLicenseView(ui.View):
 
 
 class SettingsView(ui.View):
-    """机器人行为设置视图（功能增强版）"""
+    """机器人行为设置视图（V3版：优雅的独立面板）"""
 
-    def __init__(self, db: LicenseDB, config: LicenseConfig):
-        super().__init__(timeout=300)
+    def __init__(self, db: 'LicenseDB', config: 'LicenseConfig', cog: 'LicenseCog'):
+        super().__init__(timeout=600)  # 延长超时时间
         self.db = db
         self.config = config
-        self.update_buttons()
+        self.cog = cog  # 需要 cog 来调用保存回调
+        self.update_button_labels()
 
-    def update_buttons(self):
+    def update_button_labels(self):
         """根据当前配置更新按钮标签"""
         self.toggle_auto_post_button.label = f"自动发布: {'✅' if self.config.auto_post else '❌'}"
         self.toggle_bot_enabled_button.label = f"机器人总开关: {'✅' if self.config.bot_enabled else '❌'}"
         self.toggle_confirmation_button.label = f"发布前二次确认: {'✅' if self.config.require_confirmation else '❌'}"
 
-    async def send(self, interaction: discord.Interaction):
-        """一个辅助方法，用于发送或编辑消息以显示此视图"""
-        embed = discord.Embed(
-            title="⚙️ 机器人设置",
-            description="在这里管理授权助手的所有行为。",
-            color=discord.Color.blurple()
-        )
-        # 如果是首次发送，就用 send_message，否则用 edit_message
-        if interaction.response.is_done():
-            await interaction.edit_original_response(embed=embed, view=self)
-        else:
-            await interaction.response.send_message(embed=embed, view=self, ephemeral=True)
-
+    # --- 开关按钮的逻辑：原地刷新 ---
     @ui.button(label="切换自动发布", style=discord.ButtonStyle.primary, row=0)
     async def toggle_auto_post_button(self, interaction: discord.Interaction, button: ui.Button):
         self.config.auto_post = not self.config.auto_post
         self.db.save_config(self.config)
-        self.update_buttons()
-        await self.send(interaction)
+        self.update_button_labels()
+        # 响应交互，并用更新后的自己重新渲染视图
+        await interaction.response.edit_message(view=self)
 
-    @ui.button(label="切换机器人启用状态", style=discord.ButtonStyle.primary, row=0)
+    @ui.button(label="切换机器人总开关", style=discord.ButtonStyle.primary, row=0)
     async def toggle_bot_enabled_button(self, interaction: discord.Interaction, button: ui.Button):
         self.config.bot_enabled = not self.config.bot_enabled
         self.db.save_config(self.config)
-        self.update_buttons()
-        await self.send(interaction)
+        self.update_button_labels()
+        await interaction.response.edit_message(view=self)
 
-    @ui.button(label="切换二次确认", style=discord.ButtonStyle.primary, row=1)
+    @ui.button(label="切换发布前二次确认", style=discord.ButtonStyle.primary, row=1)
     async def toggle_confirmation_button(self, interaction: discord.Interaction, button: ui.Button):
         self.config.require_confirmation = not self.config.require_confirmation
         self.db.save_config(self.config)
-        self.update_buttons()
-        await self.send(interaction)
+        self.update_button_labels()
+        await interaction.response.edit_message(view=self)
 
-    # --- 危险操作区域 ---
+    # --- 危险操作的逻辑：发起独立的确认流程 ---
     @ui.button(label="重置我的协议", style=discord.ButtonStyle.danger, row=2)
     async def reset_license(self, interaction: discord.Interaction, button: ui.Button):
-        confirm_view = CustomConfirmView(author=interaction.user)
-        await interaction.response.edit_message(
-            content="**⚠️ 警告：** 此操作会将你的默认协议恢复为社区初始设置，此前的自定义内容将丢失！\n请确认你的操作：",
-            embed=None,
-            view=confirm_view
-        )
-        await confirm_view.wait()
-        if confirm_view.value:
+        async def on_confirm(confirm_interaction: discord.Interaction):
+            # 确认后，执行重置操作
             self.config.license_details = get_default_license_details(self.config.user_id)
             self.db.save_config(self.config)
-            await interaction.edit_original_response(content="✅ 你的授权协议已重置为默认值。", view=None)
-        else:
-            await self.send(interaction)  # 取消则返回设置主界面
+            await confirm_interaction.response.edit_message(content="✅ 你的授权协议已重置为默认值。", view=None)
+
+        async def on_cancel(cancel_interaction: discord.Interaction):
+            await cancel_interaction.response.edit_message(content="🚫 操作已取消。", view=None)
+
+        # 发起一个独立的、临时的确认流程
+        confirm_view = ConfirmPostView(interaction.user.id, on_confirm, on_cancel)
+        await interaction.response.send_message(
+            "**⚠️ 警告：** 此操作会将你的默认协议恢复为初始设置！\n请确认你的操作：",
+            view=confirm_view,
+            ephemeral=True
+        )
 
     @ui.button(label="删除所有数据", style=discord.ButtonStyle.danger, row=2)
     async def delete_data(self, interaction: discord.Interaction, button: ui.Button):
-        confirm_view = CustomConfirmView(author=interaction.user)
-        await interaction.response.edit_message(
-            content="**🚨 终极警告：** 此操作将**永久删除**你保存在本机器人中的所有数据（包括协议和所有设置）！\n此操作无法撤销！**请再次确认！**",
-            embed=None,
-            view=confirm_view
+        """发起一个独立的、用于确认删除所有用户数据的流程"""
+
+        # 1. 定义确认后的操作
+        async def on_confirm(confirm_interaction: discord.Interaction):
+            # a. 执行真正的删除操作
+            try:
+                self.db.delete_config(self.config.user_id)
+            except OSError as e:
+                # 如果删除失败，给出错误提示
+                if self.cog.logger:
+                    self.cog.logger.error(f"删除用户数据文件失败: {self.config.user_id}, 错误: {e}")
+                await confirm_interaction.response.edit_message(
+                    content=f"❌ 删除数据时发生错误！请联系管理员。错误详情: `{e}`",
+                    view=None
+                )
+                return
+
+            # b. 成功后，更新确认消息
+            await confirm_interaction.response.edit_message(
+                content="🗑️ **你的所有数据已被永久删除。**\n下次你发布作品时，我将会像初次见面一样与你打招呼。",
+                view=None
+            )
+
+            # c. 既然数据都没了，设置面板也应该关闭
+            #    我们尝试删除原始的设置面板消息
+            try:
+                # interaction 是 SettingsView 的交互，不是 confirm_interaction
+                await interaction.delete_original_response()
+            except discord.NotFound:
+                pass  # 如果找不到了就算了
+
+            # d. 停止当前 SettingsView 的生命周期
+            self.stop()
+
+        # 2. 定义取消后的操作
+        async def on_cancel(cancel_interaction: discord.Interaction):
+            await cancel_interaction.response.edit_message(content="🚫 操作已取消，你的数据安然无恙。", view=None)
+
+        # 3. 创建并发送独立的确认视图
+        #    我们使用之前创建的 ConfirmPostView，因为它正好符合我们的需求
+        confirm_view = ConfirmPostView(interaction.user.id, on_confirm, on_cancel)
+
+        # 这里的警告信息必须非常强烈
+        await interaction.response.send_message(
+            "**🚨 终极警告：此操作不可逆！🚨**\n\n"
+            "你确定要**永久删除**你保存在本机器人中的所有数据吗？这包括：\n"
+            "- 你保存的默认授权协议\n"
+            "- 所有的机器人行为设置\n\n"
+            "**此操作无法撤销！请再次确认！**",
+            view=confirm_view,
+            ephemeral=True
         )
-        await confirm_view.wait()
-        if confirm_view.value:
-            user_file = self.db._get_user_file(self.config.user_id)
-            if user_file.exists():
-                user_file.unlink()  # 使用 pathlib 删除文件
-            await interaction.edit_original_response(content="🗑️ 你的所有数据已被永久删除。", view=None)
-        else:
-            await self.send(interaction)  # 取消则返回设置主界面
+
+    # --- 新增的关闭按钮 ---
+    @ui.button(label="关闭面板", style=discord.ButtonStyle.secondary, row=3)
+    async def close_panel(self, interaction: discord.Interaction, button: ui.Button):
+        """直接删除这个设置面板消息"""
+        await interaction.response.defer()  # 先响应，防止超时
+        await interaction.delete_original_response()
+        self.stop()
 
 
 # --- 辅助函数 ---
 def build_license_embed(config: LicenseConfig, author: discord.User) -> discord.Embed:
-    """根据配置构建授权协议的Embed（V3版：实时获取CC协议条款）"""
+    """根据配置构建授权协议的Embed（V4版：读取时强制覆盖CC协议）"""
 
-    # 这是一个临时的、完整的协议详情字典，用于本次展示
-    display_details = config.license_details.copy()
-    license_type = display_details.get("type", "custom")
+    # 从数据库获取原始的、用户保存的详情
+    saved_details = config.license_details
+    license_type = saved_details.get("type", "custom")
 
-    # --- 核心修改在这里 ---
-    if license_type != "custom" and license_type in CC_LICENSES:
-        # 如果是CC协议，从常量中实时加载标准条款
-        cc_standard_terms = CC_LICENSES[license_type]
+    # 创建一个用于展示的字典副本，这是我们将要操作的对象
+    display_details = saved_details.copy()
 
-        # 使用 update() 方法，将标准条款合并到我们的展示用字典中
-        # 这会添加 "reproduce", "derive", "commercial", "url" 等字段
-        # 同时会保留数据库中已有的 "attribution" 和 "notes"
-        display_details.update(cc_standard_terms)
+    # --- 核心安全阀逻辑 ---
+    if license_type in CC_LICENSES:
+        # 检测到是CC协议，强制用常量覆盖核心条款
+        standard_terms = CC_LICENSES[license_type]
+        display_details["reproduce"] = standard_terms["reproduce"]
+        display_details["derive"] = standard_terms["derive"]
+        display_details["commercial"] = standard_terms["commercial"]
+        display_details["url"] = standard_terms["url"]  # 确保URL也是正确的
+    else:
+        # 如果不是CC协议，确保类型被正确标记为 'custom' 以免混淆
+        license_type = "custom"
+        display_details["type"] = "custom"
 
-    # 从这里开始，后续代码完全不需要改变，因为 display_details 已经是完整的了
+    # --- 后续的Embed构建代码与之前版本完全一致 ---
 
     embed = discord.Embed(
         title=f"📜 {author.display_name} 的内容授权协议",
@@ -574,13 +835,20 @@ def build_license_embed(config: LicenseConfig, author: discord.User) -> discord.
     )
     embed.set_thumbnail(url=author.display_avatar.url)
 
-    if license_type != "custom" and license_type in CC_LICENSES:
+    if license_type != "custom":  # 这里使用净化后的 license_type
         embed.add_field(
             name="📄 协议类型 (License Type)",
             value=f"**[{license_type}]({display_details['url']})**",
             inline=False
         )
         embed.description = f"本内容采用 **{license_type}** 国际许可协议进行许可。点击上方链接查看完整协议。"
+    else:
+        # 为自定义协议也添加一个类型字段
+        embed.add_field(
+            name="📄 协议类型 (License Type)",
+            value="**自定义协议 (Custom License)**",
+            inline=False
+        )
 
     embed.add_field(name="🔁 转载", value=display_details.get("reproduce", "未设置"), inline=True)
     embed.add_field(name="🎨 衍生创作", value=display_details.get("derive", "未设置"), inline=True)
@@ -590,21 +858,21 @@ def build_license_embed(config: LicenseConfig, author: discord.User) -> discord.
     notes = display_details.get("notes")
     if notes and notes != "无":
         embed.add_field(name="📝 附加说明", value=notes, inline=False)
-
-    embed.set_footer(text=f"该协议由作者设置 | 使用 /license 命令管理你的协议")
+    cmd_name = ACTIVE_COMMAND_CONFIG["group"]["name"]
+    embed.set_footer(text=f"该协议由作者设置 | 使用 /{cmd_name} 命令管理你的协议")
 
     return embed
 
 
 class FirstTimeSetupView(ui.View):
-    """引导新用户首次创建协议的视图"""
+    """引导新用户首次创建协议的视图（V3版：融入统一架构）"""
 
-    def __init__(self, cog: 'LicenseCog', db: LicenseDB, owner_id: int, thread: discord.Thread):
-        super().__init__(timeout=3600)  # 1小时后失效
+    def __init__(self, cog: 'LicenseCog', db: 'LicenseDB', owner_id: int, thread: discord.Thread):
+        super().__init__(timeout=3600)
+        self.cog = cog
         self.db = db
         self.owner_id = owner_id
         self.thread = thread
-        self.cog = cog  # 存储对主 Cog 的引用
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.owner_id:
@@ -612,58 +880,72 @@ class FirstTimeSetupView(ui.View):
             return False
         return True
 
-    async def _first_time_save_callback(self, interaction: discord.Interaction, new_details: dict):
-        """专门为新用户设计的、保存并过渡到主界面的回调。"""
-        # 1. 调用 Cog 的标准保存方法来处理数据存储
-        await self.cog._save_and_confirm_callback(interaction, self.owner_id, new_details)
-
-        # 2. 刷新主界面，进入标准模式
-        #    这里的 interaction 是从编辑流程中传回来的，我们需要用它来编辑最开始的那个“欢迎”消息
-        #    幸运的是，interaction.message 指向的就是那个消息！
-        new_config = self.db.get_config(self.owner_id)
-        main_view = InitialActionView(self.db, new_config, self.thread)
-
-        embed = discord.Embed(
-            title=f"✅ 协议已创建！你好, {interaction.user.display_name}！",
-            description="你的默认协议已保存。现在，你希望如何处理这个帖子的授权呢？",
-            color=discord.Color.green()
-        )
-        embed.set_footer(text=f"{self.cog.HELPER_SIGNATURE} | 你已进入标准操作模式")
-
-        await interaction.message.edit(content=None, embed=embed, view=main_view)
-
+    # --- “创建协议”按钮 ---
     @ui.button(label="✨ 创建我的授权协议", style=discord.ButtonStyle.success)
     async def create_license(self, interaction: discord.Interaction, button: ui.Button):
         config = self.db.get_config(self.owner_id)
 
-        # 将我们专为新用户设计的的回调传递下去
+        # 1. 定义创建完成后的行为：保存数据，然后用标准的 InitialActionView 替换当前界面
+        async def on_create_complete(create_interaction: discord.Interaction, new_details: dict):
+            # a. 保存数据
+            config.license_details = new_details
+            self.db.save_config(config)
+
+            # b. 创建标准的 InitialActionView
+            main_view = InitialActionView(self.cog, self.db, config, self.thread)
+
+            # c. 用主界面替换当前的“欢迎”界面
+            await create_interaction.response.edit_message(
+                content=None,  # 清理掉之前的文字
+                embed=main_view.original_embed,
+                view=main_view
+            )
+            # 在这里，FirstTimeSetupView 的使命结束，main_view 接管
+
+        # 2. 定义取消创建的行为：什么都不做，让用户留在“欢迎”界面
+        async def on_create_cancel(cancel_interaction: discord.Interaction):
+            # 用欢迎界面替换掉枢纽视图界面
+            await cancel_interaction.response.edit_message(
+                embed=interaction.message.embeds[0], view=self
+            )
+
+        # 3. 创建枢纽视图
         hub_view = LicenseEditHubView(
-            db=self.db,
-            config=config,
-            callback=self._first_time_save_callback,
-            ephemeral=False
+            db=self.db, config=config,
+            callback=on_create_complete,
+            on_cancel=on_create_cancel
         )
 
-        # 使用 hub_view 的 send 方法来编辑当前消息
-        await hub_view.send(interaction)
+        # 4. 用枢纽视图替换当前的“欢迎”界面
+        await interaction.response.edit_message(
+            content=(
+                "太棒了！请创建你的第一份默认协议。\n"
+                "这将成为你未来发布作品时的默认设置。"
+            ),
+            embed=None,
+            view=hub_view
+        )
 
-        # hub_view 和它的回调会处理后续所有事情，所以这里不用再 wait 了
-        self.stop()
-
-    @ui.button(label="本次跳过", style=discord.ButtonStyle.secondary, row=0)
+    # --- 其他按钮的逻辑现在也变得清晰 ---
+    @ui.button(label="本次跳过", style=discord.ButtonStyle.secondary)
     async def skip_for_now(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.edit_message(content="好的，你随时可以通过 `/license` 命令来设置你的授权协议。", view=None)
+        cmd_name = ACTIVE_COMMAND_CONFIG["group"]["name"]
+        await interaction.response.edit_message(
+            content=f"好的，你随时可以通过 `/{cmd_name}` 命令来设置你的授权协议。",
+            embed=None, view=None
+        )
         self.stop()
 
-    @ui.button(label="别再打扰我", style=discord.ButtonStyle.danger, row=0)
+    @ui.button(label="别再打扰我", style=discord.ButtonStyle.danger, row=1)
     async def disable_bot(self, interaction: discord.Interaction, button: ui.Button):
-        """禁用机器人功能"""
         config = self.db.get_config(self.owner_id)
         config.bot_enabled = False
         self.db.save_config(config)
+        cmd_name = ACTIVE_COMMAND_CONFIG["group"]["name"]
+        cmd_name_setting = ACTIVE_COMMAND_CONFIG["group"]["setting"]
         await interaction.response.edit_message(
-            content="好的，我以后不会再主动打扰你了。\n你可以随时使用 `/license settings` 命令重新启用我。",
-            view=None
+            content=f"好的，我以后不会再主动打扰你了。\n你可以随时使用 `/{cmd_name} {cmd_name_setting}` 命令重新启用我。",
+            embed=None, view=None
         )
         self.stop()
 
@@ -691,34 +973,21 @@ class LicenseCog(commands.Cog):
 
     async def _save_and_confirm_callback(self, interaction: discord.Interaction, user_id: int, new_details: dict):
         """
-        一个标准的回调函数，用于保存用户的协议配置并发送确认。（V2版：优化CC协议存储）
+        标准回调 V4版：简单保存，将所有校验逻辑交给 build_license_embed。
         """
         config = self.db.get_config(user_id)
-        license_type = new_details.get("type", "custom")
 
-        # --- 核心修改在这里 ---
-        if license_type != "custom" and license_type in CC_LICENSES:
-            # 对于CC协议，我们只存储类型、署名和备注。
-            # 其他所有条款（reproduce, derive, commercial）都将被舍弃，以保证纯洁性。
-            final_details_to_save = {
-                "type": license_type,
-                "attribution": new_details.get("attribution", f"<@{user_id}>"),
-                "notes": new_details.get("notes", "无")
-            }
-        else:
-            # 对于自定义协议，我们保存所有内容。
-            final_details_to_save = new_details
-            # 确保自定义协议的 type 字段是正确的
-            final_details_to_save["type"] = "custom"
-
-        # 更新配置并保存
-        config.license_details = final_details_to_save
+        # 直接保存前端构建好的完整协议详情
+        config.license_details = new_details
         self.db.save_config(config)
 
         # 后续的确认消息逻辑保持不变
         try:
+            # 使用 followup.send 以避免交互冲突
             await interaction.followup.send("✅ 你的默认协议已更新并保存！", ephemeral=True)
+            # 尝试清理原始消息
             if not interaction.is_expired():
+                # 这里编辑的是枢纽视图的消息
                 await interaction.edit_original_response(content="✅ 操作完成！", view=None)
         except discord.NotFound:
             pass
@@ -751,7 +1020,9 @@ class LicenseCog(commands.Cog):
         if not author: return
 
         user_config_file = self.db._get_user_file(author_id)
-        footer_text = f"{HELPER_SIGNATURE} | 如果按钮失效，请使用 /license remind"
+        cmd_name = ACTIVE_COMMAND_CONFIG["group"]["name"]
+        cmd_name_remind = ACTIVE_COMMAND_CONFIG["remind"]["name"]
+        footer_text = f"{HELPER_SIGNATURE} | 如果按钮失效，请使用 /{cmd_name} {cmd_name_remind}"
 
         if not user_config_file.exists():
             # 新用户流程
@@ -777,7 +1048,7 @@ class LicenseCog(commands.Cog):
                 color=discord.Color.blue()
             )
             embed.set_footer(text=footer_text)
-            view = InitialActionView(self.db, config, thread)
+            view = InitialActionView(self, self.db, config, thread)
             await thread.send(content=f"{author.mention}", embed=embed, view=view)
 
         # --- 重构：事件和命令现在只调用辅助方法 ---
@@ -792,9 +1063,15 @@ class LicenseCog(commands.Cog):
         await self._send_helper_message(thread)
 
     # --- 斜杠命令 ---
-    license_group = app_commands.Group(name="license", description="管理你的内容授权协议")
+    license_group = app_commands.Group(
+        name=ACTIVE_COMMAND_CONFIG["group"]["name"],
+        description=ACTIVE_COMMAND_CONFIG["group"]["description"]
+    )
 
-    @license_group.command(name="remind", description="在当前帖子中重新发送授权协议助手提醒")
+    @license_group.command(
+        name=ACTIVE_COMMAND_CONFIG["remind"]["name"],
+        description=ACTIVE_COMMAND_CONFIG["remind"]["description"]
+    )
     async def remind_me(self, interaction: discord.Interaction):
         """重新召唤协议助手。"""
         if not isinstance(interaction.channel, discord.Thread):
@@ -816,39 +1093,61 @@ class LicenseCog(commands.Cog):
         # 2. 重新发送
         await self._send_helper_message(thread)
 
-    @license_group.command(name="edit", description="创建或修改你的默认授权协议")
+    @license_group.command(
+        name=ACTIVE_COMMAND_CONFIG["edit"]["name"],
+        description=ACTIVE_COMMAND_CONFIG["edit"]["description"]
+    )
     async def edit_license(self, interaction: discord.Interaction):
         """打开授权协议编辑中心。"""
         config = self.db.get_config(interaction.user.id)
 
-        # 使用 functools.partial 来创建一个已经包含了 user_id 的新函数
-        save_callback = functools.partial(self._save_and_confirm_callback, user_id=interaction.user.id)
+        # 1. 定义编辑完成后的行为：只保存并发送一个确认消息
+        async def on_edit_complete(edit_interaction: discord.Interaction, new_details: dict):
+            # 调用标准的保存回调
+            await self._save_and_confirm_callback(edit_interaction, interaction.user.id, new_details)
 
-        # 关键：将创建好的回调函数传递下去
+        # 2. 定义取消编辑的行为：只清理UI
+        async def on_edit_cancel(cancel_interaction: discord.Interaction):
+            await cancel_interaction.response.edit_message(content="操作已取消。", view=None)
+
+        # 创建枢纽视图...
         hub_view = LicenseEditHubView(
-            db=self.db,
-            config=config,
-            # 这个是独立的私密消息，所以 ephemeral=True
-            # callback 使用我们刚刚创建的偏函数
-            callback=save_callback,
-            ephemeral=True
+            db=self.db, config=config,
+            callback=on_edit_complete,
+            on_cancel=on_edit_cancel
         )
 
-        await hub_view.send(interaction)  # send 方法现在需要自己处理 ephemeral
+        # --- 核心修改：明确使用 send_message ---
+        await interaction.response.send_message(
+            content=(
+                "你正在**永久编辑**你的默认协议。\n"
+                "保存后，这将成为你未来的默认设置。\n"
+                f"{HUB_VIEW_CONTENT}"
+            ),
+            view=hub_view,
+            ephemeral=True  # 确保是私密消息
+        )
 
-    @license_group.command(name="settings", description="配置授权助手机器人的行为")
+    @license_group.command(
+        name=ACTIVE_COMMAND_CONFIG["settings"]["name"],
+        description=ACTIVE_COMMAND_CONFIG["settings"]["description"]
+    )
     async def settings(self, interaction: discord.Interaction):
-        """配置机器人是自动发布还是每次询问"""
+        """发送一个独立的设置面板"""
         config = self.db.get_config(interaction.user.id)
-        view = SettingsView(self.db, config)
+        view = SettingsView(self.db, config, self)  # 把 cog 实例传进去
+
         embed = discord.Embed(
             title="⚙️ 机器人设置",
-            description="请选择你希望机器人如何为你工作。",
+            description="在这里管理授权助手的所有行为。\n完成后，点击下方的“关闭面板”即可。",
             color=discord.Color.blurple()
         )
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-    @license_group.command(name="show", description="查看你当前的默认授权协议")
+    @license_group.command(
+        name=ACTIVE_COMMAND_CONFIG["show"]["name"],
+        description=ACTIVE_COMMAND_CONFIG["show"]["description"]
+    )
     async def show_license(self, interaction: discord.Interaction):
         """显示你当前的默认协议"""
         config = self.db.get_config(interaction.user.id)
