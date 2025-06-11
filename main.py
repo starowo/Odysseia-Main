@@ -12,12 +12,13 @@ from dotenv import load_dotenv
 
 import src.thread_manage.cog as thread_manage
 import src.bot_manage.cog as bot_manage
-import src.admin.cog as admin
+# import src.admin.cog as admin
 import src.verify.cog as verify
 import src.misc.cog as misc
-import src.event.cog as event
+# import src.event.cog as event
 import src.anonymous_feedback.cog as anonymous_feedback
 import src.sync.cog as sync
+import src.license.cog as license_auto
 
 # 加载环境变量
 load_dotenv()
@@ -205,12 +206,12 @@ if CONFIG.get('logging', {}).get('enabled', False):
         _discord_handler.setLevel(level_map.get(level_str, logging.INFO))
 
 class OdysseiaBot(commands.Bot):
-    def __init__(self):
+    def __init__(self, **kwargs):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
         # 由于本机器人只使用斜杠命令，前缀设置为默认值即可
-        super().__init__(command_prefix='!', intents=intents)
+        super().__init__(command_prefix='!', intents=intents, **kwargs)
 
     async def on_ready(self):
         # 设置Discord日志处理器的bot引用
@@ -256,7 +257,17 @@ class OdysseiaBot(commands.Bot):
         if activity:
             await self.change_presence(activity=activity)
 
-bot = OdysseiaBot()
+# 从配置中获取代理
+proxy_url = CONFIG.get("proxy")
+
+# 根据是否有代理来初始化Bot
+if proxy_url:
+    logger.info(f"检测到代理配置，将通过 {proxy_url} 初始化机器人")
+    bot = OdysseiaBot(proxy=proxy_url)
+else:
+    logger.info("未配置代理，直接初始化机器人")
+    bot = OdysseiaBot()
+
 bot.logger = logger
 
 class CogManager:
@@ -268,12 +279,13 @@ class CogManager:
         self.cog_map: dict = {
             "thread_manage": thread_manage.ThreadSelfManage(bot),
             "bot_manage": bot_manage.BotManageCommands(bot),
-            "admin": admin.AdminCommands(bot),
+            # "admin": admin.AdminCommands(bot),
             "verify": verify.VerifyCommands(bot),
             "misc": misc.MiscCommands(bot),
-            "event": event.EventCommands(bot),
+            # "event": event.EventCommands(bot),
             "anonymous_feedback": anonymous_feedback.AnonymousFeedbackCog(bot),
-            "sync": sync.ServerSyncCommands(bot)
+            "sync": sync.ServerSyncCommands(bot),
+            "license": license_auto.LicenseCog(bot)
         }
     
     async def load_all_enabled(self):
