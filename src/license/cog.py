@@ -23,6 +23,7 @@ from discord.ext import commands
 from src.license.modals_and_views import *
 from src.license.ui_factory import prepare_edit_hub
 from src.license.utils import *
+from src.license.view_setting import SettingsView
 
 
 # --- 主 Cog 类 ---
