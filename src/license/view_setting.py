@@ -59,16 +59,16 @@ class SettingsView(ui.View):
         # 编辑原始消息，同时更新Embed和View
         await interaction.response.edit_message(embed=new_embed, view=self)
 
-    @ui.button(label="切换自动发布", style=discord.ButtonStyle.primary, row=0)
-    async def toggle_auto_post_button(self, interaction: discord.Interaction, button: ui.Button):
-        """切换“自动发布”选项。"""
-        self.config.auto_post = not self.config.auto_post
-        await self._update_view(interaction)
-
     @ui.button(label="切换机器人总开关", style=discord.ButtonStyle.primary, row=0)
     async def toggle_bot_enabled_button(self, interaction: discord.Interaction, button: ui.Button):
         """切换“机器人总开关”选项。"""
         self.config.bot_enabled = not self.config.bot_enabled
+        await self._update_view(interaction)
+
+    @ui.button(label="切换自动发布", style=discord.ButtonStyle.primary, row=0)
+    async def toggle_auto_post_button(self, interaction: discord.Interaction, button: ui.Button):
+        """切换“自动发布”选项。"""
+        self.config.auto_post = not self.config.auto_post
         await self._update_view(interaction)
 
     @ui.button(label="切换发布前二次确认", style=discord.ButtonStyle.primary, row=1)
@@ -106,12 +106,12 @@ class SettingsView(ui.View):
 
         async def on_confirm(confirm_interaction: discord.Interaction):
             # 执行真正的删除操作
-            # try:
-            #     self.db.delete_config(self.config.user_id)
-            # except OSError as e:
-            #     if self.cog.logger: self.cog.logger.error(f"删除用户数据文件失败: {self.config.user_id}, 错误: {e}")
-            #     await confirm_interaction.response.edit_message(content=f"❌ 删除数据时发生错误！请联系管理员。", view=None)
-            #     return
+            try:
+                self.db.delete_config(self.config.user_id)
+            except OSError as e:
+                if self.cog.logger: self.cog.logger.error(f"删除用户数据文件失败: {self.config.user_id}, 错误: {e}")
+                await confirm_interaction.response.edit_message(content=f"❌ 删除数据时发生错误！请联系管理员。", view=None)
+                return
 
             # 在确认面板上给出最终反馈
             cmd_name = ACTIVE_COMMAND_CONFIG["group"]["name"]
