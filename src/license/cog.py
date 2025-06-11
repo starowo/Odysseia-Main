@@ -442,7 +442,7 @@ class InitialActionView(ui.View):
         )
         cmd_name = ACTIVE_COMMAND_CONFIG["group"]["name"]
         cmd_name_remind = ACTIVE_COMMAND_CONFIG["remind"]["name"]
-        embed.set_footer(text=f"{HELPER_SIGNATURE} | 如果按钮失效，请使用 /{cmd_name} {cmd_name_remind}")
+        embed.set_footer(text=f"{HELPER_SIGNATURE} | 如果按钮失效，请使用 `/{cmd_name} {cmd_name_remind}`")
         return embed
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -859,7 +859,7 @@ def build_license_embed(config: LicenseConfig, author: discord.User) -> discord.
     if notes and notes != "无":
         embed.add_field(name="📝 附加说明", value=notes, inline=False)
     cmd_name = ACTIVE_COMMAND_CONFIG["group"]["name"]
-    embed.set_footer(text=f"该协议由作者设置 | 使用 /{cmd_name} 命令管理你的协议")
+    embed.set_footer(text=f"该协议由作者设置 | 使用 `/{cmd_name}` 命令管理你的协议")
 
     return embed
 
@@ -920,7 +920,8 @@ class FirstTimeSetupView(ui.View):
         await interaction.response.edit_message(
             content=(
                 "太棒了！请创建你的第一份默认协议。\n"
-                "这将成为你未来发布作品时的默认设置。"
+                "这将成为你未来发布作品时的默认设置。\n"
+                f"{HUB_VIEW_CONTENT}"
             ),
             embed=None,
             view=hub_view
@@ -942,7 +943,7 @@ class FirstTimeSetupView(ui.View):
         config.bot_enabled = False
         self.db.save_config(config)
         cmd_name = ACTIVE_COMMAND_CONFIG["group"]["name"]
-        cmd_name_setting = ACTIVE_COMMAND_CONFIG["group"]["setting"]
+        cmd_name_setting = ACTIVE_COMMAND_CONFIG["setting"]["name"]
         await interaction.response.edit_message(
             content=f"好的，我以后不会再主动打扰你了。\n你可以随时使用 `/{cmd_name} {cmd_name_setting}` 命令重新启用我。",
             embed=None, view=None
@@ -1022,7 +1023,7 @@ class LicenseCog(commands.Cog):
         user_config_file = self.db._get_user_file(author_id)
         cmd_name = ACTIVE_COMMAND_CONFIG["group"]["name"]
         cmd_name_remind = ACTIVE_COMMAND_CONFIG["remind"]["name"]
-        footer_text = f"{HELPER_SIGNATURE} | 如果按钮失效，请使用 /{cmd_name} {cmd_name_remind}"
+        footer_text = f"{HELPER_SIGNATURE} | 如果按钮失效，请使用 `/{cmd_name} {cmd_name_remind}`"
 
         if not user_config_file.exists():
             # 新用户流程
