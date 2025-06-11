@@ -17,8 +17,6 @@
 - 回调驱动逻辑：UI组件间的复杂流程通过传递回调函数 (callback) 来解耦和驱动，例如，一个视图完成其任务后，会调用传入的回调函数来触发下一步操作（如保存数据或切换到另一个视图）。
 """
 
-import asyncio
-
 from discord import app_commands
 from discord.ext import commands
 
@@ -126,7 +124,7 @@ class LicenseCog(commands.Cog):
                 self.logger.warning(f"侦察现有协议时出错 (HTTPException): {e}")
         return None
 
-    async def _save_and_confirm_callback(self, interaction: discord.Interaction, user_id: int, new_details: dict):
+    async def _save_and_confirm_callback(self, interaction: discord.Interaction, new_details: dict):
         """
         一个标准化的回调函数，用于处理从UI编辑流程中传来的数据。
         它的职责是：保存数据，并向用户发送操作成功的确认消息。
@@ -148,7 +146,7 @@ class LicenseCog(commands.Cog):
             if self.logger:
                 self.logger.warning(f"在_save_and_confirm_callback中发送确认消息时出错: {e}")
 
-    async def _cleanup_previous_helpers(self, thread: discord.Thread):
+    async def cleanup_previous_helpers(self, thread: discord.Thread):
         """
         清理指定帖子中所有由本机器人发送的、过时的交互面板。
         这在用户请求“重新发送提醒”时非常有用，可以避免界面混乱。
@@ -279,10 +277,12 @@ class LicenseCog(commands.Cog):
         existing_license = await self._find_existing_license_message(thread)
 
         # 2. 清理旧的 *交互式* 面板
-        await self._cleanup_previous_helpers(thread)
+        await self.cleanup_previous_helpers(thread)
 
         # 3. 根据侦察结果，调用带有正确情景参数的核心发送逻辑
         await self._send_helper_message(thread, is_reauthorization=(existing_license is not None))
+
+        await safe_delete_original_response(interaction, 2)
 
     @license_group.command(
         name=ACTIVE_COMMAND_CONFIG["edit"]["name"],
@@ -295,7 +295,7 @@ class LicenseCog(commands.Cog):
         # 1. 定义此场景下的“成功”和“取消”回调
         async def on_edit_complete(edit_interaction: discord.Interaction, new_details: dict):
             # 对于斜杠命令，成功就是保存并确认
-            await self._save_and_confirm_callback(edit_interaction, interaction.user.id, new_details)
+            await self._save_and_confirm_callback(edit_interaction, new_details)
 
         async def on_edit_cancel(cancel_interaction: discord.Interaction):
             # 对于斜杠命令，取消就是编辑消息提示已取消
@@ -308,7 +308,8 @@ class LicenseCog(commands.Cog):
             on_success_callback=on_edit_complete,
             on_cancel_callback=on_edit_cancel,
             commercial_use_allowed=self.commercial_use_allowed,
-            is_temporary=False
+            is_temporary=False,
+            owner_id=interaction.user.id,
         )
 
         # 3. 在自己的上下文中呈现UI (发送一条新的私密消息)
@@ -325,13 +326,9 @@ class LicenseCog(commands.Cog):
     async def settings(self, interaction: discord.Interaction):
         """命令：打开一个私密的机器人行为设置面板。"""
         config = self.db.get_config(interaction.user)
+        # 【修改】使用新的工厂函数创建Embed
+        embed = build_settings_embed(config)
         view = SettingsView(self.db, config, self)
-
-        embed = discord.Embed(
-            title="⚙️ 机器人设置",
-            description="在这里管理授权助手的所有行为。\n完成后，点击下方的“关闭面板”即可。",
-            color=discord.Color.blurple()
-        )
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     @license_group.command(

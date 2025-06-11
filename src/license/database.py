@@ -14,14 +14,14 @@ def get_default_license_details(member: discord.Member) -> dict:
         一个包含默认协议内容的字典。
     """
     if isinstance(member, discord.Member):
-        attribution = f"<@{member.id}> ({member.display_name})"
+        attribution = f"需保留创作者 <@{member.id}> ({member.display_name}) 的署名"
     else:
-        attribution = "创作者"
+        attribution = "需保留原作者署名"
 
     return {
         "type": "custom",  # 默认类型为自定义
-        "reproduce": "询问作者",
-        "derive": "询问作者",
+        "reproduce": "需联系作者获得授权",
+        "derive": "需联系作者获得授权",
         "commercial": "禁止",
         "attribution": attribution,  # 默认署名为@用户
         "notes": "无"
@@ -40,7 +40,7 @@ class LicenseConfig:
         """
         初始化一个用户的配置对象。
         Args:
-            user_id: 用户的Discord ID。
+            member: 用户。
             data: 从JSON文件加载的原始字典数据。如果为None，则使用默认值。
         """
         if data is None:
