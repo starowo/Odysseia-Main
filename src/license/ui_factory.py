@@ -11,7 +11,7 @@ from typing import Tuple, Callable, Coroutine, Any, TYPE_CHECKING
 
 import discord
 
-from .tool_view import ConfirmPostView
+from .view_tool import ConfirmPostView
 
 if TYPE_CHECKING:
     from .cog import LicenseCog
@@ -103,16 +103,6 @@ async def prepare_confirmation_flow(
             "**请预览你将要发布的【首次】协议。**\n"
             "确认后，此协议将适用于本帖中**已发布和未来发布的所有内容**，除非后续有新的协议替代或你另有说明。\n"
         )
-
-    # 【新增】全局性的“作者声明优先”原则
-    author_precedence_clause = (
-        "\n\n"
-        "**⚠️ 重要原则：你的话是最终标准**\n"
-        "> 如果你在本帖的任何地方，针对特定内容做出了**额外的、更具体的声明**（例如“本楼层的图片禁止转载”），那么**你的那个声明将优先于本通用协议**。"
-    )
-
-    # 组合成完整的引导语
-    full_header = preview_header + author_precedence_clause
 
     # 准备预览 Embed
     preview_embed = final_embed.copy()

@@ -215,6 +215,16 @@ def build_license_embed(config: LicenseConfig, author: discord.Member, commercia
     embed.add_field(name="💰 商业用途", value=_format_links_in_text(display_details.get("commercial", "未设置")), inline=True)
 
     # 注意：我们不再在这里添加 '附加说明' 的 field
+    author_precedence_clause = (
+        "本机器人/本协议的内容仅为作者提供方便。\n"
+        "若作者在本帖内/外对特定内容作出额外声明，则该声明的效力高于本通用协议。"
+    )
+    embed.add_field(
+        name="⚠️ 最高原则",
+        value=author_precedence_clause,
+        inline=False
+    )
+
 
     # 5. 设置页脚
     embed.set_footer(text=build_footer_text(SIGNATURE_LICENSE))
