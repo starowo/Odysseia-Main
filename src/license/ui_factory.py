@@ -18,7 +18,6 @@ if TYPE_CHECKING:
 from .constants import HUB_VIEW_CONTENT, SIGNATURE_HELPER
 from .database import LicenseConfig
 from .database import LicenseDB
-from .utils import build_license_embed, build_footer_text
 
 
 def prepare_edit_hub(
@@ -27,7 +26,8 @@ def prepare_edit_hub(
         on_success_callback: Callable,
         on_cancel_callback: Callable,
         commercial_use_allowed: bool,
-        is_temporary: bool = False
+        owner_id: int,
+        is_temporary: bool = False,
 ) -> Tuple[str, discord.ui.View]:
     """
     工厂函数：准备“协议编辑枢纽”所需的 View 和 content。
@@ -39,6 +39,7 @@ def prepare_edit_hub(
         on_cancel_callback: 用户取消编辑后应调用的回调函数。
         commercial_use_allowed: 是否允许商业化许可证。
         is_temporary: 是否是为“临时编辑”场景构建。
+        owner_id: 用于权限校验
 
     Returns:
         一个元组 (content, view)，调用方可以决定如何发送它们。
@@ -64,10 +65,16 @@ def prepare_edit_hub(
         config=config,
         callback=on_success_callback,
         on_cancel=on_cancel_callback,
-        commercial_use_allowed=commercial_use_allowed
+        commercial_use_allowed=commercial_use_allowed,
+        content=content,
+        is_temporary=is_temporary,
+        owner_id = owner_id
     )
 
     return content, hub_view
+
+
+from .utils import build_license_embed, build_footer_text
 
 
 async def prepare_confirmation_flow(
@@ -97,14 +104,24 @@ async def prepare_confirmation_flow(
             "确认后，此协议将适用于本帖中**已发布和未来发布的所有内容**，除非后续有新的协议替代或你另有说明。\n"
         )
 
+    # 【新增】全局性的“作者声明优先”原则
+    author_precedence_clause = (
+        "\n\n"
+        "**⚠️ 重要原则：你的话是最终标准**\n"
+        "> 如果你在本帖的任何地方，针对特定内容做出了**额外的、更具体的声明**（例如“本楼层的图片禁止转载”），那么**你的那个声明将优先于本通用协议**。"
+    )
+
+    # 组合成完整的引导语
+    full_header = preview_header + author_precedence_clause
+
     # 准备预览 Embed
     preview_embed = final_embed.copy()
     preview_embed.title = f"🔍 预览：{preview_embed.title}"
     preview_embed.set_footer(text=build_footer_text(SIGNATURE_HELPER))
 
     # 组合引导语和实际内容
-    full_header = f"{preview_header}-------------------\n\n"
-    preview_embed.description = full_header + (final_embed.description or "")
+    full_header_with_separator = f"{preview_header}-------------------\n\n"
+    preview_embed.description = full_header_with_separator + (final_embed.description or "")
 
     # 【解耦】将最终的发布逻辑包装在 on_confirm 回调中
     async def on_confirm_wrapper(interaction: discord.Interaction):

@@ -1,4 +1,5 @@
 # --- 辅助函数 ---
+import asyncio
 import re
 
 from discord import Thread, Guild
@@ -18,6 +19,67 @@ def _format_links_in_text(text: str) -> str:
     url_pattern = re.compile(r'(https?://[^\s]+)')
     # 使用 re.sub 进行替换
     return url_pattern.sub(r'[\g<0>](\g<0>)', text)
+
+
+def build_settings_embed(config: LicenseConfig) -> discord.Embed:
+    """
+    【新增】工厂函数：创建一个包含所有配置项及其详细解释的设置面板Embed。
+    """
+    description_parts = []
+
+    # 1. 机器人总开关
+    enabled_emoji = "✅ 启用" if config.bot_enabled else "❌ 禁用"
+    description_parts.append(f"**机器人总开关**: {enabled_emoji}")
+    description_parts.append(
+        "> 控制机器人在你发新帖时是否会自动出现。关闭后，你需要使用 `/内容授权 打开面板` 手动召唤我。"
+    )
+    description_parts.append("---")
+
+    # 2. 自动发布默认协议
+    auto_post_emoji = "✅ 启用" if config.auto_post else "❌ 禁用"
+    description_parts.append(f"**自动发布默认协议**: {auto_post_emoji}")
+    description_parts.append(
+        "> 启用后，当机器人出现时，将直接尝试发布你的默认协议，而不会显示一系列交互按钮让你选择。"
+    )
+    description_parts.append("---")
+
+    # 3. 发布前二次确认
+    confirm_emoji = "✅ 启用" if config.require_confirmation else "❌ 禁用"
+    description_parts.append(f"**发布前二次确认**: {confirm_emoji}")
+    description_parts.append(
+        "> 启用后，在发布任何协议前（包括自动发布），都会先让你预览并点击确认。"
+    )
+
+    description_parts.append("\n完成后，点击下方的“关闭面板”即可。（不关也行，保存是实时的，就是不够优雅，懂吧？）")
+
+    # 使用我们现有的标准助手Embed框架来创建
+    return create_helper_embed(
+        title="⚙️ 机器人设置详解",
+        description="\n".join(description_parts),
+        color=discord.Color.blurple()
+    )
+
+
+def create_helper_embed(title: str, description: str, color: discord.Color = discord.Color.blue()) -> discord.Embed:
+    """
+    【新增】工厂函数：创建一个标准的、带有助手签名的交互面板Embed。
+    这确保了所有中间状态的交互消息都能被正确识别和清理。
+    """
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=color
+    )
+    embed.set_footer(text=build_footer_text(SIGNATURE_HELPER))
+    return embed
+
+async def safe_delete_original_response(interaction: discord.Interaction, sleep_time: int = 0) -> None:
+    if sleep_time > 0:
+        await asyncio.sleep(sleep_time)
+    try:
+        await interaction.delete_original_response()
+    except discord.NotFound:
+        pass  # 如果用户在此期间关闭了，也无妨
 
 
 async def get_member_async_thread(thread: Thread, user_id: int) -> Member | None:
@@ -110,7 +172,7 @@ def build_license_embed(config: LicenseConfig, author: discord.Member, commercia
         display_details.update(CC_LICENSES[license_type])
 
     description_parts = []
-    description_parts.append(f"**内容作者:** {author.mention}")
+    description_parts.append(f"**发布者: ** {author.mention}")
 
     if license_type != "custom":
         description_parts.append(f"本内容采用 **[{license_type}]({display_details['url']})** 国际许可协议进行许可。")
@@ -132,7 +194,7 @@ def build_license_embed(config: LicenseConfig, author: discord.Member, commercia
 
     # 3. 创建 Embed 并组合描述
     embed = discord.Embed(
-        title=f"📜 {author.display_name} 的内容授权协议",
+        title=f"📜 内容授权协议",
         description="\n".join(description_parts) if description_parts else None,
         color=discord.Color.gold() if not warning_message else discord.Color.orange()  # 警告时使用不同颜色
     )
@@ -147,10 +209,10 @@ def build_license_embed(config: LicenseConfig, author: discord.Member, commercia
     else:
         embed.add_field(name="📄 协议类型", value="**自定义协议**", inline=False)
 
-    embed.add_field(name="🔁 转载", value=_format_links_in_text(display_details.get("reproduce", "未设置")), inline=True)
-    embed.add_field(name="🎨 衍生创作", value=_format_links_in_text(display_details.get("derive", "未设置")), inline=True)
+    embed.add_field(name="✒️ 作者署名", value=_format_links_in_text(display_details.get("attribution", "未设置")), inline=False)
+    embed.add_field(name="🔁 二次传播", value=_format_links_in_text(display_details.get("reproduce", "未设置")), inline=True)
+    embed.add_field(name="🎨 二次创作", value=_format_links_in_text(display_details.get("derive", "未设置")), inline=True)
     embed.add_field(name="💰 商业用途", value=_format_links_in_text(display_details.get("commercial", "未设置")), inline=True)
-    embed.add_field(name="✒️ 署名要求", value=_format_links_in_text(display_details.get("attribution", "未设置")), inline=False)
 
     # 注意：我们不再在这里添加 '附加说明' 的 field
 
