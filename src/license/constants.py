@@ -72,7 +72,9 @@ CC_LICENSES = {
 HUB_VIEW_CONTENT = (
     "请选择你希望如何设置你的授权协议：\n\n"
     "📝 **创建或编辑自定义协议**\n"
-    "> 在这里，你可以完全手动控制每一项条款。最终生成的将是你独有的“自定义协议”。\n\n"
+    "> 在这里，你可以完全手动控制每一项条款。最终生成的将是你独有的“自定义协议”。\n"
+    "> ⚠️ **重要提醒：** \n"
+    "> CC协议的核心是**鼓励分享**，因此所有标准模板都**允许他人进行二次传播（转载）**。如果你希望**【完全禁止二次传播】**，请使用本“创建或编辑自定义协议”选项。\n\n"
     "📜 **应用一个标准的CC协议**\n"
     "> 查看并从官方的 Creative Commons 协议中选择一个来应用。（选择后，可以看到不同CC协议的详细解释）\n"
     "> **注意：** 应用后，你当前的设置将被一个标准的CC协议模板所**覆盖**。\n"
@@ -136,6 +138,11 @@ COMMAND_CONFIG_ZH = {
 # 在代码中激活一套配置。当前选择中文版。
 ACTIVE_COMMAND_CONFIG = COMMAND_CONFIG_ZH
 
-MESSAGE_IGNORE = (f"好的，我以后不会再主动打扰你了。\n"
+MESSAGE_IGNORE = (f"{SIGNATURE_HELPER}: \n"
+                  f"好的，我以后不会再主动打扰你了。\n"
                   f"你可以随时使用 `/{ACTIVE_COMMAND_CONFIG["group"]["name"]} {ACTIVE_COMMAND_CONFIG["settings"]["name"]}` 命令，在配置中重新启用我。\n"
                   f"也可以随时使用 `/{ACTIVE_COMMAND_CONFIG["group"]["name"]} {ACTIVE_COMMAND_CONFIG["panel"]["name"]}` 命令，直接调出我的主面板。\n")
+
+MESSAGE_IGNORE_ONCE = (f"{SIGNATURE_HELPER}: \n"
+                       f"好的，那我就先溜了。\n"
+                       f"你可以随时使用 `/{ACTIVE_COMMAND_CONFIG["group"]["name"]}` 命令来设置你的授权协议。")
