@@ -36,7 +36,7 @@ class LicenseCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.logger = getattr(bot, 'logger', None)  # 优雅地获取注入的logger
-        self.name = "授权协议助手"
+        self.name = SIGNATURE_HELPER
         self.db = LicenseDB()  # 初始化数据库访问层
         # 读取并存储全局商业化开关的状态
         self.commercial_use_allowed = False  # 默认值
@@ -55,8 +55,8 @@ class LicenseCog(commands.Cog):
         """当Cog加载并准备好时，在日志中打印信息。"""
         if self.logger:
             status = "已启用" if self.commercial_use_allowed else "已禁用"
-            self.logger.info(f"✅ 授权协议助手(LicenseCog)已加载，商业化选项：{status}")
-            self.logger.info(f"✅ 授权协议助手(LicenseCog)已加载，监控 {len(self.monitored_channel_ids)} 个论坛频道。")
+            self.logger.info(f"✅ {SIGNATURE_HELPER}(LicenseCog)已加载，商业化选项：{status}")
+            self.logger.info(f"✅ {SIGNATURE_HELPER}(LicenseCog)已加载，监控 {len(self.monitored_channel_ids)} 个论坛频道。")
 
     # --- 私有辅助方法 ---
 
