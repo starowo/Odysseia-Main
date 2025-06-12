@@ -47,7 +47,7 @@ class SettingsView(ui.View):
         self.toggle_bot_enabled_button.label = f"机器人总开关: {'✅' if self.config.bot_enabled else '❌'}"
         self.toggle_confirmation_button.label = f"发布前二次确认: {'✅' if self.config.require_confirmation else '❌'}"
 
-    # 【新增】一个私有的更新视图的辅助方法
+    # 一个私有的更新视图的辅助方法
     async def _update_view(self, interaction: discord.Interaction):
         """保存配置，并用全新的Embed和更新后的按钮刷新视图。"""
         self.db.save_config(self.config)
