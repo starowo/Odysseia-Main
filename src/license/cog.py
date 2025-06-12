@@ -81,7 +81,7 @@ class LicenseCog(commands.Cog):
                 await interaction.response.edit_message(content="✅ 协议已发布。", embed=None, view=None)
 
             async def do_cancel_auto(interaction: discord.Interaction):
-                """【新逻辑】取消=返回到标准的主交互面板"""
+                """取消=返回到标准的主交互面板"""
                 # 从自动流程无缝切换到手动流程
                 main_view = InitialActionView(
                     cog=self,
@@ -180,7 +180,7 @@ class LicenseCog(commands.Cog):
 
     async def _send_helper_message(self, thread: discord.Thread, is_reauthorization: bool = False):
         """
-        【重构】向指定帖子发送核心的交互式助手消息。
+        向指定帖子发送核心的交互式助手消息。
         现在增加了一个参数 `is_reauthorization` 来处理重新授权的场景。
         """
         author_id = thread.owner_id
@@ -207,7 +207,6 @@ class LicenseCog(commands.Cog):
         user_config_file = self.db._get_user_file(author_id)
         # 判断是新用户还是老用户
         if not user_config_file.exists():
-            # 【覆盖了你指出的场景】
             # 即使用户是“重新授权”，但如果他们删除了数据，也会被视为新用户，
             # 从而进入正确的“首次设置”流程。
 
@@ -270,21 +269,21 @@ class LicenseCog(commands.Cog):
     )
     async def panel_me(self, interaction: discord.Interaction):
         """
-        【重构】命令：在当前帖子中重新召唤协议助手面板。
+        命令：在当前帖子中重新召唤协议助手面板。
         """
         if not isinstance(interaction.channel, discord.Thread):
             await interaction.response.send_message("❌ 此命令只能在帖子（子区）中使用。", ephemeral=True)
             return
 
         thread = interaction.channel
-        # 【变更】收紧权限：只有帖子所有者可以执行此命令。
+        # 收紧权限：只有帖子所有者可以执行此命令。
         if interaction.user.id != thread.owner_id:
             await interaction.response.send_message("❌ 你不是该帖子的所有者，无法执行此操作。", ephemeral=True)
             return
 
         await interaction.response.send_message("✅ 好的，正在为你准备新的授权面板...", ephemeral=True)
 
-        # 1. 【新增】执行侦察
+        # 1. 执行侦察
         existing_license = await self._find_existing_license_message(thread)
 
         # 2. 清理旧的 *交互式* 面板
@@ -324,7 +323,7 @@ class LicenseCog(commands.Cog):
         )
 
         # 3. 在自己的上下文中呈现UI (发送一条新的私密消息)
-        # 【核心修复】将纯文本的 content 包装进一个标准的 embed 中
+        # 将纯文本的 content 包装进一个标准的 embed 中
         # 从而与其他入口点的UI保持一致
         hub_embed = create_helper_embed(
             title="📝 编辑默认协议 (永久)",
@@ -344,7 +343,7 @@ class LicenseCog(commands.Cog):
     async def settings(self, interaction: discord.Interaction):
         """命令：打开一个私密的机器人行为设置面板。"""
         config = self.db.get_config(interaction.user)
-        # 【修改】使用新的工厂函数创建Embed
+        # 使用新的工厂函数创建Embed
         embed = build_settings_embed(config)
         view = SettingsView(self.db, config, self)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
