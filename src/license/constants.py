@@ -88,7 +88,7 @@ HUB_VIEW_CONTENT = (
     "> CC协议的核心条款是标准化的，任何附加的限制性条款都可能被视为无效。\n"
     "> 了解更多关于CC协议： https://creativecommons.org \n\n"
 
-    "💻 **应用一个标准的软件协议 (新!)**\n"
+    "💻 **应用一个标准的软件协议**\n"
     "> 为你的代码项目选择一个合适的开源许可证。\n\n"
 
     "💡 **关于“附加说明”的重要规则**\n"
@@ -106,14 +106,14 @@ SOFTWARE_LICENSES = {
         "url": "http://www.wtfpl.net/",
         "full_text": (
             ">>> DO WHAT THE FUCK YOU WANT TO PUBLIC LICENSE\n"
-            "> Version 2, December 2004\n\n"
-            "> Copyright (C) 2004 Sam Hocevar <sam@hocevar.net>\n\n"
-            "> Everyone is permitted to copy and distribute verbatim or modified "
+            "Version 2, December 2004\n\n"
+            "Copyright (C) 2004 Sam Hocevar <sam@hocevar.net>\n\n"
+            "Everyone is permitted to copy and distribute verbatim or modified "
             "copies of this license document, and changing it is allowed as long "
             "as the name is changed.\n\n"
-            "> DO WHAT THE FUCK YOU WANT TO PUBLIC LICENSE\n"
-            "> TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION\n\n"
-            "> 0. You just DO WHAT THE FUCK YOU WANT TO."
+            "DO WHAT THE FUCK YOU WANT TO PUBLIC LICENSE\n"
+            "TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION\n\n"
+            "0. You just DO WHAT THE FUCK YOU WANT TO."
         )
     },
     "MIT": {
