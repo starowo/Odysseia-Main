@@ -1,5 +1,5 @@
 # --- 交互界面层 (Modals & Views) ---
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from discord import ui
 
@@ -207,136 +207,147 @@ class CustomLicenseEditModal(ui.Modal, title="编辑自定义授权协议"):
 
 class CCLicenseSelectView(ui.View):
     """
-    【新版】让用户通过下拉菜单选择一个标准CC协议的视图。
-    这是一个响应式视图：下拉框的选择会动态更新下方的描述文本，而视图组件保持不变。
+    【新版重构】让用户通过下拉菜单选择一个标准CC协议的视图。
+    - 修复了在未选择协议时点击“查看知识”按钮会报错的问题。
+    - 将视图渲染逻辑拆分为多个独立的Embed构建方法，使代码更清晰。
     """
 
     def __init__(self, db: LicenseDB, config: LicenseConfig, callback: callable, on_cancel: callable, commercial_use_allowed: bool, is_temporary: bool,
-                 owner_id=bool):
+                 owner_id: int):  # <-- 修复了之前owner_id=bool的笔误
         super().__init__(timeout=300)
         self.owner_id = owner_id
         self.db = db
         self.config = config
-        self.callback = callback  # 顶层成功回调
-        self.on_cancel = on_cancel  # 顶层取消/返回回调
+        self.callback = callback
+        self.on_cancel = on_cancel
         self.commercial_use_allowed = commercial_use_allowed
         self.is_temporary = is_temporary
         self.selected_license: Optional[str] = None
-        self.show_knowledge = False  # 【新增】控制是否显示重要知识的内部状态
+        self.show_knowledge = False  # 控制是否显示重要知识的内部状态
 
-        # --- 1. 创建所有组件 ---
-
-        # 创建下拉框
+        # --- 组件创建 (保持不变) ---
         available_licenses = get_available_cc_licenses(self.commercial_use_allowed)
         options = [discord.SelectOption(label=name, value=name) for name in available_licenses.keys()]
-
         if not options:
             select = ui.Select(placeholder="服务器已禁用商业协议", options=[discord.SelectOption(label="无可用非商业CC协议", value="disabled", emoji="❌")],
                                disabled=True)
         else:
             select = ui.Select(placeholder="请从这里选择一个CC协议...", options=options)
-            select.callback = self.select_callback  # 绑定回调
-
+            select.callback = self.select_callback
         self.add_item(select)
-
-        # 创建确认按钮，并初始禁用
-        # 我们把它存为实例变量，方便在回调中直接访问
         self.confirm_button = ui.Button(label="✅ 确认使用此协议", style=discord.ButtonStyle.success, disabled=True, row=1)
         self.confirm_button.callback = self.confirm_selection
         self.add_item(self.confirm_button)
-
-        # 【新增】帮助/知识切换按钮
         self.knowledge_button = ui.Button(label="💡 查看重要知识", style=discord.ButtonStyle.secondary, row=1)
         self.knowledge_button.callback = self.toggle_knowledge
         self.add_item(self.knowledge_button)
-
-        # 创建返回按钮
         back_button = ui.Button(label="返回", style=discord.ButtonStyle.danger, row=2)
         back_button.callback = self.cancel_callback
         self.add_item(back_button)
 
-    # 【新增】权限检查
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        # 即使是下拉菜单的选择，也先过一遍检查
         if interaction.user.id != self.owner_id:
             await interaction.response.send_message("❌ 你无法操作这个菜单。", ephemeral=True)
             return False
         return True
 
-    async def _render_view(self, interaction: discord.Interaction):
-        """【新增】一个统一的渲染函数，根据当前状态构建并发送Embed。"""
-        if not self.selected_license:
-            # 如果还没有选择协议，不执行任何操作
-            return
+    # --- 【新】专注的Embed构建辅助方法 ---
 
+    def _build_initial_prompt_embed(self) -> discord.Embed:
+        """只构建初始的、提示用户选择协议的Embed。"""
+        initial_cc_content = (
+            "请从下方选择一个标准的CC协议模板。\n\n"
+            "- 你选择的协议将**覆盖**你当前的授权设置。\n"
+            "- 选择后，你将看到协议的简介并可以确认。"
+        )
+        return create_helper_embed(
+            title="📜 选择一个CC协议模板",
+            description=initial_cc_content,
+            color=discord.Color.green()
+        )
+
+    def _build_selected_license_details_embed(self) -> discord.Embed:
+        """只构建包含特定协议详情的Embed。"""
         license_data = CC_LICENSES[self.selected_license]
-
-        # 1. 简介和核心条款 (始终显示)
         description_text = f"你选择了 **{self.selected_license}**。\n> {license_data['description']}\n\n"
         element_explanations = [CC_ELEMENT_EXPLANATIONS[elem] for elem in license_data["elements"]]
-        elements_text = "\n\n".join(element_explanations)
-
         core_content = (
             f"{description_text}"
             f"**核心条款解读：**\n"
             f"-------------------\n"
-            f"{elements_text}"
+            f"{'\n\n'.join(element_explanations)}"
         )
-
-        # 2. 重要知识 (按需显示)
-        if self.show_knowledge:
-            url = license_data['url']
-            self.knowledge_button.label = "收起重要知识"  # 更新按钮标签
-            self.knowledge_button.style = discord.ButtonStyle.primary
-            important_notes = (
-                "**💡 关于授权协议的重要知识**\n\n"  # 增加换行
-                "⚖️ **协议的效力**\n"
-                "> 作者一旦为某次发布选择了CC协议，该选择便具有法律约束力。\n\n"  # 增加换行
-
-                "📝 **基于单次发布**\n"
-                "> CC协议是附加在**作品的某一次发布**上的。作者可以为**未来的新作品**（即使是基于旧作品的修改）选择一个完全不同的协议。但是这不会影响对旧作品**已经做出**的授权（即，授权不可收回）。\n\n"  # 增加换行
-
-                "🔄 **重新授权可能**\n"
-                "> 作者甚至可以为**同一个旧作品**在未来提供一个**新的、并行的**授权选项（例如，从严格协议变为宽松协议，甚至从宽松协议变为严格协议）。届时，使用者可以选择遵守旧的或新的任一协议。\n\n"  # 增加换行
-
-                "👑 **作者本人许可优先**\n"
-                "> 无论协议如何规定，只要使用者能联系上原作者并获得其**单独、明确的许可**，就可以不受本协议限制。\n\n"  # 增加换行
-
-                "📚 **解释仅供参考**\n"
-                f"> 为便于理解，我们对协议条款进行了通俗化解释。这些解释（包括本**重要知识**）不应替代具有法律效力的[官方协议原文]({url})。若有疑问，请以后者为准。"
-            )
-
-            final_description = f"{core_content}\n\n-------------------\n{important_notes}"
-        else:
-            self.knowledge_button.label = "💡 查看重要知识"  # 恢复按钮标签
-            self.knowledge_button.style = discord.ButtonStyle.secondary
-            final_description = core_content + "\n\n*点击下方“查看重要知识”按钮可了解更多背景信息。*"
-
-        # 3. 创建并发送Embed
-        updated_embed = create_helper_embed(
-            title="📜 选择一个CC协议模板",
-            description=final_description,
+        return create_helper_embed(
+            title="📜 查看CC协议详情",
+            description=core_content,
             color=discord.Color.green()
         )
-        await interaction.response.edit_message(embed=updated_embed, view=self)
 
-    async def confirm_selection(self, interaction: discord.Interaction):
-        """当用户点击“确认使用此协议”时触发，弹出Modal。"""
+    def _build_knowledge_embed(self) -> discord.Embed:
+        """构建“重要知识”附录Embed，并按需定制URL。"""
+        knowledge_text = (
+            "**💡 关于授权协议的重要知识**\n\n"  # 增加换行
+            "⚖️ **协议的效力**\n"
+            "> 作者一旦为某次发布选择了CC协议，该选择便具有法律约束力。\n\n"  # 增加换行
+
+            "📝 **基于单次发布**\n"
+            "> CC协议是附加在**作品的某一次发布**上的。作者可以为**未来的新作品**（即使是基于旧作品的修改）选择一个完全不同的协议。但是这不会影响对旧作品**已经做出**的授权（即，授权不可收回）。\n\n"  # 增加换行
+
+            "🔄 **重新授权可能**\n"
+            "> 作者甚至可以为**同一个旧作品**在未来提供一个**新的、并行的**授权选项（例如，从严格协议变为宽松协议，甚至从宽松协议变为严格协议）。届时，**他人**可以选择遵守旧的或新的任一协议。\n\n"  # 增加换行
+
+            "👑 **作者本人许可优先**\n"
+            "> 无论协议如何规定，只要**他人**能联系上原作者并获得其**单独、明确的许可**，就可以不受本协议限制。\n\n"  # 增加换行
+
+            "📚 **解释仅供参考**\n"
+            f"> 为便于理解，我们对协议条款进行了通俗化解释。这些解释（包括本**重要知识**）不应替代具有法律效力的官方协议原文。若有疑问，请以Creative Commons官方网站的说明为准。"
+        )
+
+        # 如果已选择协议，我们可以做得更好，把通用提示语替换为带链接的！
+        if self.selected_license:
+            url = CC_LICENSES[self.selected_license]['url']
+            knowledge_text += f"\n> 若有疑问，请以后者为准：[官方协议原文]({url})"
+        else:
+            knowledge_text += "\n> 若有疑问，请以Creative Commons官方网站的说明为准。"
+
+        return discord.Embed(
+            description=knowledge_text,
+            color=discord.Color.light_grey()
+        )
+
+    # --- 【新】主渲染方法，负责组装Embeds列表 ---
+    async def _render_view(self, interaction: discord.Interaction):
+        embeds_to_show = []
+
+        # 1. 决定主Embed是什么
         if not self.selected_license:
-            # 理论上不会发生，因为按钮是禁用的，但作为安全检查
-            await interaction.response.send_message("请先选择一个协议。", ephemeral=True)
-            return
+            primary_embed = self._build_initial_prompt_embed()
+        else:
+            primary_embed = self._build_selected_license_details_embed()
+        embeds_to_show.append(primary_embed)
 
+        # 2. 根据状态决定是否添加附录Embed，并更新按钮
+        if self.show_knowledge:
+            self.knowledge_button.label = "收起重要知识"
+            self.knowledge_button.style = discord.ButtonStyle.primary
+            appendix_embed = self._build_knowledge_embed()
+            embeds_to_show.append(appendix_embed)
+        else:
+            self.knowledge_button.label = "💡 查看重要知识"
+            self.knowledge_button.style = discord.ButtonStyle.secondary
+
+        # 3. 发送组装好的Embeds列表
+        await interaction.response.edit_message(embeds=embeds_to_show, view=self)
+
+    # --- 回调方法（现在只负责更新状态和调用主渲染） ---
+    async def confirm_selection(self, interaction: discord.Interaction):
+        if not self.selected_license: return
         cc_data = CC_LICENSES[self.selected_license]
 
         async def modal_submit_callback(modal_interaction, attribution, notes):
             final_details = {
-                "type": self.selected_license,
-                "reproduce": cc_data["reproduce"],
-                "derive": cc_data["derive"],
-                "commercial": cc_data["commercial"],
-                "attribution": attribution,
-                "notes": notes or "无"
+                "type": self.selected_license, "reproduce": cc_data["reproduce"], "derive": cc_data["derive"],
+                "commercial": cc_data["commercial"], "attribution": attribution, "notes": notes or "无"
             }
             await self.callback(modal_interaction, final_details)
 
@@ -349,20 +360,16 @@ class CCLicenseSelectView(ui.View):
         await interaction.response.send_modal(modal)
 
     async def toggle_knowledge(self, interaction: discord.Interaction):
-        """【新增】切换“重要知识”的显示状态，并重新渲染视图。"""
         self.show_knowledge = not self.show_knowledge
         await self._render_view(interaction)
 
     async def select_callback(self, interaction: discord.Interaction):
-        """当用户在下拉菜单中做出选择时触发。"""
         self.selected_license = interaction.data["values"][0]
         self.confirm_button.disabled = False
-        # 重置知识显示状态，确保每次新选择都是从简洁视图开始
         self.show_knowledge = False
         await self._render_view(interaction)
 
     async def cancel_callback(self, interaction: discord.Interaction):
-        """当用户点击“返回”时触发，调用上层传入的 on_cancel 逻辑。"""
         await self.on_cancel(interaction)
 
 
@@ -416,14 +423,14 @@ class InitialActionView(ui.View):
         它现在相信 build_license_embed 总能成功。
         """
         # 【核心修复】直接构建并获取 Embed，不再检查错误
-        final_embed = build_license_embed(
+        final_embeds = build_license_embeds(
             config_to_post,
             interaction.user,
             self.commercial_use_allowed
         )
 
         # 直接发布
-        await self.thread.send(embed=final_embed)
+        await self.thread.send(embeds=final_embeds)
         await interaction.response.edit_message(
             content="✅ 协议已直接发布。", embed=None, view=None
         )
@@ -439,9 +446,9 @@ class InitialActionView(ui.View):
         """
 
         # 定义确认和取消按钮的具体行为
-        async def do_post(post_interaction: discord.Interaction, final_embed: discord.Embed):
+        async def do_post(post_interaction: discord.Interaction, final_embeds: List[discord.Embed]):
             """确认=发帖并关闭面板"""
-            await self.thread.send(embed=final_embed)
+            await self.thread.send(embeds=final_embeds)
             await post_interaction.response.edit_message(content="✅ 协议已发布。", embed=None, view=None)
             self.stop()
 
@@ -450,7 +457,7 @@ class InitialActionView(ui.View):
             await self.back_to_main_menu(cancel_interaction)
 
         # 创建并显示确认视图
-        preview_embed, confirm_view = await prepare_confirmation_flow(
+        preview_content, preview_embeds, confirm_view = await prepare_confirmation_flow(
             cog=self.cog,  # 传递 self.cog！
             thread=self.thread,
             config=config_to_show,
@@ -459,7 +466,7 @@ class InitialActionView(ui.View):
             on_cancel_action=do_cancel
         )
 
-        await interaction.response.edit_message(embed=preview_embed, view=confirm_view)
+        await interaction.response.edit_message(content=preview_content, embeds=preview_embeds, view=confirm_view)
 
     async def back_to_main_menu(self, interaction: discord.Interaction):
         """
@@ -561,12 +568,16 @@ class InitialActionView(ui.View):
         # defer() 只是为了确认交互，防止超时。
         await interaction.response.defer(thinking=False, ephemeral=True)
 
-        embed = build_license_embed(self.config, interaction.user, commercial_use_allowed=self.commercial_use_allowed)
-        embed.title = "👀 你的当前默认协议预览"
-        embed.set_footer(text=build_footer_text(SIGNATURE_HELPER))  # 覆盖掉带有官方签名的页脚
+        embeds = build_license_embeds(
+            self.config,
+            interaction.user,
+            commercial_use_allowed=self.commercial_use_allowed,
+            title_override="👀 你的当前默认协议预览",
+            footer_override=build_footer_text(SIGNATURE_HELPER)
+        )
 
         # 使用 followup.send 发送私密消息。这是最可靠的发送 ephemeral 消息的方式。
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await interaction.followup.send(embeds=embeds, ephemeral=True)
 
     @ui.button(label="机器人设置", style=discord.ButtonStyle.secondary, row=1)
     async def settings(self, interaction: discord.Interaction, button: ui.Button):

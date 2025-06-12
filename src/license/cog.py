@@ -75,9 +75,9 @@ class LicenseCog(commands.Cog):
             # === 自动进入预览确认流程 ===
 
             # 1. 定义在此上下文中，确认和取消的“最终动作”
-            async def do_post_auto(interaction: discord.Interaction, final_embed: discord.Embed):
+            async def do_post_auto(interaction: discord.Interaction, final_embeds: List[discord.Embed]):
                 """确认=发帖并关闭面板"""
-                await thread.send(embed=final_embed)
+                await thread.send(embeds=final_embeds)
                 await interaction.response.edit_message(content="✅ 协议已发布。", embed=None, view=None)
 
             async def do_cancel_auto(interaction: discord.Interaction):
@@ -95,7 +95,7 @@ class LicenseCog(commands.Cog):
                 await interaction.response.edit_message(content=None, embed=main_embed, view=main_view)
 
             # 2. 调用工厂函数来准备预览UI
-            preview_embed, confirm_view = await prepare_confirmation_flow(
+            preview_content, preview_embeds, confirm_view = await prepare_confirmation_flow(
                 cog=self,
                 thread=thread,
                 config=config,
@@ -105,10 +105,10 @@ class LicenseCog(commands.Cog):
             )
 
             # 3. 呈现UI
-            await thread.send(embed=preview_embed, view=confirm_view)
+            await thread.send(content=preview_content, embeds=preview_embeds, view=confirm_view)
         else:
             # === 直接发布 ===
-            await thread.send(embed=build_license_embed(config, thread.owner, self.commercial_use_allowed))
+            await thread.send(embeds=build_license_embeds(config, thread.owner, self.commercial_use_allowed))
 
     async def _find_existing_license_message(self, thread: discord.Thread) -> discord.Message | None:
         """
@@ -218,7 +218,7 @@ class LicenseCog(commands.Cog):
                     "我可以帮助你在每次发布作品后，轻松附上你的授权协议，保护你的创作权益。\n\n"
                     "点击下方按钮，开始创建你的第一份默认协议吧！"
                 ),
-                color=discord.Color.magenta()
+                color=discord.Color.magenta(),
             )
             embed.set_footer(text=build_footer_text(SIGNATURE_HELPER))
             view = FirstTimeSetupView(db=self.db, cog=self, owner_id=author_id, thread=thread, commercial_use_allowed=self.commercial_use_allowed)
@@ -349,13 +349,14 @@ class LicenseCog(commands.Cog):
     async def show_license(self, interaction: discord.Interaction):
         """命令：以私密消息的方式显示用户当前的默认协议。"""
         config = self.db.get_config(interaction.user)
-        # 1. 先用标准函数生成一个基础 embed
-        embed = build_license_embed(config, interaction.user, commercial_use_allowed=self.commercial_use_allowed)
-
-        # 2. 【核心修复】根据预览上下文，对其进行“特化”处理
-        embed.title = "👀 你的当前默认协议预览"
-        embed.set_footer(text=build_footer_text(SIGNATURE_HELPER))  # 覆盖掉带有官方签名的页脚
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        embeds = build_license_embeds(
+            config,
+            interaction.user,
+            commercial_use_allowed=self.commercial_use_allowed,
+            title_override="👀 你的当前默认协议预览",
+            footer_override=build_footer_text(SIGNATURE_HELPER)
+        )
+        await interaction.response.send_message(embeds=embeds, ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
