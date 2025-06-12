@@ -324,8 +324,15 @@ class LicenseCog(commands.Cog):
         )
 
         # 3. 在自己的上下文中呈现UI (发送一条新的私密消息)
+        # 【核心修复】将纯文本的 content 包装进一个标准的 embed 中
+        # 从而与其他入口点的UI保持一致
+        hub_embed = create_helper_embed(
+            title="📝 编辑默认协议 (永久)",
+            description=content
+        )
+
         await interaction.response.send_message(
-            content=content,
+            embed=hub_embed,  # 使用 embed 而不是 content
             view=hub_view,
             ephemeral=True
         )
