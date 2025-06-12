@@ -592,9 +592,8 @@ class InitialActionView(ui.View):
     @ui.button(label="本次跳过", style=discord.ButtonStyle.secondary, row=1)
     async def skip_for_now(self, interaction: discord.Interaction, button: ui.Button):
         """按钮：关闭交互面板，不执行任何操作。"""
-        cmd_name = ACTIVE_COMMAND_CONFIG["group"]["name"]
         await interaction.response.edit_message(
-            content=f"好的，你随时可以通过 `/{cmd_name}` 命令来设置你的授权协议。",
+            content=MESSAGE_IGNORE_ONCE,
             embed=None, view=None
         )
         self.stop()
@@ -692,9 +691,8 @@ class FirstTimeSetupView(ui.View):
     @ui.button(label="本次跳过", style=discord.ButtonStyle.secondary)
     async def skip_for_now(self, interaction: discord.Interaction, button: ui.Button):
         """按钮：关闭欢迎面板。"""
-        cmd_name = ACTIVE_COMMAND_CONFIG["group"]["name"]
         await interaction.response.edit_message(
-            content=f"好的，你随时可以通过 `/{cmd_name}` 命令来设置你的授权协议。",
+            content=MESSAGE_IGNORE_ONCE,
             embed=None, view=None
         )
         self.stop()
