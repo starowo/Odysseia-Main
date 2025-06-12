@@ -1,6 +1,7 @@
 # --- 辅助函数 ---
 import asyncio
 import re
+from typing import List, Optional
 
 from discord import Thread, Guild
 
@@ -73,6 +74,7 @@ def create_helper_embed(title: str, description: str, color: discord.Color = dis
     embed.set_footer(text=build_footer_text(SIGNATURE_HELPER))
     return embed
 
+
 async def safe_delete_original_response(interaction: discord.Interaction, sleep_time: int = 0) -> None:
     if sleep_time > 0:
         await asyncio.sleep(sleep_time)
@@ -125,7 +127,33 @@ def get_available_cc_licenses(commercial_allowed: bool) -> dict:
     }
 
 
-def build_license_embed(config: LicenseConfig, author: discord.Member, commercial_use_allowed: bool) -> discord.Embed:
+# 为了代码整洁，将附录文本定义为常量
+_EFFECTIVENESS_RULES_TEXT = (
+    "**⚖️ 协议生效规则**\n"
+    f"1. **定义**：这是由「{SIGNATURE_HELPER}」生成的通用内容授权协议，下文简称为**“本协议”**。\n"
+    "2. **效力范围（“时间段”）**：\n"
+    "> **截断与起始**：本协议的发布，将**截断**并取代任何更早发布的“本协议”对**未来内容**的效力。本协议的效力从其**发布时**开始。\n"
+    "> **向前追溯**：**如果**在本协议之前**不存在**其他“本协议”，则本协议的效力将**向前追溯**，覆盖从帖子建立（1楼）开始、所有未被单独授权的内容。\n"
+    "3. **效力层级（谁说了算）**：\n"
+    "> **最高层级**：创作者（即本帖所有者）在本帖内发表的任何**亲口声明**（例如在任意楼的全局规定、附加条款、“本协议”附加说明中的内容），其法律效力**永远高于**“本协议”。\n"
+    "> **冲突解决**：若“本协议”条款与创作者的亲口声明冲突，以**创作者的声明**为准。"
+)
+_CC_DISCLAIMER_TEXT = (
+    "**⚠️ 关于CC协议的特别说明**\n"
+    "> 若创作者通过“附加说明”或亲口声明，为本协议附加了额外条款，则本授权**可能不再被视为一份标准的CC协议**。\n"
+    "> 届时，本协议将被理解为一份包含所有上述条款（署名、二创、转载、商用等）的**自定义协议**，CC协议链接仅供参考。"
+)
+
+
+def build_license_embeds(
+        config: LicenseConfig,
+        author: discord.Member,
+        commercial_use_allowed: bool,
+        *,
+        title_override: Optional[str] = None,
+        footer_override: Optional[str] = None,
+        include_appendix: bool = True
+) -> List[discord.Embed]:
     """
     根据给定的配置对象和作者信息，构建一个支持完整Markdown附加说明的美观Embed。
     """
@@ -153,11 +181,13 @@ def build_license_embed(config: LicenseConfig, author: discord.Member, commercia
                 # 成功找到可降级的版本
                 license_type = potential_nc_version
                 saved_details["type"] = license_type
+                is_cc_license = True  # 保持同步
             else:
                 # 如果找不到（例如对于 CC0 这种未来可能添加的），则降级为自定义
                 license_type = "custom"
                 saved_details["type"] = "custom"
                 saved_details["commercial"] = "禁止"
+                is_cc_license = False  # 已降级为自定义
 
             # 准备警告信息
             warning_message = (
@@ -194,56 +224,50 @@ def build_license_embed(config: LicenseConfig, author: discord.Member, commercia
         description_parts.append(notes_section)
 
     # 3. 创建 Embed 并组合描述
-    embed = discord.Embed(
-        title=f"📜 内容授权协议",
+    main_embed_title = title_override or "📜 内容授权协议"
+    main_embed = discord.Embed(
+        title=main_embed_title,
         description="\n".join(description_parts) if description_parts else None,
         color=discord.Color.gold() if not warning_message else discord.Color.orange()  # 警告时使用不同颜色
     )
 
     # 【核心变更】使用 set_author 来展示作者信息
     # 这会在 Embed 的最顶部显示作者的头像和名字
-    embed.set_author(name=f"由 {author.display_name} ({author.name}) 发布", icon_url=author.display_avatar.url)
+    main_embed.set_author(name=f"由 {author.display_name} ({author.name}) 发布", icon_url=author.display_avatar.url)
 
     # 4. 添加结构化的核心条款字段
     if license_type != "custom":
-        embed.add_field(name="📄 协议类型", value=f"**{license_type}**", inline=False)
+        main_embed.add_field(name="📄 协议类型", value=f"**{license_type}**", inline=False)
     else:
-        embed.add_field(name="📄 协议类型", value="**自定义协议**", inline=False)
+        main_embed.add_field(name="📄 协议类型", value="**自定义协议**", inline=False)
 
-    embed.add_field(name="✒️ 作者署名", value=_format_links_in_text(display_details.get("attribution", "未设置")), inline=False)
-    embed.add_field(name="🔁 二次传播", value=_format_links_in_text(display_details.get("reproduce", "未设置")), inline=True)
-    embed.add_field(name="🎨 二次创作", value=_format_links_in_text(display_details.get("derive", "未设置")), inline=True)
-    embed.add_field(name="💰 商业用途", value=_format_links_in_text(display_details.get("commercial", "未设置")), inline=True)
+    main_embed.add_field(name="✒️ 作者署名", value=_format_links_in_text(display_details.get("attribution", "未设置")), inline=False)
+    main_embed.add_field(name="🔁 二次传播", value=_format_links_in_text(display_details.get("reproduce", "未设置")), inline=True)
+    main_embed.add_field(name="🎨 二次创作", value=_format_links_in_text(display_details.get("derive", "未设置")), inline=True)
+    main_embed.add_field(name="💰 商业用途", value=_format_links_in_text(display_details.get("commercial", "未设置")), inline=True)
+
+    # 设置页脚
+    footer_text = footer_override or build_footer_text(SIGNATURE_LICENSE)
+    main_embed.set_footer(text=footer_text)
+
+    # --- 按需构建附录并返回 ---
+    if not include_appendix:
+        return [main_embed]
 
     # 5. 添加“协议生效规则”字段
-    effectiveness_rules = (
-        f"1. **定义**：这是由「{SIGNATURE_HELPER}」生成的通用内容授权协议，下文简称为**“本协议”**。\n"
-        "2. **效力范围（“时间段”）**：\n"
-        "> **截断与起始**：本协议的发布，将**截断**并取代任何更早发布的“本协议”对**未来内容**的效力。本协议的效力从其**发布时**开始。\n"
-        "> **向前追溯**：**如果**在本协议之前**不存在**其他“本协议”，则本协议的效力将**向前追溯**，覆盖从帖子建立（1楼）开始、所有未被单独授权的内容。\n"
-        "3. **效力层级（谁说了算）**：\n"
-        "> **最高层级**：创作者（即本帖所有者）在本帖内发表的任何**亲口声明**（例如在任意楼的全局规定、附加条款、“本协议”附加说明中的内容），其法律效力**永远高于**“本协议”。\n"
-        "> **冲突解决**：若“本协议”条款与创作者的亲口声明冲突，以**创作者的声明**为准。"
-    )
-    embed.add_field(
-        name="⚖️ 协议生效规则",
-        value=effectiveness_rules,
-        inline=False
-    )
-
-    # 6. 如果选择了CC协议，则添加CC免责声明字段
+    appendix_description_parts = [_EFFECTIVENESS_RULES_TEXT]
     if is_cc_license:
-        cc_disclaimer = (
-            "若创作者通过“附加说明”或亲口声明，为本协议附加了额外条款，则本授权**可能不再被视为一份标准的CC协议**。\n"
-            "届时，本协议将被理解为一份包含所有上述条款（署名、二创、转载、商用等）的**自定义协议**，CC协议链接仅供参考。"
-        )
-        embed.add_field(
-            name="⚠️ 关于CC协议的特别说明",
-            value=cc_disclaimer,
-            inline=False
-        )
+        appendix_description_parts.append("\n\n" + _CC_DISCLAIMER_TEXT)
 
-    # 5. 设置页脚
-    embed.set_footer(text=build_footer_text(SIGNATURE_LICENSE))
+    appendix_embed = discord.Embed(
+        description="\n".join(appendix_description_parts),
+        color=discord.Color.light_grey()
+    )
 
-    return embed
+    # 【核心修正】为附录Embed也设置页脚
+    # 如果主页脚被覆盖了，附录也应该用被覆盖的那个，以保持一致
+    # 否则，附录也使用标准的协议签名页脚
+    appendix_footer_text = footer_override or build_footer_text(SIGNATURE_LICENSE)
+    appendix_embed.set_footer(text=appendix_footer_text)
+
+    return [main_embed, appendix_embed]

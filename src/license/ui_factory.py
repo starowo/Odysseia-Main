@@ -7,10 +7,12 @@ UI 工厂 (UI Factory)
 这些函数只负责“构建”而不负责“发送”，将构建逻辑与交互响应逻辑解耦。
 调用方可以根据自身上下文（如新消息、编辑现有消息）来决定如何使用这些返回的组件。
 """
-from typing import Tuple, Callable, Coroutine, Any, TYPE_CHECKING
+from typing import Tuple, Callable, Coroutine, Any, TYPE_CHECKING, List
 
 import discord
+from discord import Embed
 
+from src.license.view_tool import ConfirmPostView
 from .view_tool import ConfirmPostView
 
 if TYPE_CHECKING:
@@ -74,55 +76,64 @@ def prepare_edit_hub(
     return content, hub_view
 
 
-from .utils import build_license_embed, build_footer_text
+from .utils import build_license_embeds, build_footer_text
 
 
 async def prepare_confirmation_flow(
-        cog: 'LicenseCog',  # 【核心】接收 Cog 实例
+        cog: 'LicenseCog',
         thread: discord.Thread,
         config: LicenseConfig,
         author: discord.User,
         on_confirm_action: Callable[..., Coroutine[Any, Any, None]],
         on_cancel_action: Callable[..., Coroutine[Any, Any, None]],
-) -> Tuple[discord.Embed, discord.ui.View]:
+) -> tuple[str, list[Embed], ConfirmPostView]:
     """
-    【最终完美版】工厂函数：通过接收 Cog 实例来获取所有必要的上下文。
+    【最终版重构】
+    - 返回一个Embeds列表用于预览。
+    - 预览内容包含主面板和附录。
+    - 不再需要侦察历史消息。
     """
-    # 【核心】现在直接从 Cog 实例中获取商业化状态和调用侦察方法
     commercial_use_allowed = cog.commercial_use_allowed
-    is_reauthorization = await cog._find_existing_license_message(thread) is not None
 
-    final_embed = build_license_embed(config, author, commercial_use_allowed)
-    if is_reauthorization:
-        preview_header = (
-            "**请预览你将要发布的【新】协议。**\n"
-            "确认后，此协议将适用于你**接下来**在本帖中发布的内容。旧有内容的授权保持不变。\n"
-        )
-    else:
-        preview_header = (
-            "**请预览你将要发布的【首次】协议。**\n"
-            "确认后，此协议将适用于本帖中**已发布和未来发布的所有内容**，除非后续有新的协议替代或你另有说明。\n"
-        )
+    # 1. 构建最终会发布的 Embeds 列表 (包含附录)
+    #    这个 final_embeds 变量将直接传递给最终的 on_confirm_action
+    final_embeds = build_license_embeds(
+        config=config,
+        author=author,
+        commercial_use_allowed=commercial_use_allowed,
+        include_appendix=True
+    )
 
-    # 准备预览 Embed
-    preview_embed = final_embed.copy()
-    preview_embed.title = f"🔍 预览：{preview_embed.title}"
-    preview_embed.set_footer(text=build_footer_text(SIGNATURE_HELPER))
+    # 2. 基于 final_embeds 创建一个专门用于预览的列表
+    #    我们不直接修改 final_embeds，而是创建副本进行操作
+    preview_embeds = [embed.copy() for embed in final_embeds]
 
-    # 组合引导语和实际内容
-    full_header_with_separator = f"{preview_header}-------------------\n\n"
-    preview_embed.description = full_header_with_separator + (final_embed.description or "")
+    # 3. 创建独立的 content 字符串，而不是修改 description
+    preview_content = (
+        f"{author.mention}\n"  # Mention 用户以提醒
+        "**请预览你将要发布的协议。**\n"
+        "它将包含以下的主面板和一个规则附录。\n"
+        "-------------------"
+    )
 
-    # 【解耦】将最终的发布逻辑包装在 on_confirm 回调中
+    # 3. 对预览的主 Embed 进行“特化”处理
+    if preview_embeds:  # 安全检查，确保列表不为空
+        main_preview_embed = preview_embeds[0]
+        # 修改标题
+        main_preview_embed.title = f"🔍 预览：{main_preview_embed.title}"
+        # 修改页脚，用助手的签名覆盖掉最终的协议签名
+        main_preview_embed.set_footer(text=build_footer_text(SIGNATURE_HELPER))
+
+    # 4. 创建视图和回调
+    #    on_confirm_wrapper 现在直接捕获并使用上面创建的 final_embeds
     async def on_confirm_wrapper(interaction: discord.Interaction):
-        # 这个 wrapper 接收真实的 interaction，然后调用我们传入的最终动作
-        await on_confirm_action(interaction, final_embed)
+        await on_confirm_action(interaction, final_embeds)
 
-    # 创建确认视图，并把包装好的回调传进去
     confirm_view = ConfirmPostView(
         author_id=author.id,
         on_confirm=on_confirm_wrapper,
         on_cancel=on_cancel_action
     )
 
-    return preview_embed, confirm_view
+    # 返回特化后的预览Embeds列表和视图
+    return preview_content,preview_embeds, confirm_view
