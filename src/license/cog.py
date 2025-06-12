@@ -76,15 +76,25 @@ class LicenseCog(commands.Cog):
 
             # 1. 定义在此上下文中，确认和取消的“最终动作”
             async def do_post_auto(interaction: discord.Interaction, final_embed: discord.Embed):
-                """确认=发帖并编辑占位符消息"""
+                """确认=发帖并关闭面板"""
                 await thread.send(embed=final_embed)
                 await interaction.response.edit_message(content="✅ 协议已发布。", embed=None, view=None)
 
             async def do_cancel_auto(interaction: discord.Interaction):
-                """取消=编辑占位符消息"""
-                await interaction.response.edit_message(content="操作已取消。", embed=None, view=None)
+                """【新逻辑】取消=返回到标准的主交互面板"""
+                # 从自动流程无缝切换到手动流程
+                main_view = InitialActionView(
+                    cog=self,
+                    db=self.db,
+                    config=config,
+                    thread=thread,
+                    commercial_use_allowed=self.commercial_use_allowed
+                )
+                main_embed = await main_view.get_original_embed()
+                # 用主面板替换掉当前的确认面板
+                await interaction.response.edit_message(content=None, embed=main_embed, view=main_view)
 
-            # 2. 调用同一个工厂来准备好一切
+            # 2. 调用工厂函数来准备预览UI
             preview_embed, confirm_view = await prepare_confirmation_flow(
                 cog=self,
                 thread=thread,
@@ -136,7 +146,7 @@ class LicenseCog(commands.Cog):
 
         try:
             # 使用 followup.send 发送私密确认消息，以避免与原始交互（如Modal提交）冲突
-            await interaction.followup.send("✅ 你的默认协议已更新并保存！", ephemeral=True)
+            await interaction.response.send_message("✅ 你的默认协议已更新并保存！", ephemeral=True)
             # 尝试清理发起此流程的UI消息（如编辑枢纽面板）
             if not interaction.is_expired():
                 await interaction.edit_original_response(content="✅ 操作完成！", view=None, embed=None)

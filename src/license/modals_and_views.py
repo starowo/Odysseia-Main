@@ -527,7 +527,7 @@ class InitialActionView(ui.View):
             self.config.license_details = new_details
             self.db.save_config(self.config)
             await self.back_to_main_menu(edit_interaction)
-            await edit_interaction.followup.send("✅ 你的默认协议已永久保存！", ephemeral=True, delete_after=5)
+            await edit_interaction.followup.send("✅ 你的默认协议已永久保存！", ephemeral=True)
 
         async def on_edit_cancel(cancel_interaction: discord.Interaction):
             # 取消：直接返回主菜单
