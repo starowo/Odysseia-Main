@@ -33,14 +33,14 @@ def get_input(prompt, required=True, input_type=str, default=None):
                 user_input = str(default)
         else:
             user_input = input(f"{prompt}: ").strip()
-        
+
         if not user_input and required:
             print("❌ 此项为必填项，请重新输入")
             continue
-        
+
         if not user_input and not required:
             return None
-            
+
         # 类型转换
         try:
             if input_type == int:
@@ -58,10 +58,10 @@ def get_multiple_ids(prompt):
     print(f"{prompt}")
     print("💡 提示：多个ID请用逗号分隔，例如：123456789,987654321")
     user_input = input("请输入: ").strip()
-    
+
     if not user_input:
         return []
-    
+
     try:
         ids = [int(id_str.strip()) for id_str in user_input.split(',') if id_str.strip()]
         return ids
@@ -92,7 +92,8 @@ def create_basic_config():
             "misc": {"enabled": True, "description": "杂项功能"},
             "event": {"enabled": False, "description": "赛事管理功能"},
             "bot_manage": {"enabled": True, "description": "机器人管理功能"},
-            "sync": {"enabled": False, "description": "服务器同步功能"}
+            "sync": {"enabled": False, "description": "服务器同步功能"},
+            "license": {"enabled": True, "description": "内容授权协议助手"},
         },
         "logging": {
             "enabled": False,
@@ -106,19 +107,22 @@ def create_basic_config():
         "warned_role_id": 0,
         "punish_announce_channel_id": 0,
         "event_managers": [],
-        "highest_role_available": 0
+        "highest_role_available": 0,
+        "license_cog": {
+            "monitored_channels": []
+        }
     }
     return config
 
 def setup_bot_basic_info(config):
     """设置机器人基础信息"""
     print_step(1, "机器人基础配置")
-    
+
     # 获取Token
     print("🔑 首先需要您的机器人Token")
     print("💡 获取方法：Discord开发者门户 → 应用 → Bot → Token → Copy")
     print("⚠️  请确保Token的安全，不要泄露给他人")
-    
+
     while True:
         token = get_input("请输入机器人Token")
         if validate_token(token):
@@ -126,7 +130,7 @@ def setup_bot_basic_info(config):
             break
         else:
             print("❌ Token格式似乎不正确，请检查后重新输入")
-    
+
     # 设置机器人状态
     print("\n🎮 机器人状态设置")
     status_options = {
@@ -134,30 +138,30 @@ def setup_bot_basic_info(config):
         "2": ("watching", "正在观看"),
         "3": ("listening", "正在听")
     }
-    
+
     print("选择机器人状态类型：")
     for key, (_, desc) in status_options.items():
         print(f"  {key}. {desc}")
-    
+
     status_choice = get_input("请选择状态类型 (1-3)", default="2")
     if status_choice in status_options:
         config["status"] = status_options[status_choice][0]
-    
+
     status_text = get_input("设置状态文字", default="子区里的一切")
     config["status_text"] = status_text
-    
+
     print("✅ 机器人基础信息配置完成")
 
 def setup_admins(config):
     """设置管理员"""
     print_step(2, "管理员配置")
-    
+
     print("👑 管理员拥有机器人的最高权限")
     print("💡 获取用户ID：右键用户头像 → 复制用户ID（需开启开发者模式）")
-    
+
     admin_ids = get_multiple_ids("请输入管理员的用户ID")
     config["admins"] = admin_ids
-    
+
     if admin_ids:
         print(f"✅ 已设置 {len(admin_ids)} 个管理员")
     else:
@@ -166,36 +170,36 @@ def setup_admins(config):
 def setup_server_config(config):
     """设置服务器配置"""
     print_step(3, "服务器配置")
-    
+
     print("🏰 现在配置机器人将要管理的服务器信息")
-    
+
     # 获取服务器ID用于日志配置
     guild_id = get_input("请输入服务器ID", input_type=int)
-    
+
     # 身份组配置
     print("\n🎭 身份组配置")
     print("💡 这些身份组需要在Discord服务器中先创建好")
-    
+
     role_configs = [
         ("verified_role_id", "已验证用户身份组ID"),
         ("buffer_role_id", "验证缓冲身份组ID"),
         ("quiz_role_id", "答题验证身份组ID"),
         ("warned_role_id", "警告状态身份组ID")
     ]
-    
+
     for role_key, role_desc in role_configs:
         role_id = get_input(f"请输入{role_desc}", input_type=int, required=False)
         if role_id:
             config[role_key] = role_id
-    
+
     # 频道配置
     print("\n📺 频道配置")
     print("💡 这些频道需要在Discord服务器中先创建好")
-    
+
     punish_channel = get_input("请输入处罚公示频道ID", input_type=int, required=False)
     if punish_channel:
         config["punish_announce_channel_id"] = punish_channel
-    
+
     # 日志配置
     print("\n📋 日志配置")
     enable_logging = get_input("是否启用机器人日志？(y/n)", input_type=bool, default=False)
@@ -204,7 +208,20 @@ def setup_server_config(config):
         config["logging"]["enabled"] = True
         config["logging"]["guild_id"] = guild_id
         config["logging"]["channel_id"] = log_channel
-    
+
+    # # <--- 新增开始: 内容授权协议助手配置 --->
+    print("\n📝 内容授权协议助手配置（可选）")
+    print("💡 此功能会在用户发帖后，自动提供授权协议选项")
+    enable_license = get_input("是否配置内容授权协议助手？(y/n)", input_type=bool, default=True)
+    if enable_license:
+        config["cogs"]["license"]["enabled"] = True
+        monitored_channels = get_multiple_ids("请输入需要机器人监控的创作版块（论坛频道）ID")
+        if monitored_channels:
+            config["license_cog"]["monitored_channels"] = monitored_channels
+    else:
+        config["cogs"]["license"]["enabled"] = False
+    # <--- 新增结束 --->
+
     # 赛事管理配置（可选）
     print("\n🏆 赛事管理配置（可选）")
     enable_event = get_input("是否配置赛事管理？(y/n)", input_type=bool, default=False)
@@ -212,38 +229,39 @@ def setup_server_config(config):
         config["cogs"]["event"]["enabled"] = True
         event_managers = get_multiple_ids("请输入赛事管理员用户ID（可选）")
         highest_role = get_input("请输入最高可管理身份组ID（可选）", input_type=int, required=False)
-        
+
         if event_managers:
             config["event_managers"] = event_managers
         if highest_role:
             config["highest_role_available"] = highest_role
-    
+
     print("✅ 服务器配置完成")
 
 def setup_module_config(config):
     """设置功能模块配置"""
     print_step(4, "功能模块配置")
-    
+
     print("🧩 选择要启用的功能模块")
     print("💡 您可以根据需要启用或禁用特定功能")
-    
+
     modules = {
         "thread_manage": "子区管理功能",
         "admin": "管理员命令",
         "anonymous_feedback": "匿名反馈系统（论坛专用，自动化无需配置）",
         "verify": "验证系统",
         "misc": "杂项命令",
+        "license": "内容授权协议助手",
         "event": "赛事管理",
         "bot_manage": "机器人管理命令",
         "sync": "服务器同步功能（多服务器环境）"
     }
-    
+
     for module_key, module_desc in modules.items():
         # 如果赛事模块在之前已经配置，跳过询问
         if module_key == "event" and config["cogs"][module_key]["enabled"]:
             print(f"✅ {module_desc} 已在前面步骤中启用")
             continue
-            
+
         # 同步功能需要特殊说明
         if module_key == "sync":
             print(f"\n🔄 {module_desc}")
@@ -253,24 +271,25 @@ def setup_module_config(config):
             enabled = get_input(f"是否启用 {module_desc}？(y/n)", input_type=bool, default=False)
         else:
             enabled = get_input(f"是否启用 {module_desc}？(y/n)", input_type=bool, default=True)
-        
+
         config["cogs"][module_key]["enabled"] = enabled
-    
+
     print("\n💡 功能说明：")
     print("📢 匿名反馈系统：论坛频道专用，用户可在帖子内发送匿名消息，无需额外配置")
     print("🔧 子区管理：支持帖主和管理员管理论坛帖子")
     print("🛡️  验证系统：新用户入群验证功能")
+    print("📝 内容授权协议助手：在指定创作版块中，为作者提供内容授权协议选项")
     print("🎮 赛事管理：身份组发放和赛事相关功能")
     print("⚙️  机器人管理：运行时动态管理模块开关")
     print("🔄 服务器同步：多服务器身份组和处罚同步功能")
-    
+
     # 如果启用了同步功能，提示配置要求
     if config["cogs"]["sync"]["enabled"]:
         print("\n⚠️  同步功能配置提醒：")
         print("1. 需要在 config/server_sync/config.json 中配置参与同步的服务器")
         print("2. 每个参与同步的服务器都需要部署相同配置的机器人")
         print("3. 详细配置指南请查看 docs/sync_guide.md")
-    
+
     print("✅ 功能模块配置完成")
 
 def create_sync_config():
@@ -287,13 +306,13 @@ def create_sync_config():
             "confirmation_timeout": 300
         }
     }
-    
+
     # 确保目录存在
     sync_dir = Path("config/server_sync")
     sync_dir.mkdir(parents=True, exist_ok=True)
-    
+
     sync_config_path = sync_dir / "config.json"
-    
+
     try:
         with open(sync_config_path, 'w', encoding='utf-8') as f:
             json.dump(sync_config, f, ensure_ascii=False, indent=2)
@@ -305,20 +324,20 @@ def create_sync_config():
 def save_config(config):
     """保存配置文件"""
     print_step(5, "保存配置")
-    
+
     config_path = Path("config.json")
-    
+
     # 备份已存在的配置文件
     if config_path.exists():
         backup_path = Path("config.backup.json")
         print(f"📦 发现已存在的配置文件，备份到 {backup_path}")
         config_path.rename(backup_path)
-    
+
     try:
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
         print(f"✅ 配置文件已保存到 {config_path}")
-        
+
         # 如果启用了同步功能，创建同步配置文件
         if config["cogs"]["sync"]["enabled"]:
             if create_sync_config():
@@ -326,7 +345,7 @@ def save_config(config):
                 print("💡 请参考 docs/sync_guide.md 配置具体的同步服务器")
             else:
                 print("⚠️  同步配置文件创建失败，请手动创建")
-        
+
         return True
     except Exception as e:
         print(f"❌ 保存配置文件失败: {e}")
@@ -337,7 +356,7 @@ def show_next_steps():
     print("\n" + "=" * 60)
     print("🎉 配置完成！后续步骤：")
     print("=" * 60)
-    
+
     steps = [
         "1. 检查 config.json 文件确保配置正确",
         "2. 在Discord服务器中创建必要的频道和身份组",
@@ -346,36 +365,37 @@ def show_next_steps():
         "5. 在Discord中测试机器人功能",
         "6. 如遇问题请查看部署指南或日志文件"
     ]
-    
+
     for step in steps:
         print(f"📋 {step}")
-    
+
     print("\n💡 特别提醒：")
     print("📢 匿名反馈系统只在论坛频道的帖子内可用，完全自动化")
     print("🔸 管理员使用用户ID进行权限控制")
     print("🔸 验证系统完全自动化，只需在Discord服务器中创建相关身份组")
+    print("📝 内容授权协议助手会在您指定的创作版块中自动为新帖子提供授权协议选项")
     print("🔸 赛事管理为可选功能，可用于身份组发放和权限控制")
     print("🔸 机器人管理命令可以在运行时动态开关功能模块")
     print("🔄 服务器同步功能需要在多个服务器中部署相同配置的机器人")
-    
+
     print("\n🔗 相关资源：")
     print("📚 详细部署指南：部署指南.md")
     print("📖 同步功能指南：docs/sync_guide.md")
     print("🐛 问题反馈：GitHub Issues")
     print("💬 技术支持：加入官方交流群")
-    
+
     print("\n🚀 祝您使用愉快！")
 
 def check_requirements():
     """检查环境要求"""
     print("🔍 检查环境要求...")
-    
+
     # 检查Python版本
     if sys.version_info < (3, 10):
         print("❌ Python版本过低，需要Python 3.10或更高版本")
         print(f"   当前版本：{sys.version}")
         return False
-    
+
     # 检查依赖包
     try:
         import discord
@@ -383,48 +403,48 @@ def check_requirements():
     except ImportError:
         print("❌ discord.py 未安装，请运行：pip install -r requirements.txt")
         return False
-    
+
     # 检查requirements.txt文件
     req_path = Path("requirements.txt")
     if not req_path.exists():
         print("⚠️  未找到 requirements.txt 文件")
-    
+
     print("✅ 环境检查完成")
     return True
 
 def main():
     """主函数"""
     print_banner()
-    
+
     # 环境检查
     if not check_requirements():
         print("\n❌ 环境检查失败，请解决上述问题后重新运行")
         input("按回车键退出...")
         return
-    
+
     try:
         # 创建配置
         config = create_basic_config()
-        
+
         # 配置流程
         setup_bot_basic_info(config)
         setup_admins(config)
         setup_server_config(config)
         setup_module_config(config)
-        
+
         # 保存配置
         if save_config(config):
             show_next_steps()
         else:
             print("\n❌ 配置保存失败，请检查权限或磁盘空间")
-    
+
     except KeyboardInterrupt:
         print("\n\n⚠️  用户取消配置")
     except Exception as e:
         print(f"\n❌ 配置过程中发生错误: {e}")
         print("请检查输入信息或联系技术支持")
-    
+
     input("\n按回车键退出...")
 
 if __name__ == "__main__":
-    main() 
+    main()
