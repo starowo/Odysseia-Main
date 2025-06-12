@@ -11,7 +11,7 @@ from src.license.database import *
 
 def _format_links_in_text(text: str) -> str:
     """
-    【新增】一个辅助函数，用于查找文本中的裸露URL并将其转换为Markdown链接。
+    一个辅助函数，用于查找文本中的裸露URL并将其转换为Markdown链接。
     例如：将 "https://example.com" 转换为 "[https://example.com](https://example.com)"
     """
     if not text:
@@ -24,7 +24,7 @@ def _format_links_in_text(text: str) -> str:
 
 def build_settings_embed(config: LicenseConfig) -> discord.Embed:
     """
-    【新增】工厂函数：创建一个包含所有配置项及其详细解释的设置面板Embed。
+    工厂函数：创建一个包含所有配置项及其详细解释的设置面板Embed。
     """
     description_parts = []
 
@@ -63,7 +63,7 @@ def build_settings_embed(config: LicenseConfig) -> discord.Embed:
 
 def create_helper_embed(title: str, description: str, color: discord.Color = discord.Color.blue()) -> discord.Embed:
     """
-    【新增】工厂函数：创建一个标准的、带有助手签名的交互面板Embed。
+    工厂函数：创建一个标准的、带有助手签名的交互面板Embed。
     这确保了所有中间状态的交互消息都能被正确识别和清理。
     """
     embed = discord.Embed(
@@ -98,7 +98,7 @@ def get_member(thread: Thread, user_id: int) -> discord.Member:
 
 def build_footer_text(signature: str) -> str:
     """
-    【新增】统一的页脚文本构建器。
+    统一的页脚文本构建器。
     它会自动附加统一的“宣传语”。
 
     Args:
@@ -113,18 +113,17 @@ def build_footer_text(signature: str) -> str:
     return f"{signature} | 如果按钮失效，请使用 `/{cmd_name} {cmd_name_panel}`"
 
 
-def get_available_cc_licenses(commercial_allowed: bool) -> dict:
+def get_available_cc_licenses() -> dict:
     """
-    【新增】根据服务器配置，获取可用的CC协议列表。
-    这是一个“Getter”或“过滤器”。
+    此函数现在不再执行过滤，始终返回所有CC协议。
+    过滤逻辑移至前端视图中，以便更好地向用户展示禁用状态。
     """
-    if commercial_allowed:
-        return CC_LICENSES  # 如果允许，返回全部
+    return CC_LICENSES
 
-    # 如果禁止，则只返回名字中包含 "NC" (Non-Commercial) 的协议
-    return {
-        name: data for name, data in CC_LICENSES.items() if "NC" in name
-    }
+
+def get_available_software_licenses() -> dict:
+    """返回所有可用的软件协议。"""
+    return SOFTWARE_LICENSES
 
 
 # 为了代码整洁，将附录文本定义为常量
@@ -160,10 +159,11 @@ def build_license_embeds(
     saved_details = config.license_details.copy()  # 使用副本以防修改原始配置对象
     license_type = saved_details.get("type", "custom")
     is_cc_license = license_type in CC_LICENSES
+    is_software_license = license_type in SOFTWARE_LICENSES
 
     warning_message = None  # 用于存储将要显示的警告信息
 
-    # --- 【核心】策略校验与自动降级逻辑 ---
+    # --- 策略校验与自动降级逻辑 ---
     if not commercial_use_allowed:
         # 1. 对自定义协议，强制覆盖商业条款
         if license_type == "custom":
@@ -201,14 +201,18 @@ def build_license_embeds(
     # 如果降级了，就强制使用新协议的数据
     if is_cc_license:
         display_details.update(CC_LICENSES[license_type])
+    elif is_software_license:
+        display_details.update(SOFTWARE_LICENSES[license_type])
 
     description_parts = []
     description_parts.append(f"**发布者: ** {author.mention}")
 
-    if license_type != "custom":
+    if is_cc_license:
         description_parts.append(f"本内容采用 **[{license_type}]({display_details['url']})** 国际许可协议进行许可。")
+    elif is_software_license:
+        description_parts.append(f"本项目采用 **[{license_type}]({display_details['url']})** 开源许可证。")
 
-    # 【核心】如果存在警告信息，将其添加到描述中
+    # 如果存在警告信息，将其添加到描述中
     if warning_message:
         description_parts.append(f"\n> {warning_message}")  # 使用引用块使其更醒目
 
@@ -231,24 +235,33 @@ def build_license_embeds(
         color=discord.Color.gold() if not warning_message else discord.Color.orange()  # 警告时使用不同颜色
     )
 
-    # 【核心变更】使用 set_author 来展示作者信息
+    # 使用 set_author 来展示作者信息
     # 这会在 Embed 的最顶部显示作者的头像和名字
     main_embed.set_author(name=f"由 {author.display_name} ({author.name}) 发布", icon_url=author.display_avatar.url)
 
     # 4. 添加结构化的核心条款字段
-    if license_type != "custom":
-        main_embed.add_field(name="📄 协议类型", value=f"**{license_type}**", inline=False)
-    else:
-        main_embed.add_field(name="📄 协议类型", value="**自定义协议**", inline=False)
+    # --- 根据协议类型（内容/软件）填充不同的字段 ---
+    if is_software_license:
+        main_embed.add_field(name="📄 协议类型", value=f"**{license_type}** (软件)", inline=False)
+        main_embed.add_field(name="✒️ 版权归属", value=_format_links_in_text(display_details.get("attribution", "未设置")), inline=False)
+        main_embed.add_field(name="📜 核心条款", value=display_details["full_text"], inline=False)
+    else:  # 自定义或CC协议
+        if is_cc_license:
+            main_embed.add_field(name="📄 协议类型", value=f"**{license_type}**", inline=False)
+        else:
+            main_embed.add_field(name="📄 协议类型", value="**自定义协议**", inline=False)
+        main_embed.add_field(name="✒️ 作者署名", value=_format_links_in_text(display_details.get("attribution", "未设置")), inline=False)
+        main_embed.add_field(name="🔁 二次传播", value=_format_links_in_text(display_details.get("reproduce", "未设置")), inline=True)
+        main_embed.add_field(name="🎨 二次创作", value=_format_links_in_text(display_details.get("derive", "未设置")), inline=True)
+        main_embed.add_field(name="💰 商业用途", value=_format_links_in_text(display_details.get("commercial", "未设置")), inline=True)
 
-    main_embed.add_field(name="✒️ 作者署名", value=_format_links_in_text(display_details.get("attribution", "未设置")), inline=False)
-    main_embed.add_field(name="🔁 二次传播", value=_format_links_in_text(display_details.get("reproduce", "未设置")), inline=True)
-    main_embed.add_field(name="🎨 二次创作", value=_format_links_in_text(display_details.get("derive", "未设置")), inline=True)
-    main_embed.add_field(name="💰 商业用途", value=_format_links_in_text(display_details.get("commercial", "未设置")), inline=True)
+    # 添加宽度拉伸器，保证主Embed宽度
+    # `\uu2800` 是盲文空格
+    stretcher_value = ' ' + '\u2800' * 45
 
     # 设置页脚
     footer_text = footer_override or build_footer_text(SIGNATURE_LICENSE)
-    main_embed.set_footer(text=footer_text)
+    main_embed.set_footer(text=footer_text + stretcher_value)
 
     # --- 按需构建附录并返回 ---
     if not include_appendix:
@@ -264,10 +277,10 @@ def build_license_embeds(
         color=discord.Color.light_grey()
     )
 
-    # 【核心修正】为附录Embed也设置页脚
+    # 为附录Embed也设置页脚
     # 如果主页脚被覆盖了，附录也应该用被覆盖的那个，以保持一致
     # 否则，附录也使用标准的协议签名页脚
     appendix_footer_text = footer_override or build_footer_text(SIGNATURE_LICENSE)
-    appendix_embed.set_footer(text=appendix_footer_text)
+    appendix_embed.set_footer(text=appendix_footer_text + stretcher_value)
 
     return [main_embed, appendix_embed]

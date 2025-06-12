@@ -3,10 +3,10 @@
 # 用于在清理历史消息时识别本机器人发出的交互面板
 SIGNATURE_HELPER = "授权协议助手"
 
-# 【新增】用于在已发布的最终协议中留下一个机器可读的“指纹”
+# 用于在已发布的最终协议中留下一个机器可读的“指纹”
 SIGNATURE_LICENSE = "协议由授权助手生成"
 
-# 【新增】CC协议核心元素的通俗化、可复用解释
+# CC协议核心元素的通俗化、可复用解释
 # 这是所有解释的“唯一真实来源”。
 CC_ELEMENT_EXPLANATIONS = {
     "BY": "**✒️ 保留署名 (Attribution)**\n> **他人**在转载、二创等任何场景下使用**你的作品**时，都必须明确标注**你（原作者）**的名字或ID。",
@@ -15,7 +15,7 @@ CC_ELEMENT_EXPLANATIONS = {
     "ND": "**🚫 禁止二次创作 (NoDerivatives)**\n> **他人**不能对**你的作品**进行任何形式的修改，包括但不限于调色、裁剪、混剪、翻译等。只能原封不动地分享它。"
 }
 
-# 【重构】Creative Commons 协议的标准化数据。
+# Creative Commons 协议的标准化数据。
 # 增加了 `elements` 字段，用于逐条解释。
 CC_LICENSES = {
     "CC BY 4.0": {
@@ -75,15 +75,62 @@ HUB_VIEW_CONTENT = (
     "> 在这里，你可以完全手动控制每一项条款。最终生成的将是你独有的“自定义协议”。\n"
     "> ⚠️ **重要提醒：** \n"
     "> CC协议的核心是**鼓励分享**，因此所有标准模板都**允许他人进行二次传播（转载）**。如果你希望**【完全禁止二次传播】**，请使用本“创建或编辑自定义协议”选项。\n\n"
+
     "📜 **应用一个标准的CC协议**\n"
     "> 查看并从官方的 Creative Commons 协议中选择一个来应用。（选择后，可以看到不同CC协议的详细解释）\n"
     "> **注意：** 应用后，你当前的设置将被一个标准的CC协议模板所**覆盖**。\n"
     "> CC协议的核心条款是标准化的，任何附加的限制性条款都可能被视为无效。\n"
     "> 了解更多关于CC协议： https://creativecommons.org \n\n"
+
+    "💻 **应用一个标准的软件协议 (新!)**\n"
+    "> 为你的代码项目选择一个合适的开源许可证。\n\n"
+
     "💡 **关于“附加说明”的重要规则**\n"
     "> **如无另外说明**，你在“附加说明”中填写的条款，其**生效范围将和这份协议主体完全一致**（即，随协议的更新而“过时”）。\n"
     "> 如果你想让某条附加说明**永久有效**或拥有**特殊范围**，你**需要在其中明确写出**，例如：“**本帖所有内容**禁止商业用途。”\n\n"
 )
+
+# ============================================
+#            开源软件教育平台
+# ============================================
+
+SOFTWARE_LICENSES = {
+    "WTFPL": {
+        "description": "“你™想干啥就干啥公共许可证”。终极的自由，已被FSF认证为兼容GPL，但未被OSI批准。",
+        "url": "http://www.wtfpl.net/",
+        "full_text": (
+            ">>> DO WHAT THE FUCK YOU WANT TO PUBLIC LICENSE\n"
+            "> Version 2, December 2004\n\n"
+            "> Copyright (C) 2004 Sam Hocevar <sam@hocevar.net>\n\n"
+            "> Everyone is permitted to copy and distribute verbatim or modified "
+            "copies of this license document, and changing it is allowed as long "
+            "as the name is changed.\n\n"
+            "> DO WHAT THE FUCK YOU WANT TO PUBLIC LICENSE\n"
+            "> TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION\n\n"
+            "> 0. You just DO WHAT THE FUCK YOU WANT TO."
+        )
+    },
+    "MIT": {
+        "description": "最流行的宽松型许可证之一。代码可以被任意使用、修改、合并、出版、分发、再授权和/或贩卖，只需保留版权和许可声明。",
+        "url": "https://opensource.org/licenses/MIT",
+        "full_text": "条款很简单但还是超出了Discord的上限，所以请参考 [官方协议原文](https://opensource.org/licenses/MIT)"
+    },
+    "Apache-2.0": {
+        "description": "一个在宽松和专利保护间取得良好平衡的许可证。除了MIT有的权限，它还明确授予了专利许可。",
+        "url": "https://www.apache.org/licenses/LICENSE-2.0",
+        "full_text": "条款复杂，请参考 [官方协议原文](https://www.apache.org/licenses/LICENSE-2.0)"
+    },
+    "GPL-3.0": {
+        "description": "强大的“Copyleft”许可证。要求任何修改和分发的版本都必须以相同的GPL-3.0协议开源，保证了软件的永久自由。",
+        "url": "https://www.gnu.org/licenses/gpl-3.0.html",
+        "full_text": "条款极其复杂，请参考 [官方协议原文](https://www.gnu.org/licenses/gpl-3.0.html)"
+    },
+    "AGPL-3.0": {
+        "description": "GPL的超集，专为网络服务设计。即使软件仅通过网络提供服务而未分发，也必须提供修改后的源代码。反商业闭源的终极利器。",
+        "url": "https://www.gnu.org/licenses/agpl-3.0.html",
+        "full_text": "条款极其复杂，请参考 [官方协议原文](https://www.gnu.org/licenses/agpl-3.0.html)"
+    }
+}
 
 # ============================================
 #            命令与本地化配置

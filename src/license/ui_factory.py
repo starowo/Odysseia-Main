@@ -88,7 +88,6 @@ async def prepare_confirmation_flow(
         on_cancel_action: Callable[..., Coroutine[Any, Any, None]],
 ) -> tuple[str, list[Embed], ConfirmPostView]:
     """
-    【最终版重构】
     - 返回一个Embeds列表用于预览。
     - 预览内容包含主面板和附录。
     - 不再需要侦察历史消息。
