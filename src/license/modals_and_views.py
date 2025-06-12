@@ -287,6 +287,14 @@ class CCLicenseSelectView(ui.View):
         """构建“重要知识”附录Embed，并按需定制URL。"""
         knowledge_text = (
             "**💡 关于授权协议的重要知识**\n\n"  # 增加换行
+
+            "🖥️ **不推荐用于软件代码**\n"
+            "> **请注意：** CC系列协议**主要为文章、图片、音乐、视频等**创作内容**设计。对于软件，我们强烈建议采用由 **[开源促进会 (OSI)](https://opensource.org/)** 审核和推荐的专用许可证，例如：\n"
+            "> • **宽松型**: [WTFPL](http://www.wtfpl.net/) / [MIT](https://opensource.org/licenses/MIT) - 无限制/几乎无限制。\n"
+            "> • **平衡型**: [Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0) - 平衡了开放与专利保护。\n"
+            "> • **严格型 (强传染性)**: [GPLv3](https://www.gnu.org/licenses/gpl-3.0.html) / [AGPLv3](https://www.gnu.org/licenses/agpl-3.0.html) - 要求衍生作品也必须开源。"
+            "**AGPL** 尤其严格，**即使是通过网络提供服务，也必须公开修改后的源代码**，是反商业闭源的终极利器。\n\n"
+
             "⚖️ **协议的效力**\n"
             "> 作者一旦为某次发布选择了CC协议，该选择便具有法律约束力。\n\n"  # 增加换行
 
