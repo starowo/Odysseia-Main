@@ -131,6 +131,7 @@ def build_license_embed(config: LicenseConfig, author: discord.Member, commercia
     """
     saved_details = config.license_details.copy()  # 使用副本以防修改原始配置对象
     license_type = saved_details.get("type", "custom")
+    is_cc_license = license_type in CC_LICENSES
 
     warning_message = None  # 用于存储将要显示的警告信息
 
@@ -168,7 +169,7 @@ def build_license_embed(config: LicenseConfig, author: discord.Member, commercia
     # --- Embed 构建流程 ---
     display_details = saved_details
     # 如果降级了，就强制使用新协议的数据
-    if license_type in CC_LICENSES:
+    if is_cc_license:
         display_details.update(CC_LICENSES[license_type])
 
     description_parts = []
@@ -186,7 +187,7 @@ def build_license_embed(config: LicenseConfig, author: discord.Member, commercia
     if notes and notes.strip() and notes != "无":
         formatted_notes = _format_links_in_text(notes)
         notes_section = (
-            f"\n\n**📝 附加说明**\n"
+            f"\n\n**📝 附加说明**  (如无另外声明，其效力范围同本协议)\n"
             f"-------------------\n"
             f"{formatted_notes}"
         )
@@ -214,17 +215,33 @@ def build_license_embed(config: LicenseConfig, author: discord.Member, commercia
     embed.add_field(name="🎨 二次创作", value=_format_links_in_text(display_details.get("derive", "未设置")), inline=True)
     embed.add_field(name="💰 商业用途", value=_format_links_in_text(display_details.get("commercial", "未设置")), inline=True)
 
-    # 注意：我们不再在这里添加 '附加说明' 的 field
-    author_precedence_clause = (
-        "本机器人/本协议的内容仅为作者提供方便。\n"
-        "若作者在本帖内/外对特定内容作出额外声明，则该声明的效力高于本通用协议。"
+    # 5. 添加“协议生效规则”字段
+    effectiveness_rules = (
+        f"1. **定义**：这是由「{SIGNATURE_HELPER}」生成的通用内容授权协议，下文简称为**“本协议”**。\n"
+        "2. **效力范围（“时间段”）**：\n"
+        "> **截断与起始**：本协议的发布，将**截断**并取代任何更早发布的“本协议”对**未来内容**的效力。本协议的效力从其**发布时**开始。\n"
+        "> **向前追溯**：**如果**在本协议之前**不存在**其他“本协议”，则本协议的效力将**向前追溯**，覆盖从帖子建立（1楼）开始、所有未被单独授权的内容。\n"
+        "3. **效力层级（谁说了算）**：\n"
+        "> **最高层级**：创作者（即本帖所有者）在本帖内发表的任何**亲口声明**（例如在任意楼的全局规定、附加条款、“本协议”附加说明中的内容），其法律效力**永远高于**“本协议”。\n"
+        "> **冲突解决**：若“本协议”条款与创作者的亲口声明冲突，以**创作者的声明**为准。"
     )
     embed.add_field(
-        name="⚠️ 最高原则",
-        value=author_precedence_clause,
+        name="⚖️ 协议生效规则",
+        value=effectiveness_rules,
         inline=False
     )
 
+    # 6. 如果选择了CC协议，则添加CC免责声明字段
+    if is_cc_license:
+        cc_disclaimer = (
+            "若创作者通过“附加说明”或亲口声明，为本协议附加了额外条款，则本授权**可能不再被视为一份标准的CC协议**。\n"
+            "届时，本协议将被理解为一份包含所有上述条款（署名、二创、转载、商用等）的**自定义协议**，CC协议链接仅供参考。"
+        )
+        embed.add_field(
+            name="⚠️ 关于CC协议的特别说明",
+            value=cc_disclaimer,
+            inline=False
+        )
 
     # 5. 设置页脚
     embed.set_footer(text=build_footer_text(SIGNATURE_LICENSE))
