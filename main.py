@@ -12,10 +12,10 @@ from dotenv import load_dotenv
 
 import src.thread_manage.cog as thread_manage
 import src.bot_manage.cog as bot_manage
-# import src.admin.cog as admin
+import src.admin.cog as admin
 import src.verify.cog as verify
 import src.misc.cog as misc
-# import src.event.cog as event
+import src.event.cog as event
 import src.anonymous_feedback.cog as anonymous_feedback
 import src.sync.cog as sync
 import src.license.cog as license_auto
@@ -279,10 +279,10 @@ class CogManager:
         self.cog_map: dict = {
             "thread_manage": thread_manage.ThreadSelfManage(bot),
             "bot_manage": bot_manage.BotManageCommands(bot),
-            # "admin": admin.AdminCommands(bot),
+            "admin": admin.AdminCommands(bot),
             "verify": verify.VerifyCommands(bot),
             "misc": misc.MiscCommands(bot),
-            # "event": event.EventCommands(bot),
+            "event": event.EventCommands(bot),
             "anonymous_feedback": anonymous_feedback.AnonymousFeedbackCog(bot),
             "sync": sync.ServerSyncCommands(bot),
             "license": license_auto.LicenseCog(bot)

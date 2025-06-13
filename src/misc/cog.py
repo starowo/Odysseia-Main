@@ -15,29 +15,34 @@ class MiscCommands(commands.Cog):
         self.name = "杂项命令"
         # 用户最后发送通知时间缓存，单位为UTC datetime
         self.announce_cooldowns: dict[int, datetime.datetime] = {}
+        # 初始化配置缓存
+        self._config_cache = {}
+        self._config_cache_mtime = None
 
     async def on_ready(self):
         self.bot.logger.info(f"杂项命令已加载")
 
     # 权限检查装饰器
     def is_admin():
-        async def predicate(ctx):
+        async def predicate(interaction: discord.Interaction):
             try:
-                guild = ctx.guild
+                guild = interaction.guild
                 if not guild:
                     return False
                     
-                cog = ctx.cog
+                cog = interaction.client.get_cog("MiscCommands")
+                if not cog:
+                    return False
                 config = getattr(cog, 'config', {})
                 for admin in config.get('admins', []):
                     role = guild.get_role(admin)
                     if role:
-                        if role in ctx.author.roles:
+                        if role in interaction.user.roles:
                             return True
                 return False
             except Exception:
                 return False
-        return commands.check(predicate)
+        return app_commands.check(predicate)
 
     @property
     def config(self):
