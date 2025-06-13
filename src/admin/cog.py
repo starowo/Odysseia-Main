@@ -164,7 +164,7 @@ class AdminCommands(commands.Cog):
 
     # ---- 添加/移除身份组 ----
     @admin.command(name="身份组", description="添加/移除身份组")
-    @is_admin()
+    
     @app_commands.describe(
         member="成员",
         action="操作",
@@ -216,7 +216,7 @@ class AdminCommands(commands.Cog):
 
     # ---- 批量删除消息 ----
     @admin.command(name="批量删除消息", description="在当前频道，从指定消息开始到指定消息结束，删除全部消息")
-    @is_admin()
+    
     @app_commands.describe(
         start_message="开始消息链接",
         end_message="结束消息链接"
@@ -323,7 +323,7 @@ class AdminCommands(commands.Cog):
 
     # ---- 批量转移身份组 ----
     @admin.command(name="批量转移身份组", description="给具有指定身份组的成员添加新身份组，可选是否移除原身份组")
-    @is_admin()
+    
     @app_commands.describe(
         source_role="需要转移的原身份组",
         target_role="要添加的新身份组",
@@ -398,7 +398,7 @@ class AdminCommands(commands.Cog):
 
     # ---- 禁言 ----
     @admin.command(name="禁言", description="将成员禁言（最长28天）并公示")
-    @is_admin()
+    
     @app_commands.describe(
         member="要禁言的成员",
         time="禁言时长（5m, 12h, 3d）",
@@ -533,7 +533,7 @@ class AdminCommands(commands.Cog):
 
     # ---- 永封 ----
     @admin.command(name="永封", description="永久封禁成员并公示")
-    @is_admin()
+    
     @app_commands.describe(member="要封禁的成员", user_id="用户ID（可直接封禁不在服务器的用户）", reason="原因（可选）", img="图片（可选）", delete_message_days="删除消息天数（0-7）")
     @app_commands.rename(member="成员", user_id="用户id", reason="原因", img="图片", delete_message_days="删除消息天数")
     async def ban_member(
@@ -667,7 +667,7 @@ class AdminCommands(commands.Cog):
 
     # ---- 撤销处罚 ----
     @admin.command(name="撤销处罚", description="按ID撤销处罚")
-    @is_admin()
+    
     @app_commands.describe(punish_id="处罚ID", reason="原因（可选）")
     async def revoke_punish(self, interaction, punish_id: str, reason: str = None):
         guild = interaction.guild
@@ -761,7 +761,7 @@ class AdminCommands(commands.Cog):
 
     # ---- 频道管理 ----
     @admin.command(name="频道管理", description="编辑频道属性")
-    @is_admin()
+    
     @app_commands.describe(
         channel="要编辑的频道",
         new_name="新名称(可选)",
@@ -816,7 +816,7 @@ class AdminCommands(commands.Cog):
 
     # ---- 一键删帖 ----
     @admin.command(name="一键删帖", description="一键删除某成员发布的全部帖子")
-    @is_admin()
+    
     @app_commands.describe(member="要删除帖子的成员ID", channel="要删除帖子的频道")
     @app_commands.rename(member="成员id", channel="频道")
     async def delete_all_threads(self, interaction: discord.Interaction, member: str, channel: "discord.ForumChannel"):
@@ -933,7 +933,7 @@ class AdminCommands(commands.Cog):
     thread_manage_group = app_commands.Group(name="子区管理", description="子区线程管理", parent=admin)
 
     @thread_manage_group.command(name="锁定", description="锁定线程")
-    @is_admin()
+    
     @app_commands.describe(thread="要锁定的子区（留空则为当前子区）")
     @app_commands.rename(thread="子区")
     async def lock_thread_admin(
@@ -958,7 +958,7 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(f"❌ 锁定失败: {e}", ephemeral=True)
 
     @thread_manage_group.command(name="解锁", description="解锁线程")
-    @is_admin()
+    
     @app_commands.describe(thread="要解锁的子区（留空则为当前子区）")
     @app_commands.rename(thread="子区")
     async def unlock_thread_admin(
@@ -982,7 +982,7 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(f"❌ 解锁失败: {e}", ephemeral=True)
 
     @thread_manage_group.command(name="archive", description="归档线程")
-    @is_admin()
+    
     @app_commands.describe(thread="要归档的子区（留空则为当前子区）")
     @app_commands.rename(thread="子区")
     async def archive_thread_admin(
@@ -1006,7 +1006,7 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(f"❌ 归档失败: {e}", ephemeral=True)
 
     @thread_manage_group.command(name="unarchive", description="取消归档线程")
-    @is_admin()
+    
     @app_commands.describe(thread="要取消归档的子区（留空则为当前子区）")
     @app_commands.rename(thread="子区")
     async def unarchive_thread_admin(
@@ -1030,7 +1030,7 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(f"❌ 取消归档失败: {e}", ephemeral=True)
 
     @thread_manage_group.command(name="pin", description="置顶")
-    @is_admin()
+    
     @app_commands.describe(thread="要置顶的子区（留空则为当前子区）")
     @app_commands.rename(thread="子区")
     async def pin_in_thread_admin(
@@ -1051,7 +1051,7 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(f"❌ 置顶失败: {e}", ephemeral=True)
 
     @thread_manage_group.command(name="unpin", description="取消置顶")
-    @is_admin()
+    
     async def unpin_in_thread_admin(
         self,
         interaction,
@@ -1070,7 +1070,7 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(f"❌ 取消置顶失败: {e}", ephemeral=True)
 
     @thread_manage_group.command(name="删帖", description="删除线程")
-    @is_admin()
+    
     @app_commands.describe(thread="要删除的子区（留空则为当前子区）")
     @app_commands.rename(thread="子区")
     async def delete_thread_admin(
@@ -1102,7 +1102,7 @@ class AdminCommands(commands.Cog):
 
     # ---- 答题处罚 ----
     @app_commands.command(name="答题处罚", description="移除身份组送往答题区")
-    @is_admin()
+    
     @app_commands.describe(member="要处罚的成员", reason="原因（可选）")
     @app_commands.rename(member="成员", reason="原因")
     async def quiz_punish(self, interaction, member: "discord.Member", reason: str = None):
