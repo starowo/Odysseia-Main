@@ -24,7 +24,8 @@ def get_default_license_details(member: discord.Member) -> dict:
         "derive": "需联系作者获得授权",
         "commercial": "禁止",
         "attribution": attribution,  # 默认署名为@用户
-        "notes": "无"
+        "notes": "无",  # 附加条款
+        "personal_statement": "无"  # 个人宣言字段
     }
 
 

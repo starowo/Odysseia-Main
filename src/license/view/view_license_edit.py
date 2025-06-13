@@ -5,6 +5,51 @@ from typing import Dict, Any
 from src.license.utils import *
 
 
+# --- 第二步的视图，在原地编辑后显示 ---
+class CustomEditStep2View(ui.View):
+    def __init__(self, owner_id: int, core_terms: dict, prefill_data: dict, final_callback: callable, on_cancel: callable, is_temporary: bool,
+                 on_save_action: callable):
+        super().__init__(timeout=300)
+        self.owner_id = owner_id
+        self.core_terms = core_terms
+        self.prefill_data = prefill_data
+        self.final_callback = final_callback
+        self.on_cancel = on_cancel
+        self.is_temporary = is_temporary
+        self.on_save_action = on_save_action
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return await do_simple_owner_id_interaction_check(self.owner_id, interaction)
+
+    @ui.button(label="📝 编辑附加信息 (第 2/2 步)", style=discord.ButtonStyle.primary)
+    async def edit_notes(self, interaction: discord.Interaction, button: ui.Button):
+        # 这是最终提交时的回调
+        async def final_submit_callback(modal_interaction: discord.Interaction, attribution: str, notes: str, personal_statement: str):
+            new_details = {
+                **self.core_terms,
+                "attribution": attribution,
+                "notes": notes,
+                "personal_statement": personal_statement
+            }
+            processed_details = self.on_save_action(new_details)
+            await self.final_callback(modal_interaction, processed_details)
+
+        # 弹出第二个Modal
+        second_modal = AttributionNotesModal(
+            default_attribution=self.prefill_data.get("attribution", ""),
+            default_notes=self.prefill_data.get("notes", "无"),
+            default_personal_statement=self.prefill_data.get("personal_statement", "无"),
+            final_callback=final_submit_callback,
+            is_temporary=self.is_temporary
+        )
+        await interaction.response.send_modal(second_modal)
+
+    @ui.button(label="取消编辑", style=discord.ButtonStyle.danger)
+    async def cancel_edit(self, interaction: discord.Interaction, button: ui.Button):
+        await safe_defer(interaction)
+        await self.on_cancel(interaction)
+
+
 class LicenseEditHubView(ui.View):
     """
     授权协议编辑的“枢纽”视图。
@@ -40,13 +85,50 @@ class LicenseEditHubView(ui.View):
         """权限检查"""
         return await do_simple_owner_id_interaction_check(self.owner_id, interaction)
 
+    # +++ 所有编辑流程都通过 start_full_edit_flow 启动 +++
+    async def start_flow_for(self, interaction: discord.Interaction, prefill_data: dict, on_save_action: callable, title_hint: Optional[str] = None):
+        """一个统一的启动器，负责启动两步式编辑流程。"""
+
+        # 这是第一步Modal提交后的回调
+        async def core_modal_submit_callback(modal_interaction: discord.Interaction, core_terms: dict):
+            # 创建第二步的视图和Embed
+            step2_view = CustomEditStep2View(
+                owner_id=modal_interaction.user.id,
+                core_terms=core_terms,
+                prefill_data=prefill_data,
+                final_callback=self.callback,  # 顶层回调
+                on_cancel=self.on_cancel,  # 顶层取消回调
+                is_temporary=self.is_temporary,
+                on_save_action=on_save_action
+            )
+            step2_embed = create_helper_embed(
+                title="📝 编辑协议 (2/2)",
+                description=(
+                    "很遗憾，由于Discord的API限制，您不得不分两步对内容进行填写，我们对此深感抱歉。\n"
+                    "✅ 核心条款已暂存。请点击下方按钮，继续填写附加信息。"
+                )
+            )
+            # 原地编辑消息，进入第二步
+            await modal_interaction.edit_original_response(embed=step2_embed, view=step2_view)
+
+        # 启动流程：弹出第一个Modal
+        core_modal = CustomLicenseCoreModal(
+            prefill_data=prefill_data,
+            callback=core_modal_submit_callback,
+            commercial_use_allowed=self.commercial_use_allowed,
+            title_hint=title_hint
+        )
+        await interaction.response.send_modal(core_modal)
+
     @ui.button(label="📝 使用自定义文本填写", style=discord.ButtonStyle.primary, row=0)
     async def set_with_custom(self, interaction: discord.Interaction, button: ui.Button):
-        """点击此按钮，会弹出一个用于填写所有自定义协议条款的 Modal。"""
-        # 创建 Modal，并将顶层回调函数 `self.callback` 传递给它。
-        modal = CustomLicenseEditModal(self.db, self.config, callback=self.callback, commercial_use_allowed=self.commercial_use_allowed,
-                                       is_temporary=self.is_temporary)
-        await interaction.response.send_modal(modal)
+        # 启动通用编辑流程
+        await self.start_flow_for(
+            interaction=interaction,
+            prefill_data=self.config.license_details,
+            on_save_action=lambda details: details,  # 自定义流程直接返回数据
+            title_hint="自定义"
+        )
 
     @ui.button(label="📜 从CC协议模板中选择", style=discord.ButtonStyle.secondary, row=0)
     async def set_with_cc(self, interaction: discord.Interaction, button: ui.Button):
@@ -89,105 +171,64 @@ class LicenseEditHubView(ui.View):
         await self.on_cancel(interaction)
 
 
-class AttributionNotesModal(ui.Modal, title="填写署名与备注"):
+class CustomLicenseCoreModal(ui.Modal):
     """
-    一个简单的 Modal，仅用于让用户填写“署名要求”和“附加说明”。
-    在选择CC协议后弹出，用于补充非核心条款。
-    """
-
-    def __init__(self, default_attribution: str, default_notes: str, final_callback: callable, is_temporary: bool):
-        """
-        Args:
-            default_attribution: 默认显示的署名要求。
-            default_notes: 默认显示的附加说明。
-            final_callback: 用户提交 Modal 后的回调，签名应为 `async def callback(interaction, attribution: str, notes: str)`。
-        """
-        super().__init__()
-        self.is_temporary = is_temporary
-
-        # 根据 is_temporary 动态设置标签
-        if is_temporary:
-            attribution_label = "内容原作者署名"
-        else:
-            # Discord 的 Modal 标签支持换行符，是理想的提示位置
-            attribution_label = "内容原作者署名\n (若为搬运作品，建议使用“仅本次”功能发布)"
-
-        self.attribution = ui.TextInput(label=attribution_label, default=default_attribution)
-        self.notes = ui.TextInput(label="附加说明 (可选)", default=default_notes if default_notes != "无" else "", required=False,
-                                  style=discord.TextStyle.paragraph)
-        self.add_item(self.attribution)
-        self.add_item(self.notes)
-        self.final_callback = final_callback
-
-    async def on_submit(self, interaction: discord.Interaction):
-        """当用户提交时，调用最终回调并传入填写的数据。"""
-        await safe_defer(interaction)
-        await self.final_callback(interaction, self.attribution.value, self.notes.value or "无")
-
-
-class CustomLicenseEditModal(ui.Modal, title="编辑自定义授权协议"):
-    """
-    一个用于完整编辑自定义授权协议的 Modal。
-    包含所有协议条款的文本输入框。
+    第一步的Modal
     """
 
-    def __init__(self, db: LicenseDB, current_config: LicenseConfig, callback: callable, commercial_use_allowed: bool, is_temporary: bool):
-        """
-        Args:
-            db: LicenseDB 实例。
-            current_config: 当前用户配置，用于填充默认值。
-            callback: 提交后的回调，签名应为 `async def callback(interaction, new_details: dict)`。
-        """
-        super().__init__()
-        self.is_temporary = is_temporary
-        self.db = db
-        self.config = current_config
-        self.callback = callback  # 存储顶层回调
+    def __init__(self, prefill_data: dict, callback: callable, commercial_use_allowed: bool, title_hint: Optional[str] = None):
+        base_title = "编辑协议 - 核心条款"
+        modal_title = f"{base_title} ({title_hint})" if title_hint else base_title
+        if len(modal_title) > 45:
+            modal_title = modal_title[:42] + "..."  # 留3个点
+        super().__init__(title=modal_title)
+        self.callback = callback
 
-        details = current_config.license_details
-        self.reproduce = ui.TextInput(label="二次传播条款", default=details.get("reproduce"), max_length=100)
-        self.derive = ui.TextInput(label="二次创作条款", default=details.get("derive"), max_length=100)
-        # 根据开关状态决定“商业用途”输入框的行为
+        self.reproduce = ui.TextInput(label="二次传播条款", default=prefill_data.get("reproduce"), max_length=100)
+        self.derive = ui.TextInput(label="二次创作条款", default=prefill_data.get("derive"), max_length=100)
         if commercial_use_allowed:
-            self.commercial = ui.TextInput(label="商业用途条款", default=details.get("commercial"), max_length=100)
+            self.commercial = ui.TextInput(label="商业用途条款", default=prefill_data.get("commercial"), max_length=100)
         else:
-            self.commercial = ui.TextInput(
-                label="商业用途条款 (已禁用)",
-                default="禁止 (服务器全局设置)",  # 提供清晰的默认值
-            )
+            self.commercial = ui.TextInput(label="商业用途条款 (已禁用)", default="禁止 (服务器全局设置)")
 
-        # 根据 is_temporary 动态设置标签
-        if is_temporary:
-            attribution_label = "内容原作者署名"
-        else:
-            # Discord 的 Modal 标签支持换行符，是理想的提示位置
-            attribution_label = "内容原作者署名\n (若为搬运作品，建议使用“仅本次”功能发布)"
-
-        self.attribution = ui.TextInput(label=attribution_label, default=details.get("attribution", f"需保留创作者 <@{self.config.user_id}> 的署名"),
-                                        max_length=100)
-        self.notes = ui.TextInput(label="附加说明 (可选)", default=details.get("notes", "无") if details.get("notes", "无") != "无" else "", required=False,
-                                  style=discord.TextStyle.paragraph)
-
-        # Discord Modal 最多只能有5个输入框
         self.add_item(self.reproduce)
         self.add_item(self.derive)
         self.add_item(self.commercial)
-        self.add_item(self.attribution)
-        self.add_item(self.notes)
 
     async def on_submit(self, interaction: discord.Interaction):
-        """用户提交时，构建新的协议详情字典，并调用顶层回调。"""
         await safe_defer(interaction)
-        new_details = {
-            "type": "custom",  # 明确标记为自定义协议
+        core_terms = {
             "reproduce": self.reproduce.value,
             "derive": self.derive.value,
-            "commercial": self.commercial.value,
-            "attribution": self.attribution.value,
-            "notes": self.notes.value or "无"
+            "commercial": self.commercial.value
         }
-        # 调用从 LicenseEditHubView -> CustomLicenseEditModal 一路传递下来的回调函数
-        await self.callback(interaction, new_details)
+        await self.callback(interaction, core_terms)
+
+
+class AttributionNotesModal(ui.Modal, title="编辑协议 - 附加信息"):
+    """
+    第二步的Modal
+    """
+
+    def __init__(self, default_attribution: str, default_notes: str, default_personal_statement: str, final_callback: callable, is_temporary: bool):
+        super().__init__()
+        self.final_callback = final_callback
+
+        attribution_label = "内容原作者署名" + ("" if is_temporary else "\n (若为搬运作品，建议使用“仅本次”功能发布)")
+        self.attribution = ui.TextInput(label=attribution_label, default=default_attribution, style=discord.TextStyle.paragraph)
+        self.notes = ui.TextInput(label="附加条款 (可选，严肃内容，被视作协议的一部分)", default=default_notes if default_notes != "无" else "", required=False,
+                                  style=discord.TextStyle.paragraph)
+        self.personal_statement = ui.TextInput(label="附言 (可选，个性化内容，通常不具备法律效力)",
+                                               default=default_personal_statement if default_personal_statement != "无" else "", required=False,
+                                               style=discord.TextStyle.paragraph)
+
+        self.add_item(self.attribution)
+        self.add_item(self.notes)
+        self.add_item(self.personal_statement)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await safe_defer(interaction)
+        await self.final_callback(interaction, self.attribution.value, self.notes.value or "无", self.personal_statement.value or "无")
 
 
 class CCLicenseSelectView(ui.View):
@@ -198,7 +239,7 @@ class CCLicenseSelectView(ui.View):
     """
 
     def __init__(self, db: LicenseDB, config: LicenseConfig, callback: callable, on_cancel: callable, commercial_use_allowed: bool, is_temporary: bool,
-                 owner_id: int):  # <-- 修复了之前owner_id=bool的笔误
+                 owner_id: int):
         super().__init__(timeout=300)
         self.owner_id = owner_id
         self.db = db
@@ -350,23 +391,53 @@ class CCLicenseSelectView(ui.View):
 
     @ui.button(label="✅ 请先选择一个协议", style=discord.ButtonStyle.success, disabled=True, custom_id="license_cog:cc_licenses:confirm_button", row=1)
     async def confirm_selection(self, interaction: discord.Interaction, button: ui.Button):
+        """启动预填充的编辑流程 """
+        CC_LICENSES_NOTES = "CC协议不应具备额外条款，如果对此处进行修改，会使得最终保存的协议变为自定义协议。"
         if not self.selected_license: return
-        cc_data = CC_LICENSES[self.selected_license]
 
-        async def modal_submit_callback(modal_interaction, attribution, notes):
-            final_details = {
-                "type": self.selected_license, "reproduce": cc_data["reproduce"], "derive": cc_data["derive"],
-                "commercial": cc_data["commercial"], "attribution": attribution, "notes": notes or "无"
-            }
-            await self.callback(modal_interaction, final_details)
+        # 同样使用 LicenseEditHubView 的启动器
+        hub_view = LicenseEditHubView(self.db, self.config, self.callback, self.on_cancel, self.commercial_use_allowed, "", self.is_temporary, self.owner_id)
 
-        modal = AttributionNotesModal(
-            default_attribution=self.config.license_details.get("attribution", ""),
-            default_notes=self.config.license_details.get("notes", "无"),
-            final_callback=modal_submit_callback,
-            is_temporary=self.is_temporary
+        cc_template_data = CC_LICENSES[self.selected_license]
+
+        # 将CC模板数据和用户已有的附加信息组合成预填充数据
+        prefill_data = {
+            **cc_template_data,  # 填充核心条款
+            "attribution": self.config.license_details.get("attribution", f"需保留创作者 <@{self.config.user_id}> 的署名"),
+            "notes": CC_LICENSES_NOTES,
+            "personal_statement": self.config.license_details.get("personal_statement", "无"),
+        }
+
+        # 定义保存时的特殊逻辑
+        def on_save_action(new_details: dict) -> dict:
+            # 检查核心条款是否被修改
+            is_modified = (
+                    new_details["reproduce"] != cc_template_data["reproduce"] or
+                    new_details["derive"] != cc_template_data["derive"] or
+                    (self.commercial_use_allowed and new_details["commercial"] != cc_template_data["commercial"]) or # 如果禁止商业化，则不对商业化部分的条款进行检测
+                    new_details["notes"] != CC_LICENSES_NOTES
+            )
+
+            final_details = self.config.license_details.copy()
+            if is_modified:
+                # 核心条款被修改，转为自定义协议并完全覆盖
+                final_details = new_details
+                final_details["type"] = "custom"
+            else:
+                # 核心条款未变，只更新非核心部分，保留类型
+                final_details["type"] = self.selected_license
+                final_details["attribution"] = new_details["attribution"]
+                final_details["personal_statement"] = new_details["personal_statement"]
+
+            return final_details
+
+        # 调用hub_view上的通用启动器
+        await hub_view.start_flow_for(
+            interaction=interaction,
+            prefill_data=prefill_data,
+            on_save_action=on_save_action,
+            title_hint=f"改动即转为自定义"
         )
-        await interaction.response.send_modal(modal)
 
     @ui.button(label="💡 查看重要知识", style=discord.ButtonStyle.secondary, custom_id="license_cog:cc_licenses:knowledge_button", row=1)
     async def toggle_knowledge(self, interaction: discord.Interaction, button: ui.Button):
@@ -459,7 +530,7 @@ class SoftwareLicenseSelectView(ui.View):
         """用户从下拉菜单中选择一个项目后触发。"""
         await safe_defer(interaction)
         self.selected_license = interaction.data["values"][0]
-        confirm_button = get_item_by_id(self,"license_cog:software_licenses:confirm_button")
+        confirm_button = get_item_by_id(self, "license_cog:software_licenses:confirm_button")
         if isinstance(confirm_button, ui.Button):
             confirm_button.disabled = False
             confirm_button.label = "✅ 确认使用此协议"
@@ -467,26 +538,24 @@ class SoftwareLicenseSelectView(ui.View):
 
     @ui.button(label="✅ 请先选择一个协议", style=discord.ButtonStyle.success, disabled=True, custom_id="license_cog:software_licenses:confirm_button", row=1)
     async def confirm_selection(self, interaction: discord.Interaction, button: ui.Button):
-        """确认选择，并弹出Modal填写署名和备注。"""
         if not self.selected_license: return
 
-        async def modal_submit_callback(modal_interaction, attribution, notes):
+        async def modal_submit_callback(modal_interaction, attribution, notes, personal_statement):
             # 不覆盖核心条款，只更新类型、署名和备注。
             # 这样可以在切换回自定义协议时保留用户之前的设置。
             # 1. 从当前配置开始，保留所有未修改的字段。
             final_details = self.config.license_details.copy()
-
             # 2. 只更新用户本次操作明确设置的字段。
             final_details["type"] = self.selected_license
             final_details["attribution"] = attribution
             final_details["notes"] = notes or "无"
-
-            # 3. 将更新后的数据传回上层回调。
+            final_details["personal_statement"] = personal_statement or "无"
             await self.callback(modal_interaction, final_details)
 
         modal = AttributionNotesModal(
             default_attribution=self.config.license_details.get("attribution", f"Copyright (c) {datetime.now().year} <@{self.config.user_id}>"),
             default_notes=self.config.license_details.get("notes", "无"),
+            default_personal_statement=self.config.license_details.get("personal_statement", "无"),
             final_callback=modal_submit_callback,
             is_temporary=self.is_temporary
         )
