@@ -12,26 +12,35 @@ from src.license.database import *
 def _format_links_in_text(text: str) -> str:
     """
     一个辅助函数，用于查找文本中的【裸露URL】并将其转换为Markdown链接。
-    它会智能地跳过已经存在于Markdown链接语法中的URL。
-    例如：将 "https://example.com" 转换为 "[https://example.com](https://example.com)"
-          但会忽略 "[My Site](https://example.com)" 中的URL。
+    它会智能地处理 Discord 链接以规避其渲染BUG，并美化其他链接的显示文本。
     """
     if not text:
         return text
 
-    # 正则表达式解释:
-    # (?<!\]\() : 否定型环视 (Negative Lookbehind)。断言当前位置的前面不是 "]("。
-    #            这可以防止我们匹配已经格式化为 [text](url) 的URL。
-    # (https?://[^\s<>()]+) :
-    #   ( ... )       : 捕获组 1，包含整个URL。
-    #   https?://     : 匹配 'http://' 或 'https://'。
-    #   [^\s<>()]+   : 匹配一个或多个不包含 空格、<、>、(、) 的字符。
-    #                  这比 [^\s]+ 更健壮，可以避免意外包含周围的标点符号。
+    # 正则表达式，用于匹配裸露的URL
     url_pattern = re.compile(r'(?<!\]\()(https?://[^\s<>()]+)')
 
-    # 使用 re.sub 进行替换
-    # \g<1> 代表捕获组1的内容
-    return url_pattern.sub(r'[\g<1>](\g<1>)', text)
+    def replacer(match: re.Match) -> str:
+        """
+        一个自定义的替换函数，用于 re.sub。
+        """
+        url = match.group(0)  # 获取完整的URL，例如 "https://example.com"
+
+        # 检查是否是 Discord 消息链接
+        if "discord.com/" in url:
+            # 对于 Discord 链接，使用固定的友好文本
+            link_text = "「点击查看 Discord 链接内容」"
+            return f"[{link_text}]({url})"
+        else:
+            # 对于其他链接，移除协议头作为显示文本
+            link_text = re.sub(r'^https?://', '', url)
+            # 移除尾部的斜杠，让显示更干净
+            if link_text.endswith('/'):
+                link_text = link_text[:-1]
+            return f"[{link_text}]({url})"
+
+    # 使用 re.sub 并传入我们的自定义替换函数
+    return url_pattern.sub(replacer, text)
 
 
 def build_settings_embed(config: LicenseConfig) -> discord.Embed:
@@ -304,7 +313,7 @@ def build_license_embeds(
             # 使用 title 来展示标题，更醒目
             title="📣 附言 (无法律效力)",
             # description 用来展示内容，支持完整的Markdown
-            description=_format_links_in_text(personal_statement),
+            description=personal_statement,
             color=discord.Color.blue()
         )
         # 保持页脚一致性
