@@ -298,40 +298,36 @@ def build_license_embeds(
 
     # --- 构建附言Embed (如果存在) ---
     personal_statement: str = display_details.get("personal_statement")
-    if not personal_statement or not personal_statement.strip() or personal_statement == "无":
-        return embeds_to_send
-
     # 附言
-    postscript_embed = discord.Embed(
-        # 使用 title 来展示标题，更醒目
-        title="📣 附言 (无法律效力)",
-        # description 用来展示内容，支持完整的Markdown
-        description=_format_links_in_text(personal_statement),
-        color=discord.Color.light_grey()
-    )
-    # 保持页脚一致性
-    postscript_embed.set_footer(text=footer_text + stretcher_value)
-    embeds_to_send.append(postscript_embed)
+    if personal_statement and personal_statement.strip() and personal_statement != "无":
+        postscript_embed = discord.Embed(
+            # 使用 title 来展示标题，更醒目
+            title="📣 附言 (无法律效力)",
+            # description 用来展示内容，支持完整的Markdown
+            description=_format_links_in_text(personal_statement),
+            color=discord.Color.blue()
+        )
+        # 保持页脚一致性
+        postscript_embed.set_footer(text=footer_text + stretcher_value)
+        embeds_to_send.append(postscript_embed)
 
     # --- 按需构建附录并返回 ---
-    if not include_appendix:
-        return embeds_to_send
-
     # 5. 添加“协议生效规则”字段
-    appendix_description_parts = [_EFFECTIVENESS_RULES_TEXT]
-    if is_cc_license:
-        appendix_description_parts.append("\n\n" + _CC_DISCLAIMER_TEXT)
+    if include_appendix:
+        appendix_description_parts = [_EFFECTIVENESS_RULES_TEXT]
+        if is_cc_license:
+            appendix_description_parts.append("\n\n" + _CC_DISCLAIMER_TEXT)
 
-    appendix_embed = discord.Embed(
-        description="\n".join(appendix_description_parts),
-        color=discord.Color.light_grey()
-    )
+        appendix_embed = discord.Embed(
+            description="\n".join(appendix_description_parts),
+            color=discord.Color.light_grey()
+        )
 
-    # 为附录Embed也设置页脚
-    # 如果主页脚被覆盖了，附录也应该用被覆盖的那个，以保持一致
-    # 否则，附录也使用标准的协议签名页脚
-    appendix_footer_text = footer_override or build_footer_text(SIGNATURE_LICENSE)
-    appendix_embed.set_footer(text=appendix_footer_text + stretcher_value)
+        # 为附录Embed也设置页脚
+        # 如果主页脚被覆盖了，附录也应该用被覆盖的那个，以保持一致
+        # 否则，附录也使用标准的协议签名页脚
+        appendix_footer_text = footer_override or build_footer_text(SIGNATURE_LICENSE)
+        appendix_embed.set_footer(text=appendix_footer_text + stretcher_value)
 
-    embeds_to_send.append(appendix_embed)
+        embeds_to_send.append(appendix_embed)
     return embeds_to_send
