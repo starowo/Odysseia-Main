@@ -20,10 +20,10 @@
 from discord import app_commands
 from discord.ext import commands
 
-from src.license.modals_and_views import *
-from src.license.ui_factory import prepare_edit_hub
+from src.license.ui_factory import prepare_edit_hub, prepare_confirmation_flow
 from src.license.utils import *
-from src.license.view_setting import SettingsView
+from src.license.view.view_main import InitialActionView, FirstTimeSetupView
+from src.license.view.view_setting import SettingsView
 
 
 # --- 主 Cog 类 ---
@@ -77,8 +77,8 @@ class LicenseCog(commands.Cog):
             # 1. 定义在此上下文中，确认和取消的“最终动作”
             async def do_post_auto(interaction: discord.Interaction, final_embeds: List[discord.Embed]):
                 """确认=发帖并关闭面板"""
+                await interaction.edit_original_response(content="✅ 协议已发布。", embed=None, view=None)
                 await thread.send(embeds=final_embeds)
-                await interaction.response.edit_message(content="✅ 协议已发布。", embed=None, view=None)
 
             async def do_cancel_auto(interaction: discord.Interaction):
                 """取消=返回到标准的主交互面板"""
@@ -92,7 +92,7 @@ class LicenseCog(commands.Cog):
                 )
                 main_embed = await main_view.get_original_embed()
                 # 用主面板替换掉当前的确认面板
-                await interaction.response.edit_message(content=None, embed=main_embed, view=main_view)
+                await interaction.edit_original_response(content=None, embed=main_embed, view=main_view)
 
             # 2. 调用工厂函数来准备预览UI
             preview_content, preview_embeds, confirm_view = await prepare_confirmation_flow(
@@ -146,7 +146,7 @@ class LicenseCog(commands.Cog):
 
         try:
             # 使用 followup.send 发送私密确认消息，以避免与原始交互（如Modal提交）冲突
-            await interaction.response.send_message("✅ 你的默认协议已更新并保存！", ephemeral=True)
+            await interaction.followup.send("✅ 你的默认协议已更新并保存！", ephemeral=True)
             # 尝试清理发起此流程的UI消息（如编辑枢纽面板）
             if not interaction.is_expired():
                 await interaction.edit_original_response(content="✅ 操作完成！", view=None, embed=None)
@@ -271,17 +271,18 @@ class LicenseCog(commands.Cog):
         """
         命令：在当前帖子中重新召唤协议助手面板。
         """
+        await safe_defer(interaction)
         if not isinstance(interaction.channel, discord.Thread):
-            await interaction.response.send_message("❌ 此命令只能在帖子（子区）中使用。", ephemeral=True)
+            await interaction.followup.send("❌ 此命令只能在帖子（子区）中使用。", ephemeral=True)
             return
 
         thread = interaction.channel
         # 收紧权限：只有帖子所有者可以执行此命令。
         if interaction.user.id != thread.owner_id:
-            await interaction.response.send_message("❌ 你不是该帖子的所有者，无法执行此操作。", ephemeral=True)
+            await interaction.followup.send("❌ 你不是该帖子的所有者，无法执行此操作。", ephemeral=True)
             return
 
-        await interaction.response.send_message("✅ 好的，正在为你准备新的授权面板...", ephemeral=True)
+        await interaction.followup.send("✅ 好的，正在为你准备新的授权面板...", ephemeral=True)
 
         # 1. 执行侦察
         existing_license = await self._find_existing_license_message(thread)
@@ -300,6 +301,7 @@ class LicenseCog(commands.Cog):
     )
     async def edit_license(self, interaction: discord.Interaction):
         """命令：打开一个私密的面板来编辑用户的默认授权协议。"""
+        await safe_defer(interaction)
         config = self.db.get_config(interaction.user)
 
         # 1. 定义此场景下的“成功”和“取消”回调
@@ -309,7 +311,7 @@ class LicenseCog(commands.Cog):
 
         async def on_edit_cancel(cancel_interaction: discord.Interaction):
             # 对于斜杠命令，取消就是编辑消息提示已取消
-            await cancel_interaction.response.edit_message(content="操作已取消。", view=None, embed=None)
+            await cancel_interaction.edit_original_response(content="操作已取消。", view=None, embed=None)
 
         # 2. 调用工厂函数来构建UI组件
         content, hub_view = prepare_edit_hub(
@@ -330,7 +332,7 @@ class LicenseCog(commands.Cog):
             description=content
         )
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             embed=hub_embed,  # 使用 embed 而不是 content
             view=hub_view,
             ephemeral=True
@@ -342,11 +344,12 @@ class LicenseCog(commands.Cog):
     )
     async def settings(self, interaction: discord.Interaction):
         """命令：打开一个私密的机器人行为设置面板。"""
+        await safe_defer(interaction)
         config = self.db.get_config(interaction.user)
         # 使用新的工厂函数创建Embed
         embed = build_settings_embed(config)
         view = SettingsView(self.db, config, self)
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
     @license_group.command(
         name=ACTIVE_COMMAND_CONFIG["show"]["name"],
@@ -354,6 +357,7 @@ class LicenseCog(commands.Cog):
     )
     async def show_license(self, interaction: discord.Interaction):
         """命令：以私密消息的方式显示用户当前的默认协议。"""
+        await safe_defer(interaction)
         config = self.db.get_config(interaction.user)
         embeds = build_license_embeds(
             config,
@@ -362,7 +366,7 @@ class LicenseCog(commands.Cog):
             title_override="👀 你的当前默认协议预览",
             footer_override=build_footer_text(SIGNATURE_HELPER)
         )
-        await interaction.response.send_message(embeds=embeds, ephemeral=True)
+        await interaction.followup.send(embeds=embeds, ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
