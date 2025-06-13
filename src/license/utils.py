@@ -11,15 +11,27 @@ from src.license.database import *
 
 def _format_links_in_text(text: str) -> str:
     """
-    一个辅助函数，用于查找文本中的裸露URL并将其转换为Markdown链接。
+    一个辅助函数，用于查找文本中的【裸露URL】并将其转换为Markdown链接。
+    它会智能地跳过已经存在于Markdown链接语法中的URL。
     例如：将 "https://example.com" 转换为 "[https://example.com](https://example.com)"
+          但会忽略 "[My Site](https://example.com)" 中的URL。
     """
     if not text:
         return text
-    # 一个简单的正则表达式来匹配 http/https 链接
-    url_pattern = re.compile(r'(https?://[^\s]+)')
+
+    # 正则表达式解释:
+    # (?<!\]\() : 否定型环视 (Negative Lookbehind)。断言当前位置的前面不是 "]("。
+    #            这可以防止我们匹配已经格式化为 [text](url) 的URL。
+    # (https?://[^\s<>()]+) :
+    #   ( ... )       : 捕获组 1，包含整个URL。
+    #   https?://     : 匹配 'http://' 或 'https://'。
+    #   [^\s<>()]+   : 匹配一个或多个不包含 空格、<、>、(、) 的字符。
+    #                  这比 [^\s]+ 更健壮，可以避免意外包含周围的标点符号。
+    url_pattern = re.compile(r'(?<!\]\()(https?://[^\s<>()]+)')
+
     # 使用 re.sub 进行替换
-    return url_pattern.sub(r'[\g<0>](\g<0>)', text)
+    # \g<1> 代表捕获组1的内容
+    return url_pattern.sub(r'[\g<1>](\g<1>)', text)
 
 
 def build_settings_embed(config: LicenseConfig) -> discord.Embed:
@@ -154,12 +166,12 @@ _EFFECTIVENESS_RULES_TEXT = (
     "> **截断与起始**：本协议的发布，将**截断**并取代任何更早发布的“本协议”对**未来内容**的效力。本协议的效力从其**发布时**开始。\n"
     "> **向前追溯**：**如果**在本协议之前**不存在**其他“本协议”，则本协议的效力将**向前追溯**，覆盖从帖子建立（1楼）开始、所有未被单独授权的内容。\n"
     "3. **效力层级（谁说了算）**：\n"
-    "> **最高层级**：创作者（即本帖所有者）在本帖内发表的任何**亲口声明**（例如在任意楼的全局规定、附加条款、“本协议”附加说明中的内容），其法律效力**永远高于**“本协议”。\n"
+    "> **最高层级**：创作者（即本帖所有者）在本帖内发表的任何**亲口声明**（例如在任意楼的全局规定、任意楼的附加条款、“本协议”附加条款中的内容），其法律效力**永远高于**“本协议”。\n"
     "> **冲突解决**：若“本协议”条款与创作者的亲口声明冲突，以**创作者的声明**为准。"
 )
 _CC_DISCLAIMER_TEXT = (
     "**⚠️ 关于CC协议的特别说明**\n"
-    "> 若创作者通过“附加说明”或亲口声明，为本协议附加了额外条款，则本授权**可能不再被视为一份标准的CC协议**。\n"
+    "> 若创作者通过“附加条款”或亲口声明，为本协议附加了额外条款，则本授权**可能不再被视为一份标准的CC协议**。\n"
     "> 届时，本协议将被理解为一份包含所有上述条款（署名、二创、转载、商用等）的**自定义协议**，CC协议链接仅供参考。"
 )
 
@@ -174,7 +186,7 @@ def build_license_embeds(
         include_appendix: bool = True
 ) -> List[discord.Embed]:
     """
-    根据给定的配置对象和作者信息，构建一个支持完整Markdown附加说明的美观Embed。
+    根据给定的配置对象和作者信息，构建一个支持完整Markdown附加条款的美观Embed。
     """
     saved_details = config.license_details.copy()  # 使用副本以防修改原始配置对象
     license_type = saved_details.get("type", "custom")
@@ -236,16 +248,8 @@ def build_license_embeds(
     if warning_message:
         description_parts.append(f"\n> {warning_message}")  # 使用引用块使其更醒目
 
-    # 3. 添加附加说明
-    notes: str = display_details.get("notes")
-    if notes and notes.strip() and notes != "无":
-        formatted_notes = _format_links_in_text(notes)
-        notes_section = (
-            f"\n\n**📝 附加说明**  (如无另外声明，其效力范围同本协议)\n"
-            f"-------------------\n"
-            f"{formatted_notes}"
-        )
-        description_parts.append(notes_section)
+    # 准备一个列表来存储最终要发送的所有Embed
+    embeds_to_send: List[discord.Embed] = []
 
     # 3. 创建 Embed 并组合描述
     main_embed_title = title_override or "📜 内容授权协议"
@@ -275,17 +279,43 @@ def build_license_embeds(
         main_embed.add_field(name="🎨 二次创作", value=_format_links_in_text(display_details.get("derive", "未设置")), inline=True)
         main_embed.add_field(name="💰 商业用途", value=_format_links_in_text(display_details.get("commercial", "未设置")), inline=True)
 
+    # 附加条款
+    if not is_cc_license:
+        notes = display_details.get("notes")
+        if notes and notes.strip() and notes != "无":
+            # 注意：add_field 的 value 不支持复杂的 Markdown，但简单的链接可以
+            main_embed.add_field(name="📝 附加条款 (如无另外声明，其效力范围同本协议)", value=_format_links_in_text(notes), inline=False)
+
     # 添加宽度拉伸器，保证主Embed宽度
     # `\uu2800` 是盲文空格
-    stretcher_value = ' ' + '\u2800' * 45
+    stretcher_value = ' ' + '\u2800' * 30
 
     # 设置页脚
     footer_text = footer_override or build_footer_text(SIGNATURE_LICENSE)
     main_embed.set_footer(text=footer_text + stretcher_value)
 
+    embeds_to_send.append(main_embed)
+
+    # --- 构建附言Embed (如果存在) ---
+    personal_statement: str = display_details.get("personal_statement")
+    if not personal_statement or not personal_statement.strip() or personal_statement == "无":
+        return embeds_to_send
+
+    # 附言
+    postscript_embed = discord.Embed(
+        # 使用 title 来展示标题，更醒目
+        title="📣 附言 (无法律效力)",
+        # description 用来展示内容，支持完整的Markdown
+        description=_format_links_in_text(personal_statement),
+        color=discord.Color.light_grey()
+    )
+    # 保持页脚一致性
+    postscript_embed.set_footer(text=footer_text + stretcher_value)
+    embeds_to_send.append(postscript_embed)
+
     # --- 按需构建附录并返回 ---
     if not include_appendix:
-        return [main_embed]
+        return embeds_to_send
 
     # 5. 添加“协议生效规则”字段
     appendix_description_parts = [_EFFECTIVENESS_RULES_TEXT]
@@ -303,4 +333,5 @@ def build_license_embeds(
     appendix_footer_text = footer_override or build_footer_text(SIGNATURE_LICENSE)
     appendix_embed.set_footer(text=appendix_footer_text + stretcher_value)
 
-    return [main_embed, appendix_embed]
+    embeds_to_send.append(appendix_embed)
+    return embeds_to_send
