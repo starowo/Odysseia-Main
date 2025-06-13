@@ -535,7 +535,7 @@ class AdminCommands(commands.Cog):
     @admin.command(name="永封", description="永久封禁成员并公示")
     @is_admin()
     @app_commands.describe(member="要封禁的成员", user_id="用户ID（可直接封禁不在服务器的用户）", reason="原因（可选）", img="图片（可选）", delete_message_days="删除消息天数（0-7）")
-    @app_commands.rename(member="成员", user_id="用户ID", reason="原因", img="图片", delete_message_days="删除消息天数")
+    @app_commands.rename(member="成员", user_id="用户id", reason="原因", img="图片", delete_message_days="删除消息天数")
     async def ban_member(
         self,
         interaction,  # type: discord.Interaction
