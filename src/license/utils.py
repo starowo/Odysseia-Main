@@ -3,7 +3,7 @@ import asyncio
 import re
 from typing import List, Optional
 
-from discord import Thread, Guild
+from discord import Thread, Guild, ui
 
 from src.license.constants import *
 from src.license.database import *
@@ -113,12 +113,32 @@ def build_footer_text(signature: str) -> str:
     return f"{signature} | 如果按钮失效，请使用 `/{cmd_name} {cmd_name_panel}`"
 
 
+async def safe_defer(interaction: discord.Interaction):
+    if not interaction.response.is_done():
+        await interaction.response.defer(ephemeral=True)
+
+
 def get_available_cc_licenses() -> dict:
     """
     此函数现在不再执行过滤，始终返回所有CC协议。
     过滤逻辑移至前端视图中，以便更好地向用户展示禁用状态。
     """
     return CC_LICENSES
+
+
+async def do_simple_owner_id_interaction_check(owner_id: int, interaction: discord.Interaction) -> bool:
+    if interaction.user.id != owner_id:
+        await interaction.response.send_message("❌ 你无法操作这个菜单。", ephemeral=True)
+        return False
+    return True
+
+
+def get_item_by_id(view: ui.View, custom_id: str) -> Optional[ui.Item]:
+    """通过 custom_id 在视图的子组件中查找一个项目。"""
+    for item in view.children:
+        if hasattr(item, 'custom_id') and item.custom_id == custom_id:
+            return item
+    return None
 
 
 def get_available_software_licenses() -> dict:
