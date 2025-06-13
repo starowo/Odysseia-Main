@@ -502,8 +502,6 @@ class VerifyCommands(commands.Cog):
 
     async def _process_answers(self, interaction: discord.Interaction, answers: List[str], language: str):
         """处理答题逻辑"""
-        await interaction.response.defer(ephemeral=True)
-
         guild = interaction.guild
         user = interaction.user
 
