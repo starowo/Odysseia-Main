@@ -52,34 +52,36 @@ class ServerSyncCommands(commands.Cog):
                 self.logger.error(f"保存同步配置文件失败: {e}")
 
     def is_admin():
-        async def predicate(ctx):
+        async def predicate(interaction: discord.Interaction):
             try:
-                guild = ctx.guild
+                guild = interaction.guild
                 if not guild:
                     return False
                     
                 # 使用统一的配置系统
-                cog = ctx.cog
+                cog = interaction.client.get_cog("ServerSyncCommands")
+                if not cog:
+                    return False
                 config = getattr(cog, 'config', {})
                 admin_roles = config.get('admins', [])
                 
                 # 检查用户是否拥有任何管理员身份组
                 for admin_role_id in admin_roles:
                     role = guild.get_role(int(admin_role_id))
-                    if role and role in ctx.author.roles:
+                    if role and role in interaction.user.roles:
                         return True
                       
                 return False
             except Exception:
                 return False
-        return commands.check(predicate)
+        return app_commands.check(predicate)
 
     # ====== 同步指令 ======
     sync = app_commands.Group(name="同步", description="服务器同步相关指令")
     sync_manage = app_commands.Group(name="同步管理", description="同步管理相关指令")
 
     @sync.command(name="身份组同步", description="同步可同步的身份组到配置中的全部子服务器")
-    @is_admin()
+    
     async def sync_roles(self, interaction: discord.Interaction):
         """同步身份组到所有配置的服务器"""
         if not self.config.get("enabled", False):
@@ -160,7 +162,7 @@ class ServerSyncCommands(commands.Cog):
 
     # ====== 同步管理指令 ======
     @sync_manage.command(name="添加服务器", description="将当前服务器添加到同步列表")
-    @is_admin()
+    
     async def add_server(self, interaction: discord.Interaction):
         """添加当前服务器到同步列表"""
         guild_id = str(interaction.guild.id)
@@ -187,7 +189,7 @@ class ServerSyncCommands(commands.Cog):
         await interaction.response.send_message("✅ 已将当前服务器添加到同步列表", ephemeral=True)
 
     @sync_manage.command(name="删除服务器", description="从同步列表中删除当前服务器")
-    @is_admin()
+    
     async def remove_server(self, interaction: discord.Interaction):
         """从同步列表删除当前服务器"""
         guild_id = str(interaction.guild.id)
@@ -226,7 +228,7 @@ class ServerSyncCommands(commands.Cog):
         await interaction.edit_original_response(content="✅ 已从同步列表中删除当前服务器")
 
     @sync_manage.command(name="身份组", description="将身份组添加到同步列表")
-    @is_admin()
+    
     @app_commands.describe(名字="身份组名字", role="身份组")
     async def add_role_mapping(self, interaction: discord.Interaction, 名字: str, role: discord.Role):
         """添加身份组映射"""
@@ -255,7 +257,7 @@ class ServerSyncCommands(commands.Cog):
         await interaction.response.send_message(f"✅ 已将身份组 {role.mention} 添加到同步列表，名称: {名字}", ephemeral=True)
 
     @sync_manage.command(name="处罚同步", description="开启或关闭此服务器的处罚同步")
-    @is_admin()
+    
     @app_commands.describe(状态="开启或关闭")
     @app_commands.choices(状态=[
         app_commands.Choice(name="开", value="on"),
@@ -288,7 +290,7 @@ class ServerSyncCommands(commands.Cog):
         await interaction.response.send_message(f"✅ 已{status_text}此服务器的处罚同步", ephemeral=True)
 
     @sync_manage.command(name="处罚公示频道", description="设置此服务器的处罚公示频道")
-    @is_admin()
+    
     @app_commands.describe(频道="处罚公示频道")
     async def set_punishment_announce_channel(self, interaction: discord.Interaction, 频道: discord.TextChannel):
         """设置处罚公示频道"""
@@ -307,7 +309,7 @@ class ServerSyncCommands(commands.Cog):
         await interaction.response.send_message(f"✅ 已设置处罚公示频道为 {频道.mention}", ephemeral=True)
 
     @sync_manage.command(name="处罚确认频道", description="设置此服务器的处罚同步确认频道")
-    @is_admin()
+    
     @app_commands.describe(频道="处罚确认频道")
     async def set_punishment_confirm_channel(self, interaction: discord.Interaction, 频道: discord.TextChannel):
         """设置处罚确认频道"""
@@ -431,9 +433,10 @@ class ServerSyncCommands(commands.Cog):
                             self.logger.error(f"同步移除身份组失败 {target_guild.name}: {e}")
 
     # ====== 提供给其他模块的处罚操作函数 ======
-    async def sync_punishment(self, guild: discord.Guild, punishment_type: str, member: discord.Member, 
-                            moderator: discord.Member, reason: str = None, duration: int = None, 
-                            warn_days: int = 0, punishment_id: str = None, img: discord.Attachment = None):
+    async def sync_punishment(self, guild: discord.Guild, punishment_type: str, member: discord.Member = None, 
+                            moderator: discord.Member = None, reason: str = None, duration: int = None, 
+                            warn_days: int = 0, punishment_id: str = None, img: discord.Attachment = None,
+                            user_id: int = None):
         """同步处罚到其他服务器"""
         if not self.config.get("punishment_sync", {}).get("enabled", False):
             return  # 处罚同步未启用
@@ -442,16 +445,41 @@ class ServerSyncCommands(commands.Cog):
         if not self.config.get("servers", {}).get(guild_id, {}).get("punishment_sync", False):
             return  # 当前服务器未启用处罚同步
 
+        # 确定用户信息
+        target_user_id = None
+        target_user_name = None
+        target_user = None
+        
+        if member is not None:
+            # 使用提供的成员对象
+            target_user_id = member.id
+            target_user_name = f"{member.display_name}#{member.discriminator}"
+            target_user = member
+        elif user_id is not None:
+            # 使用用户ID
+            target_user_id = user_id
+            try:
+                # 尝试获取用户对象
+                target_user = await self.bot.fetch_user(user_id)
+                target_user_name = f"{target_user.display_name}#{target_user.discriminator}"
+            except Exception:
+                # 如果无法获取用户信息，使用默认格式
+                target_user_name = f"用户 {user_id}"
+        else:
+            if self.logger:
+                self.logger.error("sync_punishment: 必须提供member或user_id参数")
+            return
+
         # 创建处罚记录
         punishment_record = {
             "id": punishment_id or uuid.uuid4().hex[:8],
             "type": punishment_type,
             "source_guild": guild.id,
             "source_guild_name": guild.name,
-            "user_id": member.id,
-            "user_name": f"{member.display_name}#{member.discriminator}",
-            "moderator_id": moderator.id,
-            "moderator_name": f"{moderator.display_name}#{moderator.discriminator}",
+            "user_id": target_user_id,
+            "user_name": target_user_name,
+            "moderator_id": moderator.id if moderator else None,
+            "moderator_name": f"{moderator.display_name}#{moderator.discriminator}" if moderator else "系统",
             "reason": reason,
             "duration": duration,
             "warn_days": warn_days,
@@ -490,8 +518,21 @@ class ServerSyncCommands(commands.Cog):
             
             embed.add_field(name="来源服务器", value=guild.name, inline=True)
             embed.add_field(name="处罚类型", value=punishment_type, inline=True)
-            embed.add_field(name="用户", value=f"{member.mention} ({member.display_name})", inline=True)
-            embed.add_field(name="管理员", value=f"{moderator.mention} ({moderator.display_name})", inline=True)
+            
+            # 用户信息显示
+            if member:
+                user_display = f"{member.mention} ({member.display_name})"
+            else:
+                user_display = f"<@{target_user_id}> ({target_user_name})"
+            embed.add_field(name="用户", value=user_display, inline=True)
+            
+            # 管理员信息显示
+            if moderator:
+                moderator_display = f"{moderator.mention} ({moderator.display_name})"
+            else:
+                moderator_display = "系统"
+            embed.add_field(name="管理员", value=moderator_display, inline=True)
+            
             embed.add_field(name="原因", value=reason or "未提供", inline=False)
             
             if duration:
@@ -640,15 +681,29 @@ class PunishmentConfirmView(discord.ui.View):
         try:
             # 获取用户
             user_obj = guild.get_member(user_id)
-            if not user_obj:
+            is_member = user_obj is not None
+            
+            # 如果用户不在服务器中但是封禁操作，尝试获取用户对象
+            if not user_obj and punishment_type == "ban":
                 try:
-                    user_obj = await guild.fetch_member(user_id)
-                except:
+                    user_obj = await interaction.client.fetch_user(user_id)
+                except discord.NotFound:
                     await interaction.followup.send("❌ 无法找到用户", ephemeral=True)
                     return
+                except Exception as e:
+                    await interaction.followup.send(f"❌ 获取用户信息失败: {e}", ephemeral=True)
+                    return
+            elif not user_obj:
+                # 对于禁言等需要用户在服务器的操作
+                await interaction.followup.send("❌ 用户不在此服务器中", ephemeral=True)
+                return
 
             # 执行处罚
             if punishment_type == "mute":
+                if not is_member:
+                    await interaction.followup.send("❌ 禁言操作需要用户在服务器中", ephemeral=True)
+                    return
+                    
                 if duration and duration > 0:
                     await user_obj.timeout(datetime.timedelta(seconds=duration), reason=f"同步处罚: {reason}")
                 
@@ -666,7 +721,11 @@ class PunishmentConfirmView(discord.ui.View):
                                 await user_obj.add_roles(warned_role, reason=f"同步处罚警告 {warn_days} 天")
 
             elif punishment_type == "ban":
-                await guild.ban(user_obj, reason=f"同步处罚: {reason}", delete_message_days=0)
+                if is_member:
+                    await guild.ban(user_obj, reason=f"同步处罚: {reason}", delete_message_days=0)
+                else:
+                    # 用户不在服务器中，使用用户ID进行封禁
+                    await guild.ban(discord.Object(id=user_id), reason=f"同步处罚: {reason}", delete_message_days=0)
 
             # 保存处罚记录
             punish_dir = pathlib.Path("data") / "punish" / str(guild.id)
@@ -691,7 +750,14 @@ class PunishmentConfirmView(discord.ui.View):
                         )
                         embed.add_field(name="来源服务器", value=self.punishment_record["source_guild_name"], inline=True)
                         embed.add_field(name="处罚类型", value=punishment_type, inline=True)
-                        embed.add_field(name="用户", value=user_obj.mention, inline=True)
+                        
+                        # 用户显示
+                        if is_member:
+                            user_display = user_obj.mention
+                        else:
+                            user_display = f"<@{user_id}> ({self.punishment_record['user_name']})"
+                        embed.add_field(name="用户", value=user_display, inline=True)
+                        
                         embed.add_field(name="原管理员", value=self.punishment_record["moderator_name"], inline=True)
                         embed.add_field(name="确认管理员", value=interaction.user.mention, inline=True)
                         embed.add_field(name="原因", value=reason or "未提供", inline=False)
@@ -715,6 +781,10 @@ class PunishmentConfirmView(discord.ui.View):
                 
             await interaction.edit_original_response(embed=embed, view=self)
             
+        except discord.Forbidden:
+            await interaction.followup.send("❌ 权限不足，无法执行处罚", ephemeral=True)
+        except discord.NotFound:
+            await interaction.followup.send("❌ 用户不存在或已被封禁", ephemeral=True)
         except Exception as e:
             await interaction.followup.send(f"❌ 执行处罚失败: {e}", ephemeral=True)
 

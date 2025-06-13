@@ -324,7 +324,7 @@ class ThreadSelfManage(commands.Cog):
             await interaction.edit_original_response(embed=embed, view=None)
 
     # ---- 锁定和关闭子区 ----
-    @self_manage.command(name="锁定子区", description="锁定子区，禁止发言")
+    @self_manage.command(name="锁定并归档", description="锁定子区，禁止发言并归档")
     @app_commands.describe(reason="锁定原因（可选）")
     @app_commands.rename(reason="原因")
     async def lock_thread(self, interaction: discord.Interaction, reason: Optional[str] = None):
@@ -381,16 +381,17 @@ class ThreadSelfManage(commands.Cog):
 
     # ---- 解锁子区 ----
     @self_manage.command(name="解锁子区", description="解锁子区，允许发言")
-    async def unlock_thread(self, interaction: discord.Interaction):
+    @app_commands.describe(thread="要解锁的子区（留空则为当前子区）")
+    async def unlock_thread(self, interaction: discord.Interaction, thread: discord.Thread = None):
         # 验证是否在子区内
-        channel = interaction.channel
+        channel = thread or interaction.channel
         if not isinstance(channel, discord.Thread):
             await interaction.response.send_message("此指令仅在子区内有效", ephemeral=True)
             return
         
         # 验证是否是子区所有者
         if not interaction.user.id == channel.owner_id:
-            await interaction.response.send_message("不能在他人子区内使用此指令", ephemeral=True)
+            await interaction.response.send_message("不能对他人子区使用此指令", ephemeral=True)
             return
 
         # 判断是否已经解锁

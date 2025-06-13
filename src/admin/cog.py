@@ -35,18 +35,55 @@ class AdminCommands(commands.Cog):
             # 每小时检查一次
             await asyncio.sleep(60 * 60)
             base_dir = pathlib.Path("data") / "warn"
-            for guild_id in base_dir.glob("*"):
-                guild = self.bot.get_guild(int(guild_id.name.replace(".json", "")))
-                if guild:
+            if not base_dir.exists():
+                continue
+                
+            for guild_dir in base_dir.iterdir():
+                if not guild_dir.is_dir():
+                    continue
+                    
+                try:
+                    guild_id = int(guild_dir.name)
+                    guild = self.bot.get_guild(guild_id)
+                    if not guild:
+                        continue
+                        
                     # 遍历警告文件，时间到则移除并删除文件
-                    warn_dir = base_dir / guild_id
-                    if warn_dir.exists():
-                        for file in warn_dir.glob("*.json"):
-                            with open(file, "r", encoding="utf-8") as f:
-                                warn_record = json.load(f)
-                                if warn_record.get("until", None) and datetime.datetime.now(datetime.timezone.utc) > datetime.datetime.fromisoformat(warn_record["until"]):
-                                    await guild.remove_roles(warn_record["user_id"], reason=f"警告移除 by {self.bot.user}")
-                                    file.unlink(missing_ok=True)
+                    if guild_dir.exists():
+                        for file in guild_dir.glob("*.json"):
+                            try:
+                                with open(file, "r", encoding="utf-8") as f:
+                                    warn_record = json.load(f)
+                                    
+                                if warn_record.get("until", None):
+                                    until_time = datetime.datetime.fromisoformat(warn_record["until"])
+                                    if datetime.datetime.now(datetime.timezone.utc) > until_time:
+                                        # 获取用户对象并移除警告身份组
+                                        user_id = warn_record.get("user_id")
+                                        if user_id:
+                                            try:
+                                                member = guild.get_member(user_id)
+                                                if member:
+                                                    warned_role_id = self.config.get("warned_role_id", 0)
+                                                    warned_role = guild.get_role(int(warned_role_id)) if warned_role_id else None
+                                                    if warned_role and warned_role in member.roles:
+                                                        await member.remove_roles(warned_role, reason=f"警告到期自动移除 by {self.bot.user}")
+                                                        if self.logger:
+                                                            self.logger.info(f"自动移除警告: 用户 {member} (ID: {user_id}) 在服务器 {guild.name}")
+                                                # 删除警告记录文件
+                                                file.unlink(missing_ok=True)
+                                            except Exception as e:
+                                                if self.logger:
+                                                    self.logger.error(f"移除警告身份组失败: 用户ID {user_id}, 错误: {e}")
+                                                # 即使移除身份组失败，也删除过期的记录文件
+                                                file.unlink(missing_ok=True)
+                            except Exception as e:
+                                if self.logger:
+                                    self.logger.error(f"处理警告文件失败: {file}, 错误: {e}")
+                except Exception as e:
+                    if self.logger:
+                        self.logger.error(f"处理服务器警告目录失败: {guild_dir}, 错误: {e}")
+                    continue
 
     @property
     def config(self):
@@ -65,19 +102,22 @@ class AdminCommands(commands.Cog):
             return {}
     
     def is_admin():
-        async def predicate(ctx):
+        async def predicate(interaction: discord.Interaction):
             try:
-                cog = ctx.cog
+                # 获取当前的 cog 实例
+                cog = interaction.client.get_cog("AdminCommands")
+                if not cog:
+                    return False
                 config = getattr(cog, 'config', {})
                 for admin in config.get('admins', []):
-                    role = ctx.guild.get_role(admin)
+                    role = interaction.guild.get_role(admin)
                     if role:
-                        if role in ctx.author.roles:
+                        if role in interaction.user.roles:
                             return True
                 return False
             except Exception:
                 return False
-        return commands.check(predicate)
+        return app_commands.check(predicate)
     
     # ---- 工具函数：将字符串时间转换为数字时长 ----
     def _parse_time(self, time_str: str) -> tuple[int, str]:
@@ -124,7 +164,7 @@ class AdminCommands(commands.Cog):
 
     # ---- 添加/移除身份组 ----
     @admin.command(name="身份组", description="添加/移除身份组")
-    @is_admin()
+    
     @app_commands.describe(
         member="成员",
         action="操作",
@@ -176,7 +216,7 @@ class AdminCommands(commands.Cog):
 
     # ---- 批量删除消息 ----
     @admin.command(name="批量删除消息", description="在当前频道，从指定消息开始到指定消息结束，删除全部消息")
-    @is_admin()
+    
     @app_commands.describe(
         start_message="开始消息链接",
         end_message="结束消息链接"
@@ -283,7 +323,7 @@ class AdminCommands(commands.Cog):
 
     # ---- 批量转移身份组 ----
     @admin.command(name="批量转移身份组", description="给具有指定身份组的成员添加新身份组，可选是否移除原身份组")
-    @is_admin()
+    
     @app_commands.describe(
         source_role="需要转移的原身份组",
         target_role="要添加的新身份组",
@@ -358,7 +398,7 @@ class AdminCommands(commands.Cog):
 
     # ---- 禁言 ----
     @admin.command(name="禁言", description="将成员禁言（最长28天）并公示")
-    @is_admin()
+    
     @app_commands.describe(
         member="要禁言的成员",
         time="禁言时长（5m, 12h, 3d）",
@@ -493,13 +533,14 @@ class AdminCommands(commands.Cog):
 
     # ---- 永封 ----
     @admin.command(name="永封", description="永久封禁成员并公示")
-    @is_admin()
-    @app_commands.describe(member="要封禁的成员", reason="原因（可选）", img="图片（可选）", delete_message_days="删除消息天数（0-7）")
-    @app_commands.rename(member="成员", reason="原因", img="图片", delete_message_days="删除消息天数")
+    
+    @app_commands.describe(member="要封禁的成员", user_id="用户ID（可直接封禁不在服务器的用户）", reason="原因（可选）", img="图片（可选）", delete_message_days="删除消息天数（0-7）")
+    @app_commands.rename(member="成员", user_id="用户id", reason="原因", img="图片", delete_message_days="删除消息天数")
     async def ban_member(
         self,
         interaction,  # type: discord.Interaction
-        member: "discord.Member",
+        member: "discord.Member" = None,
+        user_id: int = None,
         reason: str = None,
         img: discord.Attachment = None,
         delete_message_days: int = 0,
@@ -509,53 +550,115 @@ class AdminCommands(commands.Cog):
             await interaction.response.send_message("此命令只能在服务器中使用", ephemeral=True)
             return
 
+        # 验证至少提供了一个参数
+        if member is None and user_id is None:
+            await interaction.response.send_message("❌ 请提供要封禁的成员或用户ID", ephemeral=True)
+            return
+            
+        # 验证不能同时提供两个参数
+        if member is not None and user_id is not None:
+            await interaction.response.send_message("❌ 请只提供成员或用户ID中的一个", ephemeral=True)
+            return
+
         await interaction.response.defer(ephemeral=True)
-        # 私聊通知
+        
+        # 确定要封禁的用户
+        target_user = None
+        target_user_id = None
+        target_user_name = None
+        target_user_mention = None
+        target_user_avatar = None
+        is_member = False
+        
+        if member is not None:
+            # 使用提供的成员对象
+            target_user = member
+            target_user_id = member.id
+            target_user_name = str(member)
+            target_user_mention = member.mention
+            target_user_avatar = member.display_avatar.url
+            is_member = True
+        else:
+            # 使用用户ID
+            target_user_id = user_id
+            try:
+                # 尝试获取用户对象（可能不在服务器中）
+                target_user = await self.bot.fetch_user(user_id)
+                target_user_name = str(target_user)
+                target_user_mention = f"<@{user_id}>"
+                target_user_avatar = target_user.display_avatar.url
+            except discord.NotFound:
+                # 用户不存在
+                await interaction.followup.send("❌ 找不到该用户ID对应的用户", ephemeral=True)
+                return
+            except Exception as e:
+                # 其他错误，仍然可以尝试封禁，但使用默认信息
+                target_user_name = f"用户 {user_id}"
+                target_user_mention = f"<@{user_id}>"
+                target_user_avatar = None
+                if self.logger:
+                    self.logger.warning(f"无法获取用户信息 {user_id}: {e}")
+
+        # 私聊通知（仅当能获取到用户对象时）
+        if target_user is not None:
+            try:
+                await target_user.send(embed=discord.Embed(title="⛔ 永久封禁", description=f"您因 {reason} 被永久封禁。如有异议，请联系管理组成员。"))
+            except discord.Forbidden:
+                pass
+            except Exception:
+                # 发送私聊失败，继续执行
+                pass
+        
+        # 执行封禁
         try:
-            await member.send(embed=discord.Embed(title="⛔ 永久封禁", description=f"您因 {reason} 被永久封禁。如有异议，请联系管理组成员。"))
+            if is_member:
+                await guild.ban(member, reason=reason, delete_message_days=delete_message_days)
+            else:
+                # 使用用户ID进行封禁
+                await guild.ban(discord.Object(id=target_user_id), reason=reason, delete_message_days=delete_message_days)
         except discord.Forbidden:
-            pass
-        try:
-            await guild.ban(member, reason=reason, delete_message_days=delete_message_days)
-        except discord.Forbidden:
-            await interaction.followup.send("❌ 无权限封禁该成员", ephemeral=True)
+            await interaction.followup.send("❌ 无权限封禁该用户", ephemeral=True)
+            return
+        except discord.NotFound:
+            await interaction.followup.send("❌ 用户不存在或已被封禁", ephemeral=True)
             return
 
         # 保存记录 & 公示
         record_id = self._save_punish_record(guild.id, {
             "type": "ban",
-            "user_id": member.id,
+            "user_id": target_user_id,
             "moderator_id": interaction.user.id,
             "reason": reason,
         })
 
+        await interaction.followup.send(f"✅ 已永久封禁 {target_user_name}。处罚ID: `{record_id}`", ephemeral=True)
+
         # 同步处罚到其他服务器
-        # 检查是否启用处罚同步
         sync_cog = self.bot.get_cog("ServerSyncCommands")
         if sync_cog:
             await sync_cog.sync_punishment(
                 guild=guild,
                 punishment_type="ban",
-                member=member,
+                member=target_user if is_member else None,
                 moderator=interaction.user,
                 reason=reason,
                 punishment_id=record_id,
-                img=img
+                img=img,
+                user_id=target_user_id if not is_member else None
             )
 
-        await interaction.followup.send(f"✅ 已永久封禁 {member.name}。处罚ID: `{record_id}`", ephemeral=True)
-
         # 当前频道公示
-        await interaction.followup.send(embed=discord.Embed(title="⛔ 永久封禁", description=f"{member.mention} 因 {reason} 被永久封禁。请注意遵守社区规则。"), ephemeral=False)
+        await interaction.followup.send(embed=discord.Embed(title="⛔ 永久封禁", description=f"{target_user_mention} 因 {reason} 被永久封禁。请注意遵守社区规则。"), ephemeral=False)
 
         # 公示频道
         channel_id = self.config.get("punish_announce_channel_id", 0)
         announce_channel = guild.get_channel(int(channel_id))
         if announce_channel:
             embed = discord.Embed(title="⛔ 永久封禁", color=discord.Color.red())
-            embed.add_field(name="成员", value=f"{member} ({member.id})")
+            embed.add_field(name="成员", value=f"{target_user_name} ({target_user_id})")
             embed.add_field(name="管理员", value=interaction.user.mention)
-            embed.set_thumbnail(url=member.display_avatar.url)
+            if target_user_avatar:
+                embed.set_thumbnail(url=target_user_avatar)
             embed.add_field(name="原因", value=reason or "未提供", inline=False)
             if img:
                 embed.set_image(url=img.url)
@@ -564,7 +667,7 @@ class AdminCommands(commands.Cog):
 
     # ---- 撤销处罚 ----
     @admin.command(name="撤销处罚", description="按ID撤销处罚")
-    @is_admin()
+    
     @app_commands.describe(punish_id="处罚ID", reason="原因（可选）")
     async def revoke_punish(self, interaction, punish_id: str, reason: str = None):
         guild = interaction.guild
@@ -649,24 +752,7 @@ class AdminCommands(commands.Cog):
                 except Exception as e:
                     if self.logger:
                         self.logger.warning(f"发送撤销处罚公示失败: {e}")
-
-        # 检查是否启用处罚同步
-        sync_cog = self.bot.get_cog("ServerSyncCommands")
-        if sync_cog:
-            await sync_cog.sync_revoke_punishment(guild, punish_id, interaction.user, reason)
-
-        # 公示
-        channel_id = int(self.config.get("punish_announce_channel_id", 0))
-        announce_channel = guild.get_channel(channel_id)
-        if announce_channel:
-            embed = discord.Embed(title="🔓 撤销处罚", color=discord.Color.green())
-            embed.add_field(name="处罚ID", value=punish_id)
-            embed.add_field(name="成员", value=user_obj.mention)
-            embed.add_field(name="原因", value=reason or "未提供", inline=False)
-            await announce_channel.send(embed=embed)
-
-            await interaction.followup.send(f"✅ 已撤销处罚 {punish_id}", ephemeral=True)
-            
+                
         except Exception as e:
             # 捕获所有未预期的异常，防止交互卡死
             if self.logger:
@@ -675,7 +761,7 @@ class AdminCommands(commands.Cog):
 
     # ---- 频道管理 ----
     @admin.command(name="频道管理", description="编辑频道属性")
-    @is_admin()
+    
     @app_commands.describe(
         channel="要编辑的频道",
         new_name="新名称(可选)",
@@ -730,7 +816,7 @@ class AdminCommands(commands.Cog):
 
     # ---- 一键删帖 ----
     @admin.command(name="一键删帖", description="一键删除某成员发布的全部帖子")
-    @is_admin()
+    
     @app_commands.describe(member="要删除帖子的成员ID", channel="要删除帖子的频道")
     @app_commands.rename(member="成员id", channel="频道")
     async def delete_all_threads(self, interaction: discord.Interaction, member: str, channel: "discord.ForumChannel"):
@@ -847,7 +933,7 @@ class AdminCommands(commands.Cog):
     thread_manage_group = app_commands.Group(name="子区管理", description="子区线程管理", parent=admin)
 
     @thread_manage_group.command(name="锁定", description="锁定线程")
-    @is_admin()
+    
     @app_commands.describe(thread="要锁定的子区（留空则为当前子区）")
     @app_commands.rename(thread="子区")
     async def lock_thread_admin(
@@ -872,7 +958,7 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(f"❌ 锁定失败: {e}", ephemeral=True)
 
     @thread_manage_group.command(name="解锁", description="解锁线程")
-    @is_admin()
+    
     @app_commands.describe(thread="要解锁的子区（留空则为当前子区）")
     @app_commands.rename(thread="子区")
     async def unlock_thread_admin(
@@ -896,7 +982,7 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(f"❌ 解锁失败: {e}", ephemeral=True)
 
     @thread_manage_group.command(name="archive", description="归档线程")
-    @is_admin()
+    
     @app_commands.describe(thread="要归档的子区（留空则为当前子区）")
     @app_commands.rename(thread="子区")
     async def archive_thread_admin(
@@ -920,7 +1006,7 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(f"❌ 归档失败: {e}", ephemeral=True)
 
     @thread_manage_group.command(name="unarchive", description="取消归档线程")
-    @is_admin()
+    
     @app_commands.describe(thread="要取消归档的子区（留空则为当前子区）")
     @app_commands.rename(thread="子区")
     async def unarchive_thread_admin(
@@ -944,7 +1030,7 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(f"❌ 取消归档失败: {e}", ephemeral=True)
 
     @thread_manage_group.command(name="pin", description="置顶")
-    @is_admin()
+    
     @app_commands.describe(thread="要置顶的子区（留空则为当前子区）")
     @app_commands.rename(thread="子区")
     async def pin_in_thread_admin(
@@ -965,7 +1051,7 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(f"❌ 置顶失败: {e}", ephemeral=True)
 
     @thread_manage_group.command(name="unpin", description="取消置顶")
-    @is_admin()
+    
     async def unpin_in_thread_admin(
         self,
         interaction,
@@ -984,7 +1070,7 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(f"❌ 取消置顶失败: {e}", ephemeral=True)
 
     @thread_manage_group.command(name="删帖", description="删除线程")
-    @is_admin()
+    
     @app_commands.describe(thread="要删除的子区（留空则为当前子区）")
     @app_commands.rename(thread="子区")
     async def delete_thread_admin(
@@ -1016,7 +1102,7 @@ class AdminCommands(commands.Cog):
 
     # ---- 答题处罚 ----
     @app_commands.command(name="答题处罚", description="移除身份组送往答题区")
-    @is_admin()
+    
     @app_commands.describe(member="要处罚的成员", reason="原因（可选）")
     @app_commands.rename(member="成员", reason="原因")
     async def quiz_punish(self, interaction, member: "discord.Member", reason: str = None):

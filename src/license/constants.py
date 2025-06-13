@@ -193,9 +193,9 @@ ACTIVE_COMMAND_CONFIG = COMMAND_CONFIG_ZH
 
 MESSAGE_IGNORE = (f"{SIGNATURE_HELPER}: \n"
                   f"好的，我以后不会再主动打扰你了。\n"
-                  f"你可以随时使用 `/{ACTIVE_COMMAND_CONFIG["group"]["name"]} {ACTIVE_COMMAND_CONFIG["settings"]["name"]}` 命令，在配置中重新启用我。\n"
-                  f"也可以随时使用 `/{ACTIVE_COMMAND_CONFIG["group"]["name"]} {ACTIVE_COMMAND_CONFIG["panel"]["name"]}` 命令，直接调出我的主面板。\n")
+                  f"你可以随时使用 `/{ACTIVE_COMMAND_CONFIG['group']['name']} {ACTIVE_COMMAND_CONFIG['settings']['name']}` 命令，在配置中重新启用我。\n"
+                  f"也可以随时使用 `/{ACTIVE_COMMAND_CONFIG['group']['name']} {ACTIVE_COMMAND_CONFIG['panel']['name']}` 命令，直接调出我的主面板。\n")
 
 MESSAGE_IGNORE_ONCE = (f"{SIGNATURE_HELPER}: \n"
                        f"好的，那我就先溜了。\n"
-                       f"你可以随时使用 `/{ACTIVE_COMMAND_CONFIG["group"]["name"]}` 命令来设置你的授权协议。")
+                       f"你可以随时使用 `/{ACTIVE_COMMAND_CONFIG['group']['name']}` 命令来设置你的授权协议。")
