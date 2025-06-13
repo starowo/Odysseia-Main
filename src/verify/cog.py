@@ -726,3 +726,4 @@ class VerifyButtonView(discord.ui.View):
 
 async def setup(bot):
     await bot.add_cog(VerifyCommands(bot))
+    
