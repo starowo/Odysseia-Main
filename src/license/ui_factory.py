@@ -99,7 +99,8 @@ async def prepare_confirmation_flow(
         config=config,
         author=author,
         commercial_use_allowed=commercial_use_allowed,
-        include_appendix=True
+        include_appendix=True,
+        footer_override=build_footer_text(SIGNATURE_HELPER)
     )
 
     # 2. 基于 final_embeds 创建一个专门用于预览的列表
@@ -119,8 +120,6 @@ async def prepare_confirmation_flow(
         main_preview_embed = preview_embeds[0]
         # 修改标题
         main_preview_embed.title = f"🔍 预览：{main_preview_embed.title}"
-        # 修改页脚，用助手的签名覆盖掉最终的协议签名
-        main_preview_embed.set_footer(text=build_footer_text(SIGNATURE_HELPER))
 
     # 4. 创建视图和回调
     #    on_confirm_wrapper 现在直接捕获并使用上面创建的 final_embeds
