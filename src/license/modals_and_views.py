@@ -266,11 +266,12 @@ class CCLicenseSelectView(ui.View):
         license_data = CC_LICENSES[self.selected_license]
         description_text = f"你选择了 **{self.selected_license}**。\n> {license_data['description']}\n\n"
         element_explanations = [CC_ELEMENT_EXPLANATIONS[elem] for elem in license_data["elements"]]
+        joined_explanations = '\n\n'.join(element_explanations)
         core_content = (
             f"{description_text}"
             f"**核心条款解读：**\n"
             f"-------------------\n"
-            f"{'\n\n'.join(element_explanations)}"
+            f"{joined_explanations}"
         )
         return create_helper_embed(
             title="📜 查看CC协议详情",
