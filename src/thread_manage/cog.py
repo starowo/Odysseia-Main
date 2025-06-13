@@ -221,21 +221,21 @@ class ThreadSelfManage(commands.Cog):
             message_id_int = int(message_link.strip().split("/")[-1])
             message = await channel.fetch_message(message_id_int)
         except (ValueError, discord.NotFound, discord.HTTPException):
-            await interaction.edit_original_response("找不到指定的消息，请确认消息ID是否正确")
+            await interaction.edit_original_response(content="找不到指定的消息，请确认消息ID是否正确")
             return
 
         # 如果反应为空，则删除消息的所有反应
         if not reaction:
             await message.clear_reactions()
-            await interaction.edit_original_response("已删除消息的所有反应")
+            await interaction.edit_original_response(content="已删除消息的所有反应")
             return
         
         # 删除指定反应
         try:
             await message.clear_reaction(reaction)
-            await interaction.edit_original_response(f"已删除消息的 {reaction} 反应")
+            await interaction.edit_original_response(content=f"已删除消息的 {reaction} 反应")
         except discord.HTTPException:
-            await interaction.edit_original_response("删除反应失败，请确认反应是否存在")
+            await interaction.edit_original_response(content="删除反应失败，请确认反应是否存在")
 
     # ---- 删除单条消息 ----
     @self_manage.command(name="删除消息", description="删除指定消息")
@@ -260,12 +260,12 @@ class ThreadSelfManage(commands.Cog):
             message_id_int = int(message_link.strip().split("/")[-1])
             message = await channel.fetch_message(message_id_int)
         except (ValueError, discord.NotFound, discord.HTTPException):
-            await interaction.edit_original_response("找不到指定的消息，请确认消息ID是否正确")
+            await interaction.edit_original_response(content="找不到指定的消息，请确认消息ID是否正确")
             return
 
         # 验证是否有权限删除（只能删除自己的消息或者子区内的所有消息）
         if message.author.id != interaction.user.id and not channel.owner_id == interaction.user.id:
-            await interaction.edit_original_response("你只能删除自己的消息")
+            await interaction.edit_original_response(content="你只能删除自己的消息")
             return
 
         # 删除消息
