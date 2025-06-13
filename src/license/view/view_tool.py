@@ -1,6 +1,8 @@
 import discord
 from discord import ui
 
+from src.license.utils import safe_defer, do_simple_owner_id_interaction_check
+
 
 class ConfirmPostView(ui.View):
     """
@@ -21,18 +23,17 @@ class ConfirmPostView(ui.View):
         self.on_cancel = on_cancel
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        """确保只有指定的用户可以点击按钮。"""
-        if interaction.user.id != self.author_id:
-            await interaction.response.send_message("❌ 这不是你的确认按钮哦。", ephemeral=True)
-            return False
-        return True
+        """权限检查"""
+        return await do_simple_owner_id_interaction_check(self.author_id, interaction)
 
     @ui.button(label="✅ 确认发布", style=discord.ButtonStyle.success)
     async def confirm(self, interaction: discord.Interaction, button: ui.Button):
         """调用确认回调。"""
+        await safe_defer(interaction)
         await self.on_confirm(interaction)
 
     @ui.button(label="❌ 返回", style=discord.ButtonStyle.danger)
     async def cancel(self, interaction: discord.Interaction, button: ui.Button):
         """调用取消回调。"""
+        await safe_defer(interaction)
         await self.on_cancel(interaction)

@@ -7,13 +7,12 @@ UI 工厂 (UI Factory)
 这些函数只负责“构建”而不负责“发送”，将构建逻辑与交互响应逻辑解耦。
 调用方可以根据自身上下文（如新消息、编辑现有消息）来决定如何使用这些返回的组件。
 """
-from typing import Tuple, Callable, Coroutine, Any, TYPE_CHECKING, List
+from typing import Tuple, Callable, Coroutine, Any, TYPE_CHECKING
 
 import discord
 from discord import Embed
 
-from src.license.view_tool import ConfirmPostView
-from .view_tool import ConfirmPostView
+from src.license.view.view_tool import ConfirmPostView
 
 if TYPE_CHECKING:
     from .cog import LicenseCog
@@ -47,7 +46,7 @@ def prepare_edit_hub(
         一个元组 (content, view)，调用方可以决定如何发送它们。
     """
     # 在这里，在函数内部进行导入
-    from .modals_and_views import LicenseEditHubView
+    from src.license.view.view_license_edit import LicenseEditHubView
     if is_temporary:
         content = (
             "你正在为你**本次发布**编辑一个临时协议。\n"
