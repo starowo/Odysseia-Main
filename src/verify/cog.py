@@ -303,7 +303,7 @@ class VerifyCommands(commands.Cog):
     verify = app_commands.Group(name="验证", description="答题验证相关命令")
 
     @verify.command(name="创建答题按钮", description="在指定频道创建答题引导消息和按钮")
-    @is_admin()
+    
     @app_commands.describe(channel="要创建按钮的频道")
     @app_commands.rename(channel="频道")
     async def create_verify_button(self, interaction: discord.Interaction, channel: discord.TextChannel):
@@ -344,7 +344,7 @@ class VerifyCommands(commands.Cog):
         await interaction.followup.send(f"✅ 已在 {channel.mention} 创建答题按钮", ephemeral=True)
 
     @verify.command(name="自动升级状态", description="查看自动升级功能状态")
-    @is_admin()
+    
     async def auto_upgrade_status(self, interaction: discord.Interaction):
         """查看自动升级功能状态"""
         status = "启用" if self.auto_upgrade_enabled else "暂停"
@@ -372,7 +372,7 @@ class VerifyCommands(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @verify.command(name="暂停自动升级", description="暂停自动升级功能")
-    @is_admin()
+    
     async def pause_auto_upgrade(self, interaction: discord.Interaction):
         """暂停自动升级功能"""
         if not self.auto_upgrade_enabled:
@@ -397,7 +397,7 @@ class VerifyCommands(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @verify.command(name="恢复自动升级", description="恢复自动升级功能")
-    @is_admin()
+    
     async def resume_auto_upgrade(self, interaction: discord.Interaction):
         """恢复自动升级功能"""
         if self.auto_upgrade_enabled:
@@ -422,7 +422,7 @@ class VerifyCommands(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @verify.command(name="手动升级检查", description="立即执行一次自动升级检查")
-    @is_admin()
+    
     async def manual_upgrade_check(self, interaction: discord.Interaction):
         """手动执行自动升级检查"""
         await interaction.response.defer(ephemeral=True)
