@@ -21,6 +21,8 @@ class VerifyCommands(commands.Cog):
         # 初始化配置缓存
         self._config_cache = {}
         self._config_cache_mtime = None
+        # 自动升级功能状态
+        self.auto_upgrade_enabled = True
 
     @property
     def config(self):
@@ -39,23 +41,25 @@ class VerifyCommands(commands.Cog):
             return {}
     
     def is_admin():
-        async def predicate(ctx):
+        async def predicate(interaction: discord.Interaction):
             try:
-                guild = ctx.guild
+                guild = interaction.guild
                 if not guild:
                     return False
                     
-                cog = ctx.cog
+                cog = interaction.client.get_cog("VerifyCommands")
+                if not cog:
+                    return False
                 config = getattr(cog, 'config', {})
                 for admin in config.get('admins', []):
                     role = guild.get_role(admin)
                     if role:
-                        if role in ctx.author.roles:
+                        if role in interaction.user.roles:
                             return True
                 return False
             except Exception:
                 return False
-        return commands.check(predicate)
+        return app_commands.check(predicate)
 
     def _load_questions(self):
         """加载题目库"""
@@ -165,6 +169,107 @@ class VerifyCommands(commands.Cog):
         
         return recent_failures
 
+    async def _auto_upgrade_task(self):
+        """自动升级任务 - 将缓冲区用户升级到已验证用户"""
+        while True:
+            try:
+                # 每小时检查一次
+                await asyncio.sleep(60 * 60)
+                
+                if not self.auto_upgrade_enabled:
+                    continue
+                    
+                # 检查所有服务器
+                for guild in self.bot.guilds:
+                    await self._process_auto_upgrade(guild)
+                    
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(f"自动升级任务错误: {e}")
+                continue
+
+    async def _process_auto_upgrade(self, guild: discord.Guild):
+        """处理单个服务器的自动升级"""
+        try:
+            buffer_role_id = self.config.get("buffer_role_id")
+            verified_role_id = self.config.get("verified_role_id")
+            
+            if not buffer_role_id or not verified_role_id:
+                return
+                
+            if buffer_role_id == "请填入缓冲区身份组ID" or verified_role_id == "请填入已验证身份组ID":
+                return
+                
+            buffer_role = guild.get_role(int(buffer_role_id))
+            verified_role = guild.get_role(int(verified_role_id))
+            
+            if not buffer_role or not verified_role:
+                return
+                
+            # 获取拥有缓冲区身份组的成员
+            eligible_members = []
+            current_time = datetime.datetime.now(datetime.timezone.utc)
+            upgrade_threshold = datetime.timedelta(days=3)  # 3天后自动升级
+            
+            for member in buffer_role.members:
+                if verified_role in member.roles:
+                    continue  # 已经有verified角色，跳过
+                    
+                # 检查用户的最后成功答题时间
+                user_data = self._get_user_data(guild.id, member.id)
+                last_success = user_data.get("last_success")
+                
+                if last_success:
+                    try:
+                        success_time = datetime.datetime.fromisoformat(last_success)
+                        if current_time - success_time >= upgrade_threshold:
+                            eligible_members.append((member, success_time))
+                    except Exception as e:
+                        if self.logger:
+                            self.logger.warning(f"解析用户 {member.id} 成功时间失败: {e}")
+                        continue
+            
+            # 升级符合条件的成员
+            for member, success_time in eligible_members:
+                try:
+                    # 检查是否启用同步模块
+                    sync_cog = self.bot.get_cog("ServerSyncCommands")
+                    if sync_cog:
+                        await sync_cog.sync_add_role(guild, member, verified_role, "自动升级：缓冲区3天期满")
+                        await sync_cog.sync_remove_role(guild, member, buffer_role, "自动升级：缓冲区3天期满")
+                    else:
+                        await member.add_roles(verified_role, reason="自动升级：缓冲区3天期满")
+                        await member.remove_roles(buffer_role, reason="自动升级：缓冲区3天期满")
+                    
+                    if self.logger:
+                        self.logger.info(f"自动升级成功: {member} (ID: {member.id}) 在服务器 {guild.name}")
+                    
+                    # 发送私聊通知
+                    try:
+                        embed = discord.Embed(
+                            title="🎉 自动升级通知", 
+                            description="恭喜！您已自动从缓冲区升级为正式成员，现在可以正常发言了！",
+                            color=discord.Color.green()
+                        )
+                        embed.add_field(name="升级时间", value=current_time.strftime("%Y-%m-%d %H:%M:%S UTC"))
+                        embed.add_field(name="服务器", value=guild.name)
+                        await member.send(embed=embed)
+                    except discord.Forbidden:
+                        pass  # 无法发送私聊，跳过
+                        
+                except discord.Forbidden:
+                    if self.logger:
+                        self.logger.warning(f"无权限升级用户: {member} (ID: {member.id})")
+                    continue
+                except Exception as e:
+                    if self.logger:
+                        self.logger.error(f"升级用户失败: {member} (ID: {member.id}), 错误: {e}")
+                    continue
+                    
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"处理服务器 {guild.name} 自动升级失败: {e}")
+
     @commands.Cog.listener()
     async def on_ready(self):
         self._load_questions()
@@ -173,6 +278,10 @@ class VerifyCommands(commands.Cog):
         # 注册持久化按钮视图
         self.bot.add_view(VerifyButtonView(self, "zh_cn"))
         self.bot.add_view(VerifyButtonView(self, "en_us"))
+        # 启动自动升级任务
+        asyncio.create_task(self._auto_upgrade_task())
+        if self.logger:
+            self.logger.info("自动升级任务已启动")
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -194,7 +303,7 @@ class VerifyCommands(commands.Cog):
     verify = app_commands.Group(name="验证", description="答题验证相关命令")
 
     @verify.command(name="创建答题按钮", description="在指定频道创建答题引导消息和按钮")
-    @is_admin()
+    
     @app_commands.describe(channel="要创建按钮的频道")
     @app_commands.rename(channel="频道")
     async def create_verify_button(self, interaction: discord.Interaction, channel: discord.TextChannel):
@@ -233,6 +342,143 @@ class VerifyCommands(commands.Cog):
         await channel.send(embed=en_embed, view=view_en)
 
         await interaction.followup.send(f"✅ 已在 {channel.mention} 创建答题按钮", ephemeral=True)
+
+    @verify.command(name="自动升级状态", description="查看自动升级功能状态")
+    
+    async def auto_upgrade_status(self, interaction: discord.Interaction):
+        """查看自动升级功能状态"""
+        status = "启用" if self.auto_upgrade_enabled else "暂停"
+        status_color = discord.Color.green() if self.auto_upgrade_enabled else discord.Color.red()
+        
+        embed = discord.Embed(
+            title="🔄 自动升级功能状态",
+            description=f"当前状态：**{status}**",
+            color=status_color
+        )
+        
+        if self.auto_upgrade_enabled:
+            embed.add_field(
+                name="📋 功能说明",
+                value="自动升级功能已启用，系统会每小时检查缓冲区用户，将答题成功3天后的用户自动升级为正式成员。",
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="⚠️ 功能暂停",
+                value="自动升级功能已暂停，用户不会被自动升级。可使用 `/验证 恢复自动升级` 命令重新启用。",
+                inline=False
+            )
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @verify.command(name="暂停自动升级", description="暂停自动升级功能")
+    
+    async def pause_auto_upgrade(self, interaction: discord.Interaction):
+        """暂停自动升级功能"""
+        if not self.auto_upgrade_enabled:
+            await interaction.response.send_message("❌ 自动升级功能已经是暂停状态", ephemeral=True)
+            return
+            
+        self.auto_upgrade_enabled = False
+        embed = discord.Embed(
+            title="⏸️ 自动升级功能已暂停",
+            description="自动升级功能已被暂停，用户将不会被自动升级。",
+            color=discord.Color.orange()
+        )
+        embed.add_field(
+            name="💡 提示",
+            value="如需重新启用，请使用 `/验证 恢复自动升级` 命令",
+            inline=False
+        )
+        
+        if self.logger:
+            self.logger.info(f"自动升级功能已被 {interaction.user} 暂停")
+            
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @verify.command(name="恢复自动升级", description="恢复自动升级功能")
+    
+    async def resume_auto_upgrade(self, interaction: discord.Interaction):
+        """恢复自动升级功能"""
+        if self.auto_upgrade_enabled:
+            await interaction.response.send_message("❌ 自动升级功能已经在运行中", ephemeral=True)
+            return
+            
+        self.auto_upgrade_enabled = True
+        embed = discord.Embed(
+            title="▶️ 自动升级功能已恢复",
+            description="自动升级功能已重新启用，系统将继续自动升级符合条件的用户。",
+            color=discord.Color.green()
+        )
+        embed.add_field(
+            name="📋 功能说明",
+            value="系统会每小时检查缓冲区用户，将答题成功3天后的用户自动升级为正式成员。",
+            inline=False
+        )
+        
+        if self.logger:
+            self.logger.info(f"自动升级功能已被 {interaction.user} 恢复")
+            
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @verify.command(name="手动升级检查", description="立即执行一次自动升级检查")
+    
+    async def manual_upgrade_check(self, interaction: discord.Interaction):
+        """手动执行自动升级检查"""
+        await interaction.response.defer(ephemeral=True)
+        
+        guild = interaction.guild
+        if not guild:
+            await interaction.followup.send("❌ 只能在服务器中使用此命令", ephemeral=True)
+            return
+            
+        if not self.auto_upgrade_enabled:
+            await interaction.followup.send("⚠️ 自动升级功能已暂停，但仍执行此次检查", ephemeral=True)
+        
+        try:
+            # 统计升级前的信息
+            buffer_role_id = self.config.get("buffer_role_id")
+            if buffer_role_id and buffer_role_id != "请填入缓冲区身份组ID":
+                buffer_role = guild.get_role(int(buffer_role_id))
+                initial_count = len(buffer_role.members) if buffer_role else 0
+            else:
+                initial_count = 0
+            
+            # 执行升级检查
+            await self._process_auto_upgrade(guild)
+            
+            # 统计升级后的信息
+            final_count = len(buffer_role.members) if buffer_role else 0
+            upgraded_count = initial_count - final_count
+            
+            embed = discord.Embed(
+                title="✅ 手动升级检查完成",
+                color=discord.Color.green()
+            )
+            embed.add_field(name="升级用户数", value=str(upgraded_count), inline=True)
+            embed.add_field(name="当前缓冲区用户数", value=str(final_count), inline=True)
+            embed.add_field(name="检查时间", value=datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"), inline=False)
+            
+            if upgraded_count > 0:
+                embed.add_field(
+                    name="📋 说明",
+                    value=f"成功升级了 {upgraded_count} 名用户从缓冲区到正式成员。",
+                    inline=False
+                )
+            else:
+                embed.add_field(
+                    name="📋 说明",
+                    value="没有找到符合升级条件的用户（答题成功3天以上）。",
+                    inline=False
+                )
+            
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            
+        except Exception as e:
+            error_msg = f"执行升级检查时出错: {str(e)}"
+            if self.logger:
+                self.logger.error(f"手动升级检查失败: {e}")
+            await interaction.followup.send(f"❌ {error_msg}", ephemeral=True)
 
     @app_commands.command(name="答题", description="回答验证题目（中文）")
     @app_commands.describe(
@@ -480,3 +726,4 @@ class VerifyButtonView(discord.ui.View):
 
 async def setup(bot):
     await bot.add_cog(VerifyCommands(bot))
+    
