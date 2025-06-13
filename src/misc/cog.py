@@ -238,7 +238,7 @@ class MiscCommands(commands.Cog):
         await interaction.edit_original_response(embed=success_embed, view=None)
 
     @app_commands.command(name="发送通知", description="发送公告通知，使用粉色 embed")
-    @is_admin()
+    
     @app_commands.describe(
         title="标题",
         content="内容",

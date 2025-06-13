@@ -81,7 +81,7 @@ class ServerSyncCommands(commands.Cog):
     sync_manage = app_commands.Group(name="同步管理", description="同步管理相关指令")
 
     @sync.command(name="身份组同步", description="同步可同步的身份组到配置中的全部子服务器")
-    @is_admin()
+    
     async def sync_roles(self, interaction: discord.Interaction):
         """同步身份组到所有配置的服务器"""
         if not self.config.get("enabled", False):
@@ -162,7 +162,7 @@ class ServerSyncCommands(commands.Cog):
 
     # ====== 同步管理指令 ======
     @sync_manage.command(name="添加服务器", description="将当前服务器添加到同步列表")
-    @is_admin()
+    
     async def add_server(self, interaction: discord.Interaction):
         """添加当前服务器到同步列表"""
         guild_id = str(interaction.guild.id)
@@ -189,7 +189,7 @@ class ServerSyncCommands(commands.Cog):
         await interaction.response.send_message("✅ 已将当前服务器添加到同步列表", ephemeral=True)
 
     @sync_manage.command(name="删除服务器", description="从同步列表中删除当前服务器")
-    @is_admin()
+    
     async def remove_server(self, interaction: discord.Interaction):
         """从同步列表删除当前服务器"""
         guild_id = str(interaction.guild.id)
@@ -228,7 +228,7 @@ class ServerSyncCommands(commands.Cog):
         await interaction.edit_original_response(content="✅ 已从同步列表中删除当前服务器")
 
     @sync_manage.command(name="身份组", description="将身份组添加到同步列表")
-    @is_admin()
+    
     @app_commands.describe(名字="身份组名字", role="身份组")
     async def add_role_mapping(self, interaction: discord.Interaction, 名字: str, role: discord.Role):
         """添加身份组映射"""
@@ -257,7 +257,7 @@ class ServerSyncCommands(commands.Cog):
         await interaction.response.send_message(f"✅ 已将身份组 {role.mention} 添加到同步列表，名称: {名字}", ephemeral=True)
 
     @sync_manage.command(name="处罚同步", description="开启或关闭此服务器的处罚同步")
-    @is_admin()
+    
     @app_commands.describe(状态="开启或关闭")
     @app_commands.choices(状态=[
         app_commands.Choice(name="开", value="on"),
@@ -290,7 +290,7 @@ class ServerSyncCommands(commands.Cog):
         await interaction.response.send_message(f"✅ 已{status_text}此服务器的处罚同步", ephemeral=True)
 
     @sync_manage.command(name="处罚公示频道", description="设置此服务器的处罚公示频道")
-    @is_admin()
+    
     @app_commands.describe(频道="处罚公示频道")
     async def set_punishment_announce_channel(self, interaction: discord.Interaction, 频道: discord.TextChannel):
         """设置处罚公示频道"""
@@ -309,7 +309,7 @@ class ServerSyncCommands(commands.Cog):
         await interaction.response.send_message(f"✅ 已设置处罚公示频道为 {频道.mention}", ephemeral=True)
 
     @sync_manage.command(name="处罚确认频道", description="设置此服务器的处罚同步确认频道")
-    @is_admin()
+    
     @app_commands.describe(频道="处罚确认频道")
     async def set_punishment_confirm_channel(self, interaction: discord.Interaction, 频道: discord.TextChannel):
         """设置处罚确认频道"""
