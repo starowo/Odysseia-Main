@@ -302,6 +302,7 @@ class CogManager:
         try:
             await self.bot.add_cog(cog)
             self.loaded_cogs.add(cog)
+            await cog.on_ready()
             cog_name = getattr(cog, 'name', type(cog).__name__)
             logger.info(f"已加载模块: {cog_name}")
         except Exception as e:
