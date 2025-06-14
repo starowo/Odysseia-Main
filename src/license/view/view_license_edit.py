@@ -184,10 +184,31 @@ class CustomLicenseCoreModal(ui.Modal):
         super().__init__(title=modal_title)
         self.callback = callback
 
-        self.reproduce = ui.TextInput(label="二次传播条款", default=prefill_data.get("reproduce"), max_length=100)
-        self.derive = ui.TextInput(label="二次创作条款", default=prefill_data.get("derive"), max_length=100)
+        # --- 提供更智能的默认值和 placeholder ---
+        default_reproduce = prefill_data.get("reproduce") or "允许在本社区内转载，需注明出处"
+        default_derive = prefill_data.get("derive") or "允许在本社区内进行二次创作，需注明出处"
+        default_commercial = prefill_data.get("commercial") or "禁止"
+
+        self.reproduce = ui.TextInput(
+            label="二次传播 (转载/搬运) 条款",
+            default=default_reproduce,
+            placeholder="例如：需联系作者获得授权 / 仅允许在本站转载",
+            max_length=100
+        )
+        self.derive = ui.TextInput(
+            label="二次创作 (同人/改图) 条款",
+            default=default_derive,
+            placeholder="例如：需联系作者获得授权 / 允许，但禁止用于头像",
+            max_length=100
+        )
+
         if commercial_use_allowed:
-            self.commercial = ui.TextInput(label="商业用途条款", default=prefill_data.get("commercial"), max_length=100)
+            self.commercial = ui.TextInput(
+                label="商业用途条款",
+                default=default_commercial,
+                placeholder="例如：禁止 / 允许，但需联系作者",
+                max_length=100
+            )
         else:
             self.commercial = ui.TextInput(label="商业用途条款 (已禁用)", default="禁止 (服务器全局设置)")
 
@@ -266,11 +287,15 @@ class CCLicenseSelectView(ui.View):
     def _build_initial_prompt_embed(self) -> discord.Embed:
         """只构建初始的、提示用户选择协议的Embed。"""
         initial_cc_content = (
-            "请从下方选择一个您想使用的CC协议模板。\n\n"
-            "- 选择后，您将看到该协议的详细解释。\n"
-            "- 点击“确认使用此协议”后，会进入一个**预先填充好该模板**的编辑流程。\n"
-            "- 在编辑流程中，您可以修改署名等附加信息。**若修改了核心条款或添加了附加条款，协议会自动转为“自定义”类型。**\n"
-            "- 因此，你可以选择标准的CC协议，也可以借助它来定义一个你自己的协议。"
+            "⚠️ **再次提醒**：选择CC协议意味着您的作品可能被广泛传播到您无法控制的地方。\n\n"
+            "如何快速选择？CC协议是一个“组合式的协议”，其中，共享(CC)和署名(BY)是必选项，其他选项包含：\n\n"
+            "想让您的作品和二创**永远保持开放共享**？\n"
+            "➡️ **选 `相同方式共享 (SA)`**\n\n"
+            "想禁止商业使用？\n"
+            "➡️ **选 `非商业化 (NC)`**\n\n"
+            "想让别人**只能看不能改**，完全禁止二创？\n"
+            "➡️ **选 `禁止修改 (ND)`**\n\n"
+            "下方选择一个协议，可查看更详细的场景化说明。"
         )
         return create_helper_embed(
             title="📜 选择一个CC协议模板",
@@ -399,23 +424,34 @@ class CCLicenseSelectView(ui.View):
         # 同样使用 LicenseEditHubView 的启动器
         hub_view = LicenseEditHubView(self.db, self.config, self.callback, self.on_cancel, self.commercial_use_allowed, "", self.is_temporary, self.owner_id)
 
-        cc_template_data = CC_LICENSES[self.selected_license]
+        # --- 分离数据流 ---
 
-        # 将CC模板数据和用户已有的附加信息组合成预填充数据
-        prefill_data = {
-            **cc_template_data,  # 填充核心条款
+        # 1. 获取原始、纯净的模板数据。这是用于“逻辑比较”的唯一真实来源。
+        original_template = CC_LICENSES[self.selected_license]
+
+        # 2. 创建一个独立的副本，专门用于“界面展示”。
+        modal_prefill_data = original_template.copy()
+        modal_prefill_data.update({
             "attribution": self.config.license_details.get("attribution", f"需保留创作者 <@{self.config.user_id}> 的署名"),
             "notes": CC_LICENSES_NOTES,
             "personal_statement": self.config.license_details.get("personal_statement", "无"),
-        }
+        })
 
-        # 定义保存时的特殊逻辑
+        # 3. 对“界面展示”用的数据进行预处理，替换占位符，使其对用户友好。
+        license_name_to_display = self.selected_license
+        for key in ["reproduce", "derive", "commercial"]:
+            if key in modal_prefill_data and isinstance(modal_prefill_data[key], str):
+                modal_prefill_data[key] = modal_prefill_data[key].format(license_type=license_name_to_display)
+
+        expected_data_if_unmodified = modal_prefill_data.copy()
+
+        # 4. 定义保存时的特殊逻辑。注意：它捕获并使用了原始的、纯净的`original_template`。
         def on_save_action(new_details: dict) -> dict:
-            # 检查核心条款是否被修改
+            # 这里的比较，必须是拿用户提交的数据和“原始模板”进行比较，这样才绝对准确。
             is_modified = (
-                    new_details["reproduce"] != cc_template_data["reproduce"] or
-                    new_details["derive"] != cc_template_data["derive"] or
-                    (self.commercial_use_allowed and new_details["commercial"] != cc_template_data["commercial"]) or # 如果禁止商业化，则不对商业化部分的条款进行检测
+                    new_details["reproduce"] !=  expected_data_if_unmodified.get("reproduce") or
+                    new_details["derive"] !=  expected_data_if_unmodified.get("derive") or
+                    (self.commercial_use_allowed and new_details["commercial"] !=  expected_data_if_unmodified.get("commercial")) or
                     new_details["notes"] != CC_LICENSES_NOTES
             )
 
@@ -435,7 +471,7 @@ class CCLicenseSelectView(ui.View):
         # 调用hub_view上的通用启动器
         await hub_view.start_flow_for(
             interaction=interaction,
-            prefill_data=prefill_data,
+            prefill_data=modal_prefill_data,
             on_save_action=on_save_action,
             title_hint=f"改动即转为自定义"
         )
@@ -485,6 +521,7 @@ class SoftwareLicenseSelectView(ui.View):
             "请从下方为你的**软件或代码项目**选择一个合适的开源许可证。\n\n"
             "- 你选择的协议**不会覆盖**你当前的授权设置，只会替换其类型。\n"
             "- 选择后，你将看到协议的简介并可以确认。\n"
+            "- 我们更建议您直接在自己的代码仓库中提供许可证信息，不过，您可以浏览这些常见的软件协议作为科普。\n"
             "- **注意**：这些协议不推荐用于文章、图片等创作内容。"
         )
         return create_helper_embed(
