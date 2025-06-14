@@ -317,23 +317,8 @@ def build_license_embeds(
 
     embeds_to_send.append(main_embed)
 
-    # --- 构建附言Embed (如果存在) ---
-    personal_statement: str = display_details.get("personal_statement")
-    # 附言
-    if personal_statement and personal_statement.strip() and personal_statement != "无":
-        postscript_embed = discord.Embed(
-            # 使用 title 来展示标题，更醒目
-            title="📣 附言 (无法律效力)",
-            # description 用来展示内容，支持完整的Markdown
-            description=personal_statement,
-            color=discord.Color.blue()
-        )
-        # 保持页脚一致性
-        # postscript_embed.set_footer(text=footer_text + stretcher_value)
-        embeds_to_send.append(postscript_embed)
-
     # --- 按需构建附录并返回 ---
-    # 5. 添加“协议生效规则”字段
+    # 添加“协议生效规则”字段
     if include_appendix:
         appendix_description_parts = [_EFFECTIVENESS_RULES_TEXT]
         if is_cc_license:
@@ -353,4 +338,20 @@ def build_license_embeds(
         # appendix_embed.set_footer(text='-# '+appendix_footer_text)
 
         embeds_to_send.append(appendix_embed)
+
+    # --- 构建附言Embed (如果存在) ---
+    personal_statement: str = display_details.get("personal_statement")
+    # 附言
+    if personal_statement and personal_statement.strip() and personal_statement != "无":
+        postscript_embed = discord.Embed(
+            # 使用 title 来展示标题，更醒目
+            title="📣 附言 (无法律效力)",
+            # description 用来展示内容，支持完整的Markdown
+            description=personal_statement,
+            color=discord.Color.blue()
+        )
+        # 保持页脚一致性
+        # postscript_embed.set_footer(text=footer_text + stretcher_value)
+        embeds_to_send.append(postscript_embed)
+
     return embeds_to_send
