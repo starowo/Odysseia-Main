@@ -287,7 +287,8 @@ class CCLicenseSelectView(ui.View):
     def _build_initial_prompt_embed(self) -> discord.Embed:
         """只构建初始的、提示用户选择协议的Embed。"""
         initial_cc_content = (
-            "⚠️ **再次提醒**：选择CC协议意味着您的作品可能被广泛传播到您无法控制的地方。\n\n"
+            "# ⚠️ **再次提醒**：\n"
+            "# 选择CC协议意味着您的作品可能被广泛传播到您无法控制的地方。\n\n"
             "如何快速选择？CC协议是一个“组合式的协议”，其中，共享(CC)和署名(BY)是必选项，其他选项包含：\n\n"
             "想让您的作品和二创**永远保持开放共享**？\n"
             "➡️ **选 `相同方式共享 (SA)`**\n\n"
