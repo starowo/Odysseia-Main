@@ -69,7 +69,7 @@ def prepare_edit_hub(
         commercial_use_allowed=commercial_use_allowed,
         content=content,
         is_temporary=is_temporary,
-        owner_id = owner_id
+        owner_id=owner_id
     )
 
     return content, hub_view
@@ -104,7 +104,17 @@ async def prepare_confirmation_flow(
 
     # 2. 基于 final_embeds 创建一个专门用于预览的列表
     #    我们不直接修改 final_embeds，而是创建副本进行操作
-    preview_embeds = [embed.copy() for embed in final_embeds]
+    preview_embeds = []
+    if final_embeds and len(final_embeds) > 0:
+        main_preview_embed = final_embeds[0]
+        preview_embeds = build_license_embeds(
+            config=config,
+            author=author,
+            commercial_use_allowed=commercial_use_allowed,
+            include_appendix=True,
+            title_override=f"🔍 预览：{main_preview_embed.title}",
+            footer_override=build_footer_text(SIGNATURE_HELPER)
+        )
 
     # 3. 创建独立的 content 字符串，而不是修改 description
     preview_content = (
@@ -113,13 +123,6 @@ async def prepare_confirmation_flow(
         "它将包含以下的主面板和一个规则附录。\n"
         "-------------------"
     )
-
-    # 3. 对预览的主 Embed 进行“特化”处理
-    if preview_embeds:  # 安全检查，确保列表不为空
-        main_preview_embed = preview_embeds[0]
-        # 修改标题
-        main_preview_embed.title = f"🔍 预览：{main_preview_embed.title}"
-        main_preview_embed.set_footer(text=build_footer_text(SIGNATURE_HELPER))
 
     # 4. 创建视图和回调
     #    on_confirm_wrapper 现在直接捕获并使用上面创建的 final_embeds
@@ -133,4 +136,4 @@ async def prepare_confirmation_flow(
     )
 
     # 返回特化后的预览Embeds列表和视图
-    return preview_content,preview_embeds, confirm_view
+    return preview_content, preview_embeds, confirm_view
