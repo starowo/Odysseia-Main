@@ -131,7 +131,7 @@ def build_footer_text(signature: str) -> str:
     """
     cmd_name = ACTIVE_COMMAND_CONFIG["group"]["name"]
     cmd_name_panel = ACTIVE_COMMAND_CONFIG["panel"]["name"]
-    return f"{signature} | 如果按钮失效，请使用 `/{cmd_name} {cmd_name_panel}`"
+    return f"{signature} | 如果按钮失效(服务器重启、超时)，请使用 `/{cmd_name} {cmd_name_panel}`"
 
 
 async def safe_defer(interaction: discord.Interaction):
@@ -169,19 +169,15 @@ def get_available_software_licenses() -> dict:
 
 # 为了代码整洁，将附录文本定义为常量
 _EFFECTIVENESS_RULES_TEXT = (
-    "**⚖️ 协议生效规则**\n"
-    f"1. **定义**：这是由「{SIGNATURE_HELPER}」生成的通用内容授权协议，下文简称为**“本协议”**。\n"
-    "2. **效力范围（“时间段”）**：\n"
-    "> **截断与起始**：本协议的发布，将**截断**并取代任何更早发布的“本协议”对**未来内容**的效力。本协议的效力从其**发布时**开始。\n"
-    "> **向前追溯**：**如果**在本协议之前**不存在**其他“本协议”，则本协议的效力将**向前追溯**，覆盖从帖子建立（1楼）开始、所有未被单独授权的内容。\n"
-    "3. **效力层级（谁说了算）**：\n"
-    "> **最高层级**：创作者（即本帖所有者）在本帖内发表的任何**亲口声明**（例如在任意楼的全局规定、任意楼的附加条款、“本协议”附加条款中的内容），其法律效力**永远高于**“本协议”。\n"
-    "> **冲突解决**：若“本协议”条款与创作者的亲口声明冲突，以**创作者的声明**为准。"
+    f"👑 **作者说了算**：作者在任何地方的**亲口声明**或**操作**，其效力**永远高于**本协议。{SIGNATURE_HELPER}仅提供方便工具，作者保留所有的解释权。\n"
+    f"🤝 **关于单独授权**：无论本协议如何规定，从**作者**得到的**单独授权**可以不受本协议限制。\n"
+    f"🔄 **默认覆盖**：为方便作者管理并避免信息混淆，若无作者额外声明，发布新协议将自动取代**由{SIGNATURE_HELPER}发布的**旧协议。\n"
+    "> **⚠️ 请注意**：从法律上讲，对那些在旧协议有效期内**已经获取**作品的人，其授权通常不可撤销。尽管如此，我们倡导所有用户尊重作者的意愿。"
 )
 _CC_DISCLAIMER_TEXT = (
     "**⚠️ 关于CC协议的特别说明**\n"
-    "> 若创作者通过“附加条款”或亲口声明，为本协议附加了额外条款，则本授权**可能不再被视为一份标准的CC协议**。\n"
-    "> 届时，本协议将被理解为一份包含所有上述条款（署名、二创、转载、商用等）的**自定义协议**，CC协议链接仅供参考。"
+    "如果创作者在任何地方对本协议添加了**额外规则**，那么这份协议就不再是**标准CC协议**了。\n"
+    "它会变成一份**“长得像CC协议的自定义协议”**，其中的CC链接仅用于解释基础条款。"
 )
 
 
@@ -245,6 +241,21 @@ def build_license_embeds(
     elif is_software_license:
         display_details.update(SOFTWARE_LICENSES[license_type])
 
+    # --- 智能替换占位符 ---
+    # 定义在不同情况下的替换文本
+    placeholder_replacement = ""
+    if is_cc_license:
+        # 如果是标准的CC协议，用具体的协议名称替换
+        placeholder_replacement = license_type
+    else:
+        # 如果是自定义协议（包括从CC降级而来的），使用通用短语
+        placeholder_replacement = "相同的条款"
+
+    # 遍历核心条款，执行替换
+    for key in ["reproduce", "derive", "commercial"]:
+        if key in display_details and isinstance(display_details[key], str):
+            display_details[key] = display_details[key].format(license_type=placeholder_replacement)
+
     description_parts = []
     description_parts.append(f"**发布者: ** {author.mention}")
 
@@ -300,7 +311,8 @@ def build_license_embeds(
     stretcher_value = ' ' + '\u2800' * 30
 
     # 设置页脚
-    footer_text = footer_override or build_footer_text(SIGNATURE_LICENSE)
+    cmd_name = ACTIVE_COMMAND_CONFIG["group"]["name"]
+    footer_text = footer_override or SIGNATURE_LICENSE+f" | 在自己的帖子里，使用 `/{cmd_name}` 来使用我吧！"
     main_embed.set_footer(text=footer_text + stretcher_value)
 
     embeds_to_send.append(main_embed)
@@ -317,7 +329,7 @@ def build_license_embeds(
             color=discord.Color.blue()
         )
         # 保持页脚一致性
-        postscript_embed.set_footer(text=footer_text + stretcher_value)
+        # postscript_embed.set_footer(text=footer_text + stretcher_value)
         embeds_to_send.append(postscript_embed)
 
     # --- 按需构建附录并返回 ---
@@ -328,15 +340,17 @@ def build_license_embeds(
             appendix_description_parts.append("\n\n" + _CC_DISCLAIMER_TEXT)
 
         appendix_embed = discord.Embed(
+            title="⚖️ 协议生效规则",
             description="\n".join(appendix_description_parts),
             color=discord.Color.light_grey()
         )
 
-        # 为附录Embed也设置页脚
-        # 如果主页脚被覆盖了，附录也应该用被覆盖的那个，以保持一致
-        # 否则，附录也使用标准的协议签名页脚
-        appendix_footer_text = footer_override or build_footer_text(SIGNATURE_LICENSE)
-        appendix_embed.set_footer(text=appendix_footer_text + stretcher_value)
+        # # 为附录Embed也设置页脚
+        # # 如果主页脚被覆盖了，附录也应该用被覆盖的那个，以保持一致
+        # # 否则，附录也使用标准的协议签名页脚
+        # appendix_footer_text = footer_override or build_footer_text(SIGNATURE_LICENSE)
+        # # 这里不需要使用魔法拉伸，因为本来就够长
+        # appendix_embed.set_footer(text='-# '+appendix_footer_text)
 
         embeds_to_send.append(appendix_embed)
     return embeds_to_send

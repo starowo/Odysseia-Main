@@ -20,8 +20,8 @@ def get_default_license_details(member: discord.Member) -> dict:
 
     return {
         "type": "custom",  # 默认类型为自定义
-        "reproduce": "需联系作者获得授权",
-        "derive": "需联系作者获得授权",
+        "reproduce": "",
+        "derive": "",
         "commercial": "禁止",
         "attribution": attribution,  # 默认署名为@用户
         "notes": "无",  # 附加条款
