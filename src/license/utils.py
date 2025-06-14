@@ -131,7 +131,7 @@ def build_footer_text(signature: str) -> str:
     """
     cmd_name = ACTIVE_COMMAND_CONFIG["group"]["name"]
     cmd_name_panel = ACTIVE_COMMAND_CONFIG["panel"]["name"]
-    return f"{signature} | 如果按钮失效，请使用 `/{cmd_name} {cmd_name_panel}`"
+    return f"{signature} | 如果按钮失效(服务器重启、超时)，请使用 `/{cmd_name} {cmd_name_panel}`"
 
 
 async def safe_defer(interaction: discord.Interaction):
@@ -169,10 +169,10 @@ def get_available_software_licenses() -> dict:
 
 # 为了代码整洁，将附录文本定义为常量
 _EFFECTIVENESS_RULES_TEXT = (
-    "**⚖️ 协议生效规则**\n\n"
-    f"1. **作者说了算**：作者在任何地方的**亲口声明**或**操作**，其效力**永远高于**本协议。{SIGNATURE_HELPER}仅提供方便工具，作者保留所有的解释权。\n"
-    f"2. **默认覆盖**：为方便作者管理并避免信息混淆，若无额外声明，发布新协议将自动取代**由{SIGNATURE_HELPER}发布的**旧协议。\n"
-    "> **⚠请注意**：从法律上讲，对那些在旧协议有效期内**已经获取**作品的人，其授权不可撤销。尽管如此，我们倡导所有用户尊重作者的意愿。"
+    f"👑 **作者说了算**：作者在任何地方的**亲口声明**或**操作**，其效力**永远高于**本协议。{SIGNATURE_HELPER}仅提供方便工具，作者保留所有的解释权。\n"
+    f"🤝 **关于单独授权**：无论本协议如何规定，从**作者**得到的**单独授权**可以不受本协议限制。\n"
+    f"🔄 **默认覆盖**：为方便作者管理并避免信息混淆，若无作者额外声明，发布新协议将自动取代**由{SIGNATURE_HELPER}发布的**旧协议。\n"
+    "> **⚠️ 请注意**：从法律上讲，对那些在旧协议有效期内**已经获取**作品的人，其授权通常不可撤销。尽管如此，我们倡导所有用户尊重作者的意愿。"
 )
 _CC_DISCLAIMER_TEXT = (
     "**⚠️ 关于CC协议的特别说明**\n"
@@ -241,6 +241,21 @@ def build_license_embeds(
     elif is_software_license:
         display_details.update(SOFTWARE_LICENSES[license_type])
 
+    # --- 智能替换占位符 ---
+    # 定义在不同情况下的替换文本
+    placeholder_replacement = ""
+    if is_cc_license:
+        # 如果是标准的CC协议，用具体的协议名称替换
+        placeholder_replacement = license_type
+    else:
+        # 如果是自定义协议（包括从CC降级而来的），使用通用短语
+        placeholder_replacement = "相同的条款"
+
+    # 遍历核心条款，执行替换
+    for key in ["reproduce", "derive", "commercial"]:
+        if key in display_details and isinstance(display_details[key], str):
+            display_details[key] = display_details[key].format(license_type=placeholder_replacement)
+
     description_parts = []
     description_parts.append(f"**发布者: ** {author.mention}")
 
@@ -296,7 +311,8 @@ def build_license_embeds(
     stretcher_value = ' ' + '\u2800' * 30
 
     # 设置页脚
-    footer_text = footer_override or build_footer_text(SIGNATURE_LICENSE)
+    cmd_name = ACTIVE_COMMAND_CONFIG["group"]["name"]
+    footer_text = footer_override or SIGNATURE_LICENSE+f" | 在自己的帖子里，使用 `/{cmd_name}` 来使用我吧！"
     main_embed.set_footer(text=footer_text + stretcher_value)
 
     embeds_to_send.append(main_embed)
@@ -324,6 +340,7 @@ def build_license_embeds(
             appendix_description_parts.append("\n\n" + _CC_DISCLAIMER_TEXT)
 
         appendix_embed = discord.Embed(
+            title="⚖️ 协议生效规则",
             description="\n".join(appendix_description_parts),
             color=discord.Color.light_grey()
         )

@@ -166,10 +166,18 @@ class LicenseCog(commands.Cog):
             # 异步遍历帖子历史消息
             async for message in thread.history(limit=50):
                 # 检查消息作者是否是机器人自己
-                if message.author.id == self.bot.user.id and message.embeds:
-                    embed = message.embeds[0]
-                    # 通过Embed页脚中的签名来精确识别，避免误删其他消息
-                    if embed.footer and embed.footer.text and SIGNATURE_HELPER in embed.footer.text:
+                if message.author.id == self.bot.user.id:
+                    # 条件1：消息内容以机器人签名开头 (处理纯文本或混合消息)
+                    is_text_helper = message.content.startswith(SIGNATURE_HELPER)
+                    # 条件2：消息的Embed页脚包含机器人签名 (处理交互面板Embed)
+                    is_embed_helper = False
+                    if message.embeds:
+                        embed = message.embeds[0]
+                        if embed.footer and embed.footer.text and SIGNATURE_HELPER in embed.footer.text:
+                            is_embed_helper = True
+
+                    # 如果满足任一条件，则删除
+                    if is_text_helper or is_embed_helper:
                         await message.delete()
         except discord.HTTPException as e:
             if self.logger:

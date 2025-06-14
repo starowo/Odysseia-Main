@@ -424,23 +424,34 @@ class CCLicenseSelectView(ui.View):
         # 同样使用 LicenseEditHubView 的启动器
         hub_view = LicenseEditHubView(self.db, self.config, self.callback, self.on_cancel, self.commercial_use_allowed, "", self.is_temporary, self.owner_id)
 
-        cc_template_data = CC_LICENSES[self.selected_license]
+        # --- 分离数据流 ---
 
-        # 将CC模板数据和用户已有的附加信息组合成预填充数据
-        prefill_data = {
-            **cc_template_data,  # 填充核心条款
+        # 1. 获取原始、纯净的模板数据。这是用于“逻辑比较”的唯一真实来源。
+        original_template = CC_LICENSES[self.selected_license]
+
+        # 2. 创建一个独立的副本，专门用于“界面展示”。
+        modal_prefill_data = original_template.copy()
+        modal_prefill_data.update({
             "attribution": self.config.license_details.get("attribution", f"需保留创作者 <@{self.config.user_id}> 的署名"),
             "notes": CC_LICENSES_NOTES,
             "personal_statement": self.config.license_details.get("personal_statement", "无"),
-        }
+        })
 
-        # 定义保存时的特殊逻辑
+        # 3. 对“界面展示”用的数据进行预处理，替换占位符，使其对用户友好。
+        license_name_to_display = self.selected_license
+        for key in ["reproduce", "derive", "commercial"]:
+            if key in modal_prefill_data and isinstance(modal_prefill_data[key], str):
+                modal_prefill_data[key] = modal_prefill_data[key].format(license_type=license_name_to_display)
+
+        expected_data_if_unmodified = modal_prefill_data.copy()
+
+        # 4. 定义保存时的特殊逻辑。注意：它捕获并使用了原始的、纯净的`original_template`。
         def on_save_action(new_details: dict) -> dict:
-            # 检查核心条款是否被修改
+            # 这里的比较，必须是拿用户提交的数据和“原始模板”进行比较，这样才绝对准确。
             is_modified = (
-                    new_details["reproduce"] != cc_template_data["reproduce"] or
-                    new_details["derive"] != cc_template_data["derive"] or
-                    (self.commercial_use_allowed and new_details["commercial"] != cc_template_data["commercial"]) or  # 如果禁止商业化，则不对商业化部分的条款进行检测
+                    new_details["reproduce"] !=  expected_data_if_unmodified.get("reproduce") or
+                    new_details["derive"] !=  expected_data_if_unmodified.get("derive") or
+                    (self.commercial_use_allowed and new_details["commercial"] !=  expected_data_if_unmodified.get("commercial")) or
                     new_details["notes"] != CC_LICENSES_NOTES
             )
 
@@ -460,7 +471,7 @@ class CCLicenseSelectView(ui.View):
         # 调用hub_view上的通用启动器
         await hub_view.start_flow_for(
             interaction=interaction,
-            prefill_data=prefill_data,
+            prefill_data=modal_prefill_data,
             on_save_action=on_save_action,
             title_hint=f"改动即转为自定义"
         )
@@ -510,6 +521,7 @@ class SoftwareLicenseSelectView(ui.View):
             "请从下方为你的**软件或代码项目**选择一个合适的开源许可证。\n\n"
             "- 你选择的协议**不会覆盖**你当前的授权设置，只会替换其类型。\n"
             "- 选择后，你将看到协议的简介并可以确认。\n"
+            "- 我们更建议您直接在自己的代码仓库中提供许可证信息，不过，您可以浏览这些常见的软件协议作为科普。\n"
             "- **注意**：这些协议不推荐用于文章、图片等创作内容。"
         )
         return create_helper_embed(
