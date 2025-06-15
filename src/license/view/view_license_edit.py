@@ -459,6 +459,8 @@ class CCLicenseSelectView(ui.View):
             final_details = self.config.license_details.copy()
             if is_modified:
                 # 核心条款被修改，转为自定义协议并完全覆盖
+                if final_details["notes"] == CC_LICENSES_NOTES:
+                    new_details["notes"] = ""
                 final_details = new_details
                 final_details["type"] = "custom"
             else:
