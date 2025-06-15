@@ -1,18 +1,22 @@
 import discord
-import sqlite3
-import json
-import hashlib
-import pathlib
-import re
-from typing import Optional, Dict, Any, Tuple
 from discord.ext import commands
 from discord import app_commands
+import sqlite3
+import hashlib
+import os
+import json
+import asyncio
+import re
 from datetime import datetime, timezone, timedelta
+from typing import Optional, Dict, Any
+import pathlib
+import aiohttp
+import io
 
 
 class AnonymousFeedbackCog(commands.Cog):
     feedback = app_commands.Group(name="匿名反馈", description="匿名反馈功能")
-    author_feedback = app_commands.Group(name="帖主", description="帖主反馈管理功能")
+    author_feedback = app_commands.Group(name="匿名反馈-帖主", description="帖主反馈管理功能")
     admin_feedback = app_commands.Group(name="匿名反馈管理", description="匿名反馈管理功能")
 
     def __init__(self, bot):
@@ -111,9 +115,55 @@ class AnonymousFeedbackCog(commands.Cog):
                 )
             ''')
             
+            # 溯源记录表（保留，仅管理员使用）
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS trace_records (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    feedback_id INTEGER NOT NULL,
+                    guild_feedback_id INTEGER NOT NULL,
+                    traced_user_cookie TEXT NOT NULL,
+                    traced_user_id INTEGER NOT NULL,
+                    tracer_id INTEGER NOT NULL,
+                    tracer_type TEXT NOT NULL,
+                    guild_id INTEGER NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (feedback_id) REFERENCES feedback (id),
+                    FOREIGN KEY (traced_user_cookie) REFERENCES users (user_cookie)
+                )
+            ''')
+            
+            # 新增：帖主全局封禁表
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS author_global_bans (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    author_id INTEGER NOT NULL,
+                    banned_user_id INTEGER NOT NULL,
+                    guild_id INTEGER NOT NULL,
+                    reason TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(author_id, banned_user_id, guild_id)
+                )
+            ''')
+            
+            # 新增：帖主禁用匿名功能表
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS author_anonymous_disabled (
+                    author_id INTEGER PRIMARY KEY,
+                    guild_id INTEGER NOT NULL,
+                    reason TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(author_id, guild_id)
+                )
+            ''')
+            
             conn.execute('CREATE INDEX IF NOT EXISTS idx_feedback_guild_thread ON feedback (guild_id, target_thread_id)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_users_guild_user ON users (guild_id, user_id)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_author_warnings_cookie_author ON author_warnings (user_cookie, author_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_trace_records_traced_user ON trace_records (traced_user_id, guild_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_trace_records_feedback ON trace_records (feedback_id)')
+            # 新增索引
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_author_global_bans ON author_global_bans (author_id, banned_user_id, guild_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_author_anonymous_disabled ON author_anonymous_disabled (author_id, guild_id)')
             
             conn.commit()
             
@@ -270,13 +320,14 @@ class AnonymousFeedbackCog(commands.Cog):
         """检查用户权限，返回(是否允许, 错误消息)"""
         # 检查用户是否被全局封禁
         with sqlite3.connect(self.db_path) as conn:
-            user_data = conn.execute('SELECT is_banned, warning_count FROM users WHERE user_cookie = ?', (cookie,)).fetchone()
+            user_data = conn.execute('SELECT is_banned, warning_count, user_id FROM users WHERE user_cookie = ?', (cookie,)).fetchone()
             if user_data and user_data[0]:  # is_banned = 1
                 return False, "❌ 您已被管理员封禁，无法使用匿名反馈功能"
         
         # 获取线程信息以确定帖主
         thread = None
         author_id = None
+        user_id = user_data[2] if user_data else None
         
         try:
             # 尝试从Discord API获取线程信息
@@ -289,8 +340,17 @@ class AnonymousFeedbackCog(commands.Cog):
             if self.logger:
                 self.logger.warning(f"匿名反馈系统 - 获取线程信息失败: {e}")
         
-        # 检查是否被特定帖主封禁
-        if author_id and self._is_banned_from_author(cookie, author_id):
+        if author_id:
+            # 检查帖主是否禁用了匿名功能
+            if self._is_anonymous_disabled_by_author(author_id, guild_id):
+                return False, "❌ 该帖主已禁用匿名反馈功能"
+            
+            # 检查是否被帖主全局封禁
+            if user_id and self._is_globally_banned_by_author(user_id, author_id, guild_id):
+                return False, "❌ 您已被该帖主全局封禁，无法在其任何帖子下发送匿名反馈"
+            
+            # 检查是否被特定帖主封禁（原有的三次警告机制）
+            if self._is_banned_from_author(cookie, author_id):
             warning_count = self._get_author_warning_count(cookie, author_id)
             return False, f"❌ 您已被该帖主封禁（{warning_count}次警告），无法在其帖子下发送匿名反馈"
         
@@ -385,8 +445,8 @@ class AnonymousFeedbackCog(commands.Cog):
             timestamp=now
         )
         
-        # 设置footer，去掉多余的时间显示
-        footer_text = f"反馈编号: {formatted_id} | 👎 达到10个自动删除"
+        # 设置footer，修改踩数阈值显示为6个
+        footer_text = f"反馈编号: {formatted_id} | 👎 达到6个自动删除"
         embed.set_footer(text=footer_text)
         
         if file_url:
@@ -550,7 +610,7 @@ class AnonymousFeedbackCog(commands.Cog):
                                         (payload.message_id,)).fetchone()[0]
             
             # 检查是否达到阈值
-            if downvote_count >= 10:
+            if downvote_count >= 6:  # 从10改为6
                 await self._handle_downvote_threshold(feedback_result, downvote_count, payload)
 
     async def _handle_downvote_threshold(self, feedback_data: tuple, downvote_count: int, payload: discord.RawReactionActionEvent):
@@ -603,10 +663,30 @@ class AnonymousFeedbackCog(commands.Cog):
             if self.logger:
                 self.logger.error(f"匿名反馈系统 - 删除消息失败: {e}")
 
-    # 基本功能命令
-    @feedback.command(name="消息", description="发送匿名文字反馈")
-    @app_commands.describe(内容="反馈内容")
-    async def send_text_feedback(self, interaction: discord.Interaction, 内容: str):
+    # 基本功能命令 - 合并为一个命令
+    @feedback.command(name="发送", description="发送匿名反馈（支持文字、图片、文件）")
+    @app_commands.describe(
+        内容="反馈内容（必填）",
+        图片1="第一张图片（可选）",
+        图片2="第二张图片（可选）", 
+        图片3="第三张图片（可选）",
+        图片4="第四张图片（可选）",
+        图片5="第五张图片（可选）",
+        文件1="第一个文件附件（可选）",
+        文件2="第二个文件附件（可选）",
+        文件3="第三个文件附件（可选）"
+    )
+    async def send_feedback(self, interaction: discord.Interaction, 
+                           内容: str,
+                           图片1: discord.Attachment = None,
+                           图片2: discord.Attachment = None,
+                           图片3: discord.Attachment = None,
+                           图片4: discord.Attachment = None,
+                           图片5: discord.Attachment = None,
+                           文件1: discord.Attachment = None,
+                           文件2: discord.Attachment = None,
+                           文件3: discord.Attachment = None):
+        """发送匿名反馈（支持多图片和多文件）"""
         await interaction.response.defer(ephemeral=True)
         
         # 自动获取当前帖子链接
@@ -643,6 +723,42 @@ class AnonymousFeedbackCog(commands.Cog):
             await interaction.followup.send(error_msg, ephemeral=True)
             return
         
+        # 收集所有附件
+        attachments = []
+        images = [图片1, 图片2, 图片3, 图片4, 图片5]
+        files = [文件1, 文件2, 文件3]
+        
+        for img in images:
+            if img:
+                attachments.append(('image', img))
+        
+        for file in files:
+            if file:
+                attachments.append(('file', file))
+        
+        # 验证附件
+        validated_attachments = []
+        for att_type, attachment in attachments:
+            if att_type == 'image':
+                if not attachment.content_type.startswith('image/'):
+                    await interaction.followup.send(f"❌ {attachment.filename} 不是有效的图片文件！", ephemeral=True)
+                    return
+            else:  # file
+                filename = attachment.filename.lower()
+                file_ext = pathlib.Path(filename).suffix.lower()
+                all_extensions = self.file_extensions | self.image_extensions
+                
+                if file_ext not in all_extensions:
+                    await interaction.followup.send(f"❌ 不支持的文件格式：{file_ext}\n支持格式：{', '.join(sorted(all_extensions))}", ephemeral=True)
+                    return
+            
+            # 检查文件大小
+            if attachment.size > self.max_file_size:
+                await interaction.followup.send(f"❌ {attachment.filename} 大小超过限制（{attachment.size / 1024 / 1024:.1f}MB > 25MB）", ephemeral=True)
+                return
+            
+            validated_attachments.append((att_type, attachment))
+        
         # 生成反馈编号
         with sqlite3.connect(self.db_path) as conn:
             # 获取下一个反馈编号
@@ -653,50 +769,166 @@ class AnonymousFeedbackCog(commands.Cog):
             conn.execute('INSERT OR REPLACE INTO guild_sequences (guild_id, next_feedback_id) VALUES (?, ?)',
                         (guild_id, guild_feedback_id + 1))
         
+            # 构建内容描述
+            content_parts = [内容]
+            file_urls = []
+            
+            for att_type, attachment in validated_attachments:
+                if att_type == 'image':
+                    content_parts.append(f"图片: {attachment.filename}")
+                    file_urls.append(attachment.url)
+                else:
+                    content_parts.append(f"文件: {attachment.filename}")
+                    file_urls.append(attachment.url)
+            
+            full_content = " | ".join(content_parts)
+        
             # 添加反馈记录
+            content_type = "mixed" if validated_attachments else "text"
+            file_url_json = json.dumps(file_urls) if file_urls else None
+            
             cursor = conn.execute('''
-                INSERT INTO feedback (guild_feedback_id, user_cookie, guild_id, target_url, target_thread_id, content_type, content)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (guild_feedback_id, cookie, guild_id, 帖子链接, thread_id, "text", 内容))
+                INSERT INTO feedback (guild_feedback_id, user_cookie, guild_id, target_url, target_thread_id, content_type, content, file_url)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (guild_feedback_id, cookie, guild_id, 帖子链接, thread_id, content_type, full_content, file_url_json))
             
             feedback_id = cursor.lastrowid
             
         # 发送反馈
         try:
-            sent_message = await self._send_feedback(thread, 内容, guild_feedback_id=guild_feedback_id)
+            sent_message = await self._send_enhanced_feedback(thread, 内容, validated_attachments, guild_feedback_id)
             
             # 更新消息ID
             with sqlite3.connect(self.db_path) as conn:
                 conn.execute('UPDATE feedback SET message_id = ? WHERE id = ?', (sent_message.id, feedback_id))
             
             if self.logger:
-                self.logger.info(f"匿名反馈系统 - 匿名反馈发送成功: guild_id={guild_id}, feedback_id={guild_feedback_id}, user={interaction.user.id}")
+                self.logger.info(f"匿名反馈系统 - 匿名反馈发送成功: guild_id={guild_id}, feedback_id={guild_feedback_id}, user={interaction.user.id}, attachments={len(validated_attachments)}")
             
-            await interaction.followup.send(f"✅ 匿名反馈已发送！反馈编号: {guild_feedback_id:06d}", ephemeral=True)
+            attachment_desc = ""
+            if validated_attachments:
+                image_count = sum(1 for att_type, _ in validated_attachments if att_type == 'image')
+                file_count = sum(1 for att_type, _ in validated_attachments if att_type == 'file')
+                parts = []
+                if image_count > 0:
+                    parts.append(f"{image_count}张图片")
+                if file_count > 0:
+                    parts.append(f"{file_count}个文件")
+                attachment_desc = f"（包含{' + '.join(parts)}）"
+            
+            await interaction.followup.send(f"✅ 匿名反馈已发送！反馈编号: {guild_feedback_id:06d}{attachment_desc}", ephemeral=True)
         except Exception as e:
             if self.logger:
                 self.logger.error(f"匿名反馈系统 - 发送反馈失败: {e}")
             await interaction.followup.send(f"❌ 发送失败: {str(e)}", ephemeral=True)
     
-    @feedback.command(name="图片", description="发送匿名图片反馈")
-    @app_commands.describe(说明="图片说明（可选）")
-    async def send_image_feedback(self, interaction: discord.Interaction, 说明: str = None):
-        # 自动获取当前帖子链接
-        帖子链接 = self._get_current_thread_url(interaction)
-        if not 帖子链接:
-            await interaction.response.send_message("❌ 此命令只能在论坛频道的帖子中使用", ephemeral=True)
-            return
-        await self._handle_file_feedback_setup(interaction, 帖子链接, "image", 说明)
-    
-    @feedback.command(name="文件", description="发送匿名文件反馈")
-    @app_commands.describe(说明="文件说明（可选）")
-    async def send_file_feedback(self, interaction: discord.Interaction, 说明: str = None):
-        # 自动获取当前帖子链接
-        帖子链接 = self._get_current_thread_url(interaction)
-        if not 帖子链接:
-            await interaction.response.send_message("❌ 此命令只能在论坛频道的帖子中使用", ephemeral=True)
-            return
-        await self._handle_file_feedback_setup(interaction, 帖子链接, "file", 说明)
+    async def _send_enhanced_feedback(self, thread: discord.Thread, content: str, attachments: list, guild_feedback_id: int):
+        """发送增强反馈消息（支持多图片直接显示和多文件）"""
+        # 格式化反馈编号为6位数
+        formatted_id = f"{guild_feedback_id:06d}"
+        
+        # 获取当前时间
+        now = datetime.now(timezone.utc)
+        
+        # 分离图片和文件
+        image_attachments = [att for att_type, att in attachments if att_type == 'image']
+        file_attachments = [att for att_type, att in attachments if att_type == 'file']
+        
+        # 创建主embed
+        main_embed = discord.Embed(
+            title="📫 匿名反馈",
+            description=content,
+            color=discord.Color.blue(),
+            timestamp=now
+        )
+        
+        # 设置footer
+        footer_text = f"反馈编号: {formatted_id} | 👎 达到6个自动删除"
+        main_embed.set_footer(text=footer_text)
+        
+        # 准备要发送的文件列表（让图片直接显示）
+        discord_files = []
+        
+        try:
+            # 下载图片并创建Discord文件对象
+            async with aiohttp.ClientSession() as session:
+                for i, img_att in enumerate(image_attachments):
+                    try:
+                        async with session.get(img_att.url) as resp:
+                            if resp.status == 200:
+                                img_data = await resp.read()
+                                # 创建文件对象，保持原文件名
+                                discord_file = discord.File(
+                                    io.BytesIO(img_data), 
+                                    filename=f"image_{i+1}_{img_att.filename}"
+                                )
+                                discord_files.append(discord_file)
+        except Exception as e:
+            if self.logger:
+                            self.logger.warning(f"匿名反馈系统 - 下载图片失败: {e}")
+                        # 如果下载失败，回退到链接方式
+                        if i == 0:
+                            main_embed.set_image(url=img_att.url)
+                        else:
+                            main_embed.add_field(
+                                name=f"🖼️ 图片{i+1}", 
+                                value=f"[{img_att.filename}]({img_att.url})", 
+                                inline=True
+                            )
+                
+                # 处理非图片文件（提供下载链接）
+                if file_attachments:
+                    file_links = []
+                    for att in file_attachments:
+                        filename = att.filename
+                        file_ext = pathlib.Path(filename).suffix.lower()
+                        
+                        # 对于图片格式的文件，也尝试直接显示
+                        if file_ext in self.image_extensions:
+                            try:
+                                async with session.get(att.url) as resp:
+                                    if resp.status == 200:
+                                        img_data = await resp.read()
+                                        discord_file = discord.File(
+                                            io.BytesIO(img_data), 
+                                            filename=f"file_{filename}"
+                                        )
+                                        discord_files.append(discord_file)
+                                        continue
+            except:
+                pass
+                        
+                        # 普通文件显示为下载链接
+                        file_links.append(f"📎 [{filename}]({att.url})")
+                    
+                    if file_links:
+                        main_embed.add_field(name="📁 附件文件", value="\n".join(file_links), inline=False)
+        
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"匿名反馈系统 - 处理附件失败: {e}")
+            # 回退到原始链接方式
+            if image_attachments:
+                main_embed.set_image(url=image_attachments[0].url)
+                if len(image_attachments) > 1:
+                    additional_images = []
+                    for i, att in enumerate(image_attachments[1:], 2):
+                        additional_images.append(f"[图片{i}]({att.url})")
+                    main_embed.add_field(name="📷 更多图片", value=" | ".join(additional_images), inline=False)
+            
+            if file_attachments:
+                file_links = []
+                for att in file_attachments:
+                    file_links.append(f"📎 [{att.filename}]({att.url})")
+                main_embed.add_field(name="📁 附件文件", value="\n".join(file_links), inline=False)
+        
+        # 发送消息
+        if discord_files:
+            # 如果有文件，一起发送
+            return await thread.send(embed=main_embed, files=discord_files)
+        else:
+            # 只有embed
+            return await thread.send(embed=main_embed)
 
     def _get_current_thread_url(self, interaction: discord.Interaction) -> Optional[str]:
         """获取当前帖子的URL"""
@@ -718,110 +950,6 @@ class AnonymousFeedbackCog(commands.Cog):
             message_id = thread.id
             
         return f"https://discord.com/channels/{interaction.guild.id}/{thread.id}/{message_id}"
-
-    async def _handle_file_feedback_setup(self, interaction: discord.Interaction, 帖子链接: str, file_type: str, 说明: str = None):
-        """设置文件反馈的时间窗口"""
-        # 检查是否已经响应过
-        if interaction.response.is_done():
-            if self.logger:
-                self.logger.warning("交互已经响应过，跳过")
-            return
-            
-        try:
-            await interaction.response.defer(ephemeral=True)
-        except discord.errors.NotFound:
-            if self.logger:
-                self.logger.error("交互已过期，无法响应")
-            return
-        except Exception as e:
-            if self.logger:
-                self.logger.error(f"匿名反馈系统 - 响应交互失败: {e}")
-            return
-        
-        # 验证链接格式
-        parsed = self._parse_discord_url(帖子链接)
-        if not parsed:
-            try:
-                await interaction.followup.send("❌ 无效的Discord链接格式", ephemeral=True)
-            except:
-                pass
-            return
-        
-        guild_id, thread_id, message_id = parsed
-        
-        # 验证服务器
-        if guild_id != interaction.guild.id:
-            try:
-                await interaction.followup.send("❌ 只能对当前服务器的帖子进行反馈", ephemeral=True)
-            except:
-                pass
-            return
-        
-        # 验证论坛帖子
-        thread = await self._get_thread_by_id(guild_id, thread_id)
-        if not thread or not isinstance(thread, discord.Thread):
-            try:
-                await interaction.followup.send("❌ 该功能仅限在论坛频道下的帖子中使用", ephemeral=True)
-            except:
-                pass
-            return
-        
-        cookie = self._register_user(interaction.user.id, guild_id)
-        
-        # 检查用户权限
-        is_allowed, error_msg = self._check_user_permissions(cookie, thread_id, guild_id)
-        if not is_allowed:
-            try:
-                await interaction.followup.send(error_msg, ephemeral=True)
-            except:
-                pass
-            return
-        
-        # 生成反馈编号
-        with sqlite3.connect(self.db_path) as conn:
-            # 获取下一个反馈编号
-            result = conn.execute('SELECT next_feedback_id FROM guild_sequences WHERE guild_id = ?', (guild_id,)).fetchone()
-            guild_feedback_id = result[0] if result else 1
-            
-            # 更新序列号
-            conn.execute('INSERT OR REPLACE INTO guild_sequences (guild_id, next_feedback_id) VALUES (?, ?)',
-                        (guild_id, guild_feedback_id + 1))
-        
-        # 清理过期的pending requests
-        self._cleanup_expired_requests()
-        
-        # 创建pending request
-        self.pending_file_requests[interaction.user.id] = {
-            'target_url': 帖子链接,
-            'thread_id': thread_id,
-            'guild_id': guild_id,
-            'type': file_type,
-            'timestamp': datetime.now(timezone.utc),
-            'guild_feedback_id': guild_feedback_id,
-            'user_cookie': cookie,
-            'description': 说明
-        }
-        
-        # 发送简单提示
-        type_text = "图片" if file_type == "image" else "文件"
-        format_list = "jpg、png、gif、webp等图片格式" if file_type == "image" else "pdf、doc、txt、zip、mp4、mp3等文件格式"
-        
-        description_hint = f"\n💬 说明：{说明}" if 说明 else ""
-        
-        try:
-            await interaction.followup.send(
-                f"📎 **{type_text}反馈已准备就绪**\n\n"
-                f"请在 **5分钟内** 私聊机器人发送{type_text}即可完成匿名反馈\n"
-                f"📋 支持格式：{format_list}\n"
-                f"📏 大小限制：25MB以内{description_hint}\n\n"
-                f"💡 无需包含任何链接，直接发送{type_text}即可！", 
-                ephemeral=True
-            )
-        except:
-            pass
-        
-        if self.logger:
-            self.logger.info(f"匿名反馈系统 - 创建{type_text}反馈请求: user={interaction.user.id}, feedback_id={guild_feedback_id}, description={说明}")
 
     def _cleanup_expired_requests(self):
         """清理过期的pending requests"""
@@ -919,7 +1047,7 @@ class AnonymousFeedbackCog(commands.Cog):
             feedback_data = conn.execute('''
                 SELECT f.id, f.guild_feedback_id, f.target_url, f.target_thread_id, 
                        f.content_type, f.content, f.file_url, f.message_id, f.created_at,
-                       u.user_id, f.is_deleted
+                       u.user_id, f.is_deleted, u.user_cookie
                 FROM feedback f
                 JOIN users u ON f.user_cookie = u.user_cookie
                 WHERE f.guild_id = ? AND f.guild_feedback_id = ?
@@ -930,7 +1058,11 @@ class AnonymousFeedbackCog(commands.Cog):
             return
         
         (feedback_id, guild_feedback_id, target_url, target_thread_id, 
-         content_type, content, file_url, message_id, created_at, user_id, is_deleted) = feedback_data
+         content_type, content, file_url, message_id, created_at, user_id, is_deleted, user_cookie) = feedback_data
+        
+        # 记录管理员溯源操作
+        self._record_trace_operation(feedback_id, guild_feedback_id, user_cookie, user_id, 
+                                   interaction.user.id, "admin", guild_id)
         
         # 构建响应
         embed = discord.Embed(
@@ -1028,7 +1160,7 @@ class AnonymousFeedbackCog(commands.Cog):
                 f"这是您在该帖主帖子下的第{warning_count}次警告\n\n"
                 f"由于累计警告已达到3次，您已被该帖主封禁，无法在其所有帖子下发送匿名反馈。如有异议请联系管理员。"
             )
-            result_message = f"✅ 已删除反馈 #{反馈编号:06d} 并封禁用户 <@{user_id}>（该用户在帖主 <@{author_id}> 下累计{warning_count}次警告）"
+            result_message = f"✅ 已删除反馈 #{反馈编号:06d} 并封禁该匿名用户（在帖主 <@{author_id}> 下累计{warning_count}次警告）"
         else:
             # 仅警告
             await self._send_user_notification(
@@ -1037,7 +1169,7 @@ class AnonymousFeedbackCog(commands.Cog):
                 f"这是您在该帖主帖子下的第{warning_count}次警告\n\n"
                 f"请注意改善反馈质量，在该帖主帖子下累计3次警告将被封禁。"
             )
-            result_message = f"✅ 已删除反馈 #{反馈编号:06d} 并警告用户 <@{user_id}>（{warning_count}/3次，帖主: <@{author_id}>）"
+            result_message = f"✅ 已删除反馈 #{反馈编号:06d} 并警告该匿名用户（{warning_count}/3次，帖主: <@{author_id}>）"
         
         await interaction.followup.send(result_message, ephemeral=True)
         
@@ -1110,125 +1242,6 @@ class AnonymousFeedbackCog(commands.Cog):
             self.logger.info(f"匿名反馈系统 - 管理员查询用户统计: admin={interaction.user.id}, target={用户.id}")
 
     # ===== 帖主功能 =====
-    @author_feedback.command(name="溯源反馈", description="查看自己帖子中的匿名反馈者身份（仅帖主可用）")
-    @app_commands.describe(反馈编号="反馈编号（6位数字）")
-    async def author_trace_feedback(self, interaction: discord.Interaction, 反馈编号: int):
-        """帖主溯源匿名反馈"""
-        await interaction.response.defer(ephemeral=True)
-        
-        guild_id = interaction.guild.id
-        
-        # 查询反馈信息
-        with sqlite3.connect(self.db_path) as conn:
-            feedback_data = conn.execute('''
-                SELECT f.id, f.target_thread_id, f.target_url, f.content_type, 
-                       f.content, f.file_url, f.created_at, u.user_id, f.is_deleted
-                FROM feedback f
-                JOIN users u ON f.user_cookie = u.user_cookie
-                WHERE f.guild_id = ? AND f.guild_feedback_id = ?
-            ''', (guild_id, 反馈编号)).fetchone()
-        
-        if not feedback_data:
-            await interaction.followup.send(f"❌ 未找到反馈编号 {反馈编号:06d}", ephemeral=True)
-            return
-        
-        (feedback_id, target_thread_id, target_url, content_type, 
-         content, file_url, created_at, user_id, is_deleted) = feedback_data
-        
-        # 验证是否为帖主
-        is_valid, error_msg, thread = await self._validate_thread_author(interaction, {
-            'target_thread_id': target_thread_id,
-            'guild_id': guild_id
-        })
-        
-        if not is_valid:
-            await interaction.followup.send(error_msg, ephemeral=True)
-            return
-        
-        # 构建溯源信息
-        embed = discord.Embed(
-            title=f"🔍 帖主溯源 #{反馈编号:06d}",
-            description=f"**目标帖子:** {thread.mention}",
-            color=discord.Color.red() if is_deleted else discord.Color.green()
-        )
-        
-        embed.add_field(name="👤 反馈者", value=f"<@{user_id}> (ID: {user_id})", inline=True)
-        embed.add_field(name="📅 时间", value=f"<t:{int(datetime.fromisoformat(created_at.replace('Z', '+00:00')).timestamp())}:F>", inline=True)
-        embed.add_field(name="🏷️ 状态", value="已删除" if is_deleted else "正常", inline=True)
-        
-        if content:
-            embed.add_field(name="📝 内容", value=content[:1000] + ("..." if len(content) > 1000 else ""), inline=False)
-        
-        if file_url:
-            embed.add_field(name="📎 文件", value=f"[查看文件]({file_url})", inline=False)
-        
-        embed.set_footer(text="⚠️ 此信息仅供帖主参考，请勿滥用")
-        
-        await interaction.followup.send(embed=embed, ephemeral=True)
-        
-        if self.logger:
-            self.logger.info(f"匿名反馈系统 - 帖主溯源反馈: author={interaction.user.id}, feedback_id={反馈编号}, target_user={user_id}")
-
-    @author_feedback.command(name="封禁反馈用户", description="封禁用户在自己帖子下发送匿名反馈（仅帖主可用）")
-    @app_commands.describe(反馈编号="反馈编号（6位数字）", 原因="封禁原因")
-    async def author_block_user(self, interaction: discord.Interaction, 反馈编号: int, 原因: str = "不当反馈"):
-        """帖主封禁用户"""
-        await interaction.response.defer(ephemeral=True)
-        
-        guild_id = interaction.guild.id
-        
-        # 查询反馈信息
-        with sqlite3.connect(self.db_path) as conn:
-            feedback_data = conn.execute('''
-                SELECT f.id, f.target_thread_id, u.user_id, u.user_cookie
-                FROM feedback f
-                JOIN users u ON f.user_cookie = u.user_cookie
-                WHERE f.guild_id = ? AND f.guild_feedback_id = ?
-            ''', (guild_id, 反馈编号)).fetchone()
-        
-        if not feedback_data:
-            await interaction.followup.send(f"❌ 未找到反馈编号 {反馈编号:06d}", ephemeral=True)
-            return
-        
-        feedback_id, target_thread_id, user_id, user_cookie = feedback_data
-        
-        # 验证是否为帖主
-        is_valid, error_msg, thread = await self._validate_thread_author(interaction, {
-            'target_thread_id': target_thread_id,
-            'guild_id': guild_id
-        })
-        
-        if not is_valid:
-            await interaction.followup.send(error_msg, ephemeral=True)
-            return
-        
-        # 增加警告次数（针对该帖主）
-        self._add_author_warning(user_cookie, interaction.user.id, "author_block", feedback_id, interaction.user.id, 原因)
-        warning_count = self._get_author_warning_count(user_cookie, interaction.user.id)
-        
-        # 通知被封禁用户
-        if warning_count >= 3:
-            await self._send_user_notification(
-                user_id,
-                f"🚫 您已被帖主 <@{interaction.user.id}> 封禁，无法在其帖子下发送匿名反馈。\n"
-                f"原因：{原因}\n"
-                f"如有异议请联系管理员。"
-            )
-            result_msg = f"✅ 已封禁用户 <@{user_id}>，其无法再在您的帖子下发送反馈"
-        else:
-            await self._send_user_notification(
-                user_id,
-                f"⚠️ 您的反馈#{反馈编号:06d}被帖主标记。\n"
-                f"原因：{原因}\n"
-                f"这是您在该帖主下的第{warning_count}次警告，累计3次将被封禁。"
-            )
-            result_msg = f"✅ 已对用户 <@{user_id}> 发出警告（{warning_count}/3次）"
-        
-        await interaction.followup.send(result_msg, ephemeral=True)
-        
-        if self.logger:
-            self.logger.info(f"匿名反馈系统 - 帖主封禁用户: author={interaction.user.id}, target={user_id}, warnings={warning_count}, reason={原因}")
-
     @author_feedback.command(name="减少警告", description="减少用户警告次数（仅帖主可用）")
     @app_commands.describe(用户="要减少警告的用户", 次数="减少的次数")
     async def author_reduce_warning(self, interaction: discord.Interaction, 用户: discord.Member, 次数: int = 1):
@@ -1282,6 +1295,489 @@ class AnonymousFeedbackCog(commands.Cog):
         
         if self.logger:
             self.logger.info(f"匿名反馈系统 - 帖主减少警告: author={interaction.user.id}, target={用户.id}, {old_count}→{new_count}")
+
+    def _record_trace_operation(self, feedback_id: int, guild_feedback_id: int, traced_user_cookie: str, 
+                               traced_user_id: int, tracer_id: int, tracer_type: str, guild_id: int):
+        """记录溯源操作"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute('''
+                INSERT INTO trace_records (feedback_id, guild_feedback_id, traced_user_cookie, traced_user_id, 
+                                         tracer_id, tracer_type, guild_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (feedback_id, guild_feedback_id, traced_user_cookie, traced_user_id, tracer_id, tracer_type, guild_id))
+            
+            if self.logger:
+                self.logger.info(f"匿名反馈系统 - 记录溯源操作: feedback_id={guild_feedback_id}, traced_user={traced_user_id}, tracer={tracer_id}, type={tracer_type}")
+
+    # 新增：用户查询溯源记录功能
+    @feedback.command(name="查询溯源记录", description="查看管理员是否溯源了您的匿名反馈")
+    @app_commands.describe(
+        时间范围="查询时间范围",
+        反馈编号="特定反馈编号（可选）"
+    )
+    @app_commands.choices(时间范围=[
+        app_commands.Choice(name="最近7天", value="7"),
+        app_commands.Choice(name="最近30天", value="30"),
+        app_commands.Choice(name="最近90天", value="90"),
+        app_commands.Choice(name="全部记录", value="all")
+    ])
+    async def query_trace_records(self, interaction: discord.Interaction, 
+                                 时间范围: app_commands.Choice[str], 
+                                 反馈编号: int = None):
+        """用户查询自己反馈的溯源记录（仅管理员溯源）"""
+        await interaction.response.defer(ephemeral=True)
+        
+        guild_id = interaction.guild.id
+        user_id = interaction.user.id
+        
+        # 防滥用：检查查询频率（每用户每小时最多查询3次）
+        cache_key = f"trace_query_{user_id}_{guild_id}"
+        current_time = datetime.now(timezone.utc)
+        
+        if not hasattr(self, '_query_cache'):
+            self._query_cache = {}
+        
+        if cache_key in self._query_cache:
+            last_queries = self._query_cache[cache_key]
+            # 清理1小时前的记录
+            recent_queries = [t for t in last_queries if (current_time - t).total_seconds() < 3600]
+            
+            if len(recent_queries) >= 3:
+                next_available = min(recent_queries) + timedelta(hours=1)
+                await interaction.followup.send(
+                    f"❌ 查询过于频繁，请在 <t:{int(next_available.timestamp())}:R> 后再试\n"
+                    f"💡 为防止滥用，每小时最多查询3次", 
+                    ephemeral=True
+                )
+            return
+        
+            self._query_cache[cache_key] = recent_queries + [current_time]
+        else:
+            self._query_cache[cache_key] = [current_time]
+        
+        # 构建查询条件（仅查询管理员溯源）
+        time_condition = ""
+        params = [user_id, guild_id]
+        
+        if 时间范围.value != "all":
+            days = int(时间范围.value)
+            cutoff_time = current_time - timedelta(days=days)
+            time_condition = "AND tr.created_at > ?"
+            params.append(cutoff_time.isoformat())
+        
+        feedback_condition = ""
+        if 反馈编号:
+            feedback_condition = "AND tr.guild_feedback_id = ?"
+            params.append(反馈编号)
+        
+        # 查询溯源记录（仅管理员）
+        with sqlite3.connect(self.db_path) as conn:
+            trace_records = conn.execute(f'''
+                SELECT tr.guild_feedback_id, tr.tracer_id, tr.tracer_type, tr.created_at,
+                       f.target_thread_id, f.content_type, f.is_deleted
+                FROM trace_records tr
+                JOIN feedback f ON tr.feedback_id = f.id
+                WHERE tr.traced_user_id = ? AND tr.guild_id = ? AND tr.tracer_type = 'admin' {time_condition} {feedback_condition}
+                ORDER BY tr.created_at DESC
+                LIMIT 20
+            ''', params).fetchall()
+        
+        if not trace_records:
+            time_desc = f"最近{时间范围.value}天" if 时间范围.value != "all" else "全部时间"
+            feedback_desc = f"反馈#{反馈编号:06d}" if 反馈编号 else "您的反馈"
+            await interaction.followup.send(f"📭 {time_desc}内没有管理员溯源过{feedback_desc}", ephemeral=True)
+            return
+        
+        # 构建响应
+        embed = discord.Embed(
+            title="🔍 管理员溯源记录查询",
+            description=f"以下是管理员溯源您匿名反馈的记录",
+            color=discord.Color.orange()
+        )
+        
+        # 统计信息
+        admin_count = len(trace_records)
+        
+        embed.add_field(name="📊 统计", 
+                       value=f"管理员溯源: {admin_count}次", 
+                       inline=True)
+        
+        time_desc = f"最近{时间范围.value}天" if 时间范围.value != "all" else "全部记录"
+        embed.add_field(name="⏰ 时间范围", value=time_desc, inline=True)
+        embed.add_field(name="📝 记录数量", value=f"{len(trace_records)}/20", inline=True)
+        
+        # 详细记录
+        records_text = ""
+        for record in trace_records[:10]:  # 最多显示10条
+            guild_feedback_id, tracer_id, tracer_type, created_at, thread_id, content_type, is_deleted = record
+            
+            # 使用Discord时间戳格式
+            try:
+                if created_at.endswith('Z'):
+                    trace_time = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                elif 'T' in created_at and ('+' in created_at or created_at.endswith('Z')):
+                    trace_time = datetime.fromisoformat(created_at)
+                else:
+                    trace_time = datetime.fromisoformat(created_at).replace(tzinfo=timezone.utc)
+                
+                time_str = f"<t:{int(trace_time.timestamp())}:R>"
+            except:
+                time_str = "时间解析失败"
+            
+            # 反馈状态
+            status_emoji = "🗑️" if is_deleted else "✅"
+            
+            records_text += f"👑 **#{guild_feedback_id:06d}** - 管理员 <@{tracer_id}> {time_str} {status_emoji}\n"
+        
+        if records_text:
+            embed.add_field(name="📋 详细记录", value=records_text, inline=False)
+        
+        if len(trace_records) > 10:
+            embed.add_field(name="💡 提示", value=f"还有 {len(trace_records) - 10} 条记录未显示", inline=False)
+        
+        embed.set_footer(text=f"查询者: {interaction.user} | 🔒 此信息仅您可见")
+        
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        
+        if self.logger:
+            self.logger.info(f"匿名反馈系统 - 用户查询管理员溯源记录: user={user_id}, records={len(trace_records)}, range={时间范围.value}")
+
+    # 新增：用户删除自己的匿名反馈
+    @feedback.command(name="删除反馈", description="删除自己发送的匿名反馈")
+    @app_commands.describe(反馈编号="要删除的反馈编号（6位数字）")
+    async def delete_own_feedback(self, interaction: discord.Interaction, 反馈编号: int):
+        """用户删除自己的匿名反馈"""
+        await interaction.response.defer(ephemeral=True)
+        
+        guild_id = interaction.guild.id
+        user_id = interaction.user.id
+        cookie = self._get_user_cookie(user_id, guild_id)
+        
+        # 查询反馈信息
+        with sqlite3.connect(self.db_path) as conn:
+            feedback_data = conn.execute('''
+                SELECT f.id, f.message_id, f.target_thread_id, f.is_deleted, f.created_at
+                FROM feedback f
+                WHERE f.guild_id = ? AND f.guild_feedback_id = ? AND f.user_cookie = ?
+            ''', (guild_id, 反馈编号, cookie)).fetchone()
+        
+        if not feedback_data:
+            await interaction.followup.send(f"❌ 未找到您发送的反馈编号 {反馈编号:06d}", ephemeral=True)
+            return
+        
+        feedback_id, message_id, target_thread_id, is_deleted, created_at = feedback_data
+        
+        if is_deleted:
+            await interaction.followup.send(f"❌ 反馈 #{反馈编号:06d} 已被删除", ephemeral=True)
+            return
+        
+        # 简化时间处理 - 直接使用数据库时间戳进行计算
+        try:
+            # 将数据库时间转换为时间戳，用于Discord显示
+            if created_at.endswith('Z'):
+                feedback_time = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+            elif 'T' in created_at and ('+' in created_at or created_at.endswith('Z')):
+                feedback_time = datetime.fromisoformat(created_at)
+            else:
+                # 假设为UTC时间
+                feedback_time = datetime.fromisoformat(created_at).replace(tzinfo=timezone.utc)
+            
+            # 检查是否超过24小时
+            current_time = datetime.now(timezone.utc)
+            time_diff = (current_time - feedback_time).total_seconds()
+            
+            if time_diff > 24 * 3600:  # 24小时
+                feedback_timestamp = int(feedback_time.timestamp())
+                await interaction.followup.send(
+                    f"❌ 反馈 #{反馈编号:06d} 发送已超过24小时，无法删除\n"
+                    f"💡 反馈发送时间：<t:{feedback_timestamp}:F>", 
+                    ephemeral=True
+                )
+            return
+        
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"匿名反馈系统 - 时间处理失败: {e}, created_at={created_at}")
+            await interaction.followup.send("❌ 时间处理失败，无法删除", ephemeral=True)
+            return
+        
+        # 标记为已删除
+        self._mark_feedback_deleted(feedback_id)
+        
+        # 删除Discord消息
+        if message_id:
+            try:
+                thread = await self._get_thread_by_id(guild_id, target_thread_id)
+                if thread:
+                    message = await thread.fetch_message(message_id)
+                    await message.delete()
+                    if self.logger:
+                        self.logger.info(f"匿名反馈系统 - 用户删除自己的反馈消息: message_id={message_id}, feedback_id={反馈编号}, user={user_id}")
+            except discord.NotFound:
+                pass  # 消息已被删除
+            except Exception as e:
+                if self.logger:
+                    self.logger.warning(f"匿名反馈系统 - 用户删除反馈消息失败: {e}")
+        
+        await interaction.followup.send(f"✅ 已删除您的匿名反馈 #{反馈编号:06d}", ephemeral=True)
+        
+        if self.logger:
+            self.logger.info(f"匿名反馈系统 - 用户删除自己反馈: user={user_id}, feedback_id={反馈编号}")
+
+    # 修改：帖主功能 - 移除溯源功能，添加全局管理功能
+    @author_feedback.command(name="全局封禁用户", description="全局封禁用户在您的所有帖子下使用匿名反馈（仅帖主可用）")
+    @app_commands.describe(用户="要封禁的用户", 原因="封禁原因")
+    async def author_global_ban_user(self, interaction: discord.Interaction, 用户: discord.Member, 原因: str = "违规行为"):
+        """帖主全局封禁用户"""
+        await interaction.response.defer(ephemeral=True)
+        
+        # 检查是否在帖子中使用
+        if not isinstance(interaction.channel, discord.Thread):
+            await interaction.followup.send("❌ 此命令只能在您的帖子中使用", ephemeral=True)
+            return
+        
+        thread = interaction.channel
+        if thread.owner_id != interaction.user.id:
+            await interaction.followup.send(f"❌ 您不是该帖帖主\n帖主: <@{thread.owner_id}>", ephemeral=True)
+            return
+        
+        guild_id = interaction.guild.id
+        
+        # 检查是否已经封禁
+        if self._is_globally_banned_by_author(用户.id, interaction.user.id, guild_id):
+            await interaction.followup.send(f"❌ 用户 {用户.mention} 已被您全局封禁", ephemeral=True)
+            return
+        
+        # 添加全局封禁记录
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute('''
+                INSERT OR REPLACE INTO author_global_bans (author_id, banned_user_id, guild_id, reason)
+                VALUES (?, ?, ?, ?)
+            ''', (interaction.user.id, 用户.id, guild_id, 原因))
+        
+        # 通知被封禁用户
+            await self._send_user_notification(
+            用户.id,
+            f"🚫 您已被帖主 <@{interaction.user.id}> 全局封禁，无法在其任何帖子下使用匿名反馈功能。\n"
+                f"原因：{原因}\n"
+                f"如有异议请联系管理员。"
+            )
+        
+        await interaction.followup.send(f"✅ 已全局封禁用户 {用户.mention}，其无法在您的任何帖子下使用匿名反馈", ephemeral=True)
+        
+        if self.logger:
+            self.logger.info(f"匿名反馈系统 - 帖主全局封禁用户: author={interaction.user.id}, target={用户.id}, reason={原因}")
+    
+    @author_feedback.command(name="解除全局封禁", description="解除用户的全局封禁（仅帖主可用）")
+    @app_commands.describe(用户="要解封的用户")
+    async def author_global_unban_user(self, interaction: discord.Interaction, 用户: discord.Member):
+        """帖主解除全局封禁"""
+        await interaction.response.defer(ephemeral=True)
+        
+        # 检查是否在帖子中使用
+        if not isinstance(interaction.channel, discord.Thread):
+            await interaction.followup.send("❌ 此命令只能在您的帖子中使用", ephemeral=True)
+            return
+        
+        thread = interaction.channel
+        if thread.owner_id != interaction.user.id:
+            await interaction.followup.send(f"❌ 您不是该帖帖主\n帖主: <@{thread.owner_id}>", ephemeral=True)
+            return
+        
+        guild_id = interaction.guild.id
+        
+        # 检查是否已经封禁
+        if not self._is_globally_banned_by_author(用户.id, interaction.user.id, guild_id):
+            await interaction.followup.send(f"❌ 用户 {用户.mention} 未被您全局封禁", ephemeral=True)
+            return
+        
+        # 移除全局封禁记录
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute('''
+                DELETE FROM author_global_bans 
+                WHERE author_id = ? AND banned_user_id = ? AND guild_id = ?
+            ''', (interaction.user.id, 用户.id, guild_id))
+        
+        # 通知被解封用户
+            await self._send_user_notification(
+            用户.id,
+            f"✅ 帖主 <@{interaction.user.id}> 已解除对您的全局封禁，您现在可以在其帖子下使用匿名反馈功能了。"
+        )
+        
+        await interaction.followup.send(f"✅ 已解除用户 {用户.mention} 的全局封禁", ephemeral=True)
+        
+        if self.logger:
+            self.logger.info(f"匿名反馈系统 - 帖主解除全局封禁: author={interaction.user.id}, target={用户.id}")
+    
+    @author_feedback.command(name="禁用匿名功能", description="禁用您所有帖子的匿名反馈功能（仅帖主可用）")
+    @app_commands.describe(原因="禁用原因")
+    async def author_disable_anonymous(self, interaction: discord.Interaction, 原因: str = "不接受匿名反馈"):
+        """帖主禁用匿名功能"""
+        await interaction.response.defer(ephemeral=True)
+        
+        # 检查是否在帖子中使用
+        if not isinstance(interaction.channel, discord.Thread):
+            await interaction.followup.send("❌ 此命令只能在您的帖子中使用", ephemeral=True)
+            return
+        
+        thread = interaction.channel
+        if thread.owner_id != interaction.user.id:
+            await interaction.followup.send(f"❌ 您不是该帖帖主\n帖主: <@{thread.owner_id}>", ephemeral=True)
+            return
+        
+        guild_id = interaction.guild.id
+        
+        # 检查是否已经禁用
+        if self._is_anonymous_disabled_by_author(interaction.user.id, guild_id):
+            await interaction.followup.send("❌ 您已经禁用了匿名反馈功能", ephemeral=True)
+            return
+        
+        # 添加禁用记录
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute('''
+                INSERT OR REPLACE INTO author_anonymous_disabled (author_id, guild_id, reason)
+                VALUES (?, ?, ?)
+            ''', (interaction.user.id, guild_id, 原因))
+        
+        await interaction.followup.send(f"✅ 已禁用您所有帖子的匿名反馈功能\n原因：{原因}", ephemeral=True)
+        
+        if self.logger:
+            self.logger.info(f"匿名反馈系统 - 帖主禁用匿名功能: author={interaction.user.id}, reason={原因}")
+    
+    @author_feedback.command(name="启用匿名功能", description="重新启用您所有帖子的匿名反馈功能（仅帖主可用）")
+    async def author_enable_anonymous(self, interaction: discord.Interaction):
+        """帖主启用匿名功能"""
+        await interaction.response.defer(ephemeral=True)
+        
+        # 检查是否在帖子中使用
+        if not isinstance(interaction.channel, discord.Thread):
+            await interaction.followup.send("❌ 此命令只能在您的帖子中使用", ephemeral=True)
+            return
+        
+        thread = interaction.channel
+        if thread.owner_id != interaction.user.id:
+            await interaction.followup.send(f"❌ 您不是该帖帖主\n帖主: <@{thread.owner_id}>", ephemeral=True)
+            return
+        
+        guild_id = interaction.guild.id
+        
+        # 检查是否已经启用
+        if not self._is_anonymous_disabled_by_author(interaction.user.id, guild_id):
+            await interaction.followup.send("❌ 您的匿名反馈功能本来就是启用状态", ephemeral=True)
+            return
+        
+        # 移除禁用记录
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute('''
+                DELETE FROM author_anonymous_disabled 
+                WHERE author_id = ? AND guild_id = ?
+            ''', (interaction.user.id, guild_id))
+        
+        await interaction.followup.send("✅ 已重新启用您所有帖子的匿名反馈功能", ephemeral=True)
+        
+        if self.logger:
+            self.logger.info(f"匿名反馈系统 - 帖主启用匿名功能: author={interaction.user.id}")
+
+    def _is_globally_banned_by_author(self, user_id: int, author_id: int, guild_id: int) -> bool:
+        """检查用户是否被帖主全局封禁"""
+        with sqlite3.connect(self.db_path) as conn:
+            result = conn.execute(
+                'SELECT 1 FROM author_global_bans WHERE author_id = ? AND banned_user_id = ? AND guild_id = ?',
+                (author_id, user_id, guild_id)
+            ).fetchone()
+            return result is not None
+    
+    def _is_anonymous_disabled_by_author(self, author_id: int, guild_id: int) -> bool:
+        """检查帖主是否禁用了匿名功能"""
+        with sqlite3.connect(self.db_path) as conn:
+            result = conn.execute(
+                'SELECT 1 FROM author_anonymous_disabled WHERE author_id = ? AND guild_id = ?',
+                (author_id, guild_id)
+            ).fetchone()
+            return result is not None
+
+    @author_feedback.command(name="删除反馈并警告", description="删除匿名反馈并警告用户（仅帖主可用）")
+    @app_commands.describe(反馈编号="反馈编号（6位数字）", 原因="删除原因")
+    async def author_delete_and_warn_user(self, interaction: discord.Interaction, 反馈编号: int, 原因: str = "不当反馈"):
+        """帖主删除反馈并警告用户"""
+        await interaction.response.defer(ephemeral=True)
+        
+        guild_id = interaction.guild.id
+        
+        # 查询反馈信息
+        with sqlite3.connect(self.db_path) as conn:
+            feedback_data = conn.execute('''
+                SELECT f.id, f.target_thread_id, f.message_id, u.user_id, u.user_cookie, f.is_deleted
+                FROM feedback f
+                JOIN users u ON f.user_cookie = u.user_cookie
+                WHERE f.guild_id = ? AND f.guild_feedback_id = ?
+            ''', (guild_id, 反馈编号)).fetchone()
+        
+        if not feedback_data:
+            await interaction.followup.send(f"❌ 未找到反馈编号 {反馈编号:06d}", ephemeral=True)
+            return
+        
+        feedback_id, target_thread_id, message_id, user_id, user_cookie, is_deleted = feedback_data
+        
+        # 检查反馈是否已被删除
+        if is_deleted:
+            await interaction.followup.send(f"❌ 反馈 #{反馈编号:06d} 已被删除", ephemeral=True)
+            return
+        
+        # 验证是否为帖主
+        is_valid, error_msg, thread = await self._validate_thread_author(interaction, {
+            'target_thread_id': target_thread_id,
+            'guild_id': guild_id
+        })
+        
+        if not is_valid:
+            await interaction.followup.send(error_msg, ephemeral=True)
+            return
+        
+        # 标记反馈为已删除
+        self._mark_feedback_deleted(feedback_id)
+        
+        # 删除Discord消息
+        if message_id:
+            try:
+                if thread:
+                    message = await thread.fetch_message(message_id)
+                    await message.delete()
+                    if self.logger:
+                        self.logger.info(f"匿名反馈系统 - 帖主删除反馈消息: message_id={message_id}, feedback_id={反馈编号}")
+            except discord.NotFound:
+                pass  # 消息已被删除
+            except Exception as e:
+                if self.logger:
+                    self.logger.warning(f"匿名反馈系统 - 帖主删除反馈消息失败: {e}")
+        
+        # 增加警告次数（针对该帖主）
+        warning_count = self._add_author_warning(user_cookie, interaction.user.id, "author_delete", feedback_id, interaction.user.id, 原因)
+        
+        # 通知被警告用户
+        if warning_count >= 3:
+            await self._send_user_notification(
+                user_id,
+                f"🚫 您的匿名反馈#{反馈编号:06d}被帖主删除。\n"
+                f"原因：{原因}\n"
+                f"这是您在该帖主帖子下的第{warning_count}次警告\n\n"
+                f"由于累计警告已达到3次，您已被该帖主封禁，无法在其所有帖子下发送匿名反馈。如有异议请联系管理员。"
+            )
+            result_msg = f"✅ 已删除反馈 #{反馈编号:06d} 并封禁该匿名用户（累计{warning_count}次警告）"
+        else:
+            await self._send_user_notification(
+                user_id,
+                f"⚠️ 您的匿名反馈#{反馈编号:06d}被帖主删除。\n"
+                f"原因：{原因}\n"
+                f"这是您在该帖主帖子下的第{warning_count}次警告\n\n"
+                f"请注意改善反馈质量，在该帖主帖子下累计3次警告将被封禁。"
+            )
+            result_msg = f"✅ 已删除反馈 #{反馈编号:06d} 并警告该匿名用户（{warning_count}/3次）"
+        
+        await interaction.followup.send(result_msg, ephemeral=True)
+        
+        if self.logger:
+            self.logger.info(f"匿名反馈系统 - 帖主删除反馈并警告: author={interaction.user.id}, feedback_id={反馈编号}, target={user_id}, warnings={warning_count}, reason={原因}")
 
 
 async def setup(bot):
