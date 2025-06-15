@@ -351,8 +351,8 @@ class AnonymousFeedbackCog(commands.Cog):
             
             # 检查是否被特定帖主封禁（原有的三次警告机制）
             if self._is_banned_from_author(cookie, author_id):
-            warning_count = self._get_author_warning_count(cookie, author_id)
-            return False, f"❌ 您已被该帖主封禁（{warning_count}次警告），无法在其帖子下发送匿名反馈"
+                warning_count = self._get_author_warning_count(cookie, author_id)
+                return False, f"❌ 您已被该帖主封禁（{warning_count}次警告），无法在其帖子下发送匿名反馈"
         
         # 检查频率限制
         if self._get_recent_feedback_count_in_thread(cookie, thread_id) >= 20:
@@ -863,8 +863,8 @@ class AnonymousFeedbackCog(commands.Cog):
                                     filename=f"image_{i+1}_{img_att.filename}"
                                 )
                                 discord_files.append(discord_file)
-        except Exception as e:
-            if self.logger:
+                    except Exception as e:
+                        if self.logger:
                             self.logger.warning(f"匿名反馈系统 - 下载图片失败: {e}")
                         # 如果下载失败，回退到链接方式
                         if i == 0:
@@ -895,8 +895,8 @@ class AnonymousFeedbackCog(commands.Cog):
                                         )
                                         discord_files.append(discord_file)
                                         continue
-            except:
-                pass
+                            except:
+                                pass
                         
                         # 普通文件显示为下载链接
                         file_links.append(f"📎 [{filename}]({att.url})")
