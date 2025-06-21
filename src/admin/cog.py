@@ -101,23 +101,40 @@ class AdminCommands(commands.Cog):
                 self.logger.error(f"加载配置文件失败: {e}")
             return {}
     
-    def is_admin():
-        async def predicate(interaction: discord.Interaction):
-            try:
-                # 获取当前的 cog 实例
-                cog = interaction.client.get_cog("AdminCommands")
-                if not cog:
-                    return False
-                config = getattr(cog, 'config', {})
-                for admin in config.get('admins', []):
-                    role = interaction.guild.get_role(admin)
-                    if role:
-                        if role in interaction.user.roles:
-                            return True
-                return False
-            except Exception:
-                return False
-        return app_commands.check(predicate)
+    async def is_admin(self, interaction: discord.Interaction) -> bool:
+        """检查用户是否为管理员（配置中的管理员身份组或服务器管理员）"""
+        try:
+            # 检查是否是高级管理员
+            if await self.is_senior_admin(interaction):
+                return True
+                
+            # 检查是否拥有配置中的管理员身份组
+            config = self.config
+            for admin_role_id in config.get('admins', []):
+                role = interaction.guild.get_role(admin_role_id)
+                if role and role in interaction.user.roles:
+                    return True
+            
+            return False
+        except Exception:
+            return False
+    
+    async def is_senior_admin(self, interaction: discord.Interaction) -> bool:
+        """检查用户是否为高级管理员（配置中的高级管理员身份组或服务器管理员）"""
+        try:
+            # 检查是否是服务器管理员
+            if interaction.user.guild_permissions.administrator:
+                return True
+                
+            # 检查是否拥有配置中的高级管理员身份组
+            config = self.config
+            for senior_admin_role_id in config.get('senior_admins', []):
+                role = interaction.guild.get_role(senior_admin_role_id)
+                if role and role in interaction.user.roles:
+                    return True
+            return False
+        except Exception:
+            return False
     
     # ---- 工具函数：将字符串时间转换为数字时长 ----
     def _parse_time(self, time_str: str) -> tuple[int, str]:
@@ -164,7 +181,6 @@ class AdminCommands(commands.Cog):
 
     # ---- 添加/移除身份组 ----
     @admin.command(name="身份组", description="添加/移除身份组")
-    
     @app_commands.describe(
         member="成员",
         action="操作",
@@ -185,6 +201,11 @@ class AdminCommands(commands.Cog):
         role: "discord.Role",
         reason: str = None,
     ):
+        # 检查管理员权限
+        if not await self.is_admin(interaction):
+            await interaction.response.send_message("❌ 您没有权限使用此命令", ephemeral=True)
+            return
+            
         guild = interaction.guild
         if guild is None:
             await interaction.response.send_message("此命令只能在服务器中使用", ephemeral=True)
@@ -216,7 +237,6 @@ class AdminCommands(commands.Cog):
 
     # ---- 批量删除消息 ----
     @admin.command(name="批量删除消息", description="在当前频道，从指定消息开始到指定消息结束，删除全部消息")
-    
     @app_commands.describe(
         start_message="开始消息链接",
         end_message="结束消息链接"
@@ -227,6 +247,11 @@ class AdminCommands(commands.Cog):
         start_message: str,
         end_message: str,
     ):
+        # 检查高级管理员权限
+        if not await self.is_senior_admin(interaction):
+            await interaction.response.send_message("❌ 您没有权限使用此命令", ephemeral=True)
+            return
+            
         await interaction.response.defer(ephemeral=True, thinking=True)
         channel = interaction.channel
         if channel is None:
@@ -323,7 +348,6 @@ class AdminCommands(commands.Cog):
 
     # ---- 批量转移身份组 ----
     @admin.command(name="批量转移身份组", description="给具有指定身份组的成员添加新身份组，可选是否移除原身份组")
-    
     @app_commands.describe(
         source_role="需要转移的原身份组",
         target_role="要添加的新身份组",
@@ -339,6 +363,11 @@ class AdminCommands(commands.Cog):
         remove_source: bool = False,
         limit: int = 100
     ):
+        # 检查高级管理员权限
+        if not await self.is_senior_admin(interaction):
+            await interaction.response.send_message("❌ 您没有权限使用此命令", ephemeral=True)
+            return
+            
         guild: discord.Guild = interaction.guild
 
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -398,7 +427,6 @@ class AdminCommands(commands.Cog):
 
     # ---- 禁言 ----
     @admin.command(name="禁言", description="将成员禁言（最长28天）并公示")
-    
     @app_commands.describe(
         member="要禁言的成员",
         time="禁言时长（5m, 12h, 3d）",
@@ -416,6 +444,11 @@ class AdminCommands(commands.Cog):
         img: discord.Attachment = None,
         warn: int = 0,
     ):
+        # 检查管理员权限
+        if not await self.is_admin(interaction):
+            await interaction.response.send_message("❌ 您没有权限使用此命令", ephemeral=True)
+            return
+            
         guild = interaction.guild
         if guild is None:
             await interaction.response.send_message("此命令只能在服务器中使用", ephemeral=True)
@@ -424,7 +457,7 @@ class AdminCommands(commands.Cog):
         # 将字符串时间转换为数字时长
         mute_time, mute_time_str = self._parse_time(time)
         if mute_time == -1:
-            await interaction.followup.send("❌ 未知时间", ephemeral=True)
+            await interaction.response.send_message("❌ 未知时间", ephemeral=True)
             return
         
         duration = datetime.timedelta(seconds=mute_time)
@@ -533,30 +566,34 @@ class AdminCommands(commands.Cog):
 
     # ---- 永封 ----
     @admin.command(name="永封", description="永久封禁成员并公示")
-    
     @app_commands.describe(member="要封禁的成员", user_id="用户ID（可直接封禁不在服务器的用户）", reason="原因（可选）", img="图片（可选）", delete_message_days="删除消息天数（0-7）")
     @app_commands.rename(member="成员", user_id="用户id", reason="原因", img="图片", delete_message_days="删除消息天数")
     async def ban_member(
         self,
         interaction,  # type: discord.Interaction
         member: "discord.Member" = None,
-        user_id: int = None,
+        user_id: str = None,
         reason: str = None,
         img: discord.Attachment = None,
         delete_message_days: int = 0,
     ):
+        # 检查高级管理员权限
+        if not await self.is_senior_admin(interaction):
+            await interaction.response.send_message("❌ 您没有权限使用此命令", ephemeral=True)
+            return
+            
         guild = interaction.guild
         if guild is None:
             await interaction.response.send_message("此命令只能在服务器中使用", ephemeral=True)
             return
 
         # 验证至少提供了一个参数
-        if member is None and user_id is None:
+        if not member and not user_id:
             await interaction.response.send_message("❌ 请提供要封禁的成员或用户ID", ephemeral=True)
             return
             
         # 验证不能同时提供两个参数
-        if member is not None and user_id is not None:
+        if member and user_id:
             await interaction.response.send_message("❌ 请只提供成员或用户ID中的一个", ephemeral=True)
             return
 
@@ -570,7 +607,7 @@ class AdminCommands(commands.Cog):
         target_user_avatar = None
         is_member = False
         
-        if member is not None:
+        if member:
             # 使用提供的成员对象
             target_user = member
             target_user_id = member.id
@@ -579,13 +616,18 @@ class AdminCommands(commands.Cog):
             target_user_avatar = member.display_avatar.url
             is_member = True
         else:
-            # 使用用户ID
-            target_user_id = user_id
+            # 使用用户ID - 先验证ID格式
+            try:
+                target_user_id = int(user_id)
+            except (ValueError, TypeError):
+                await interaction.followup.send("❌ 请提供有效的用户ID（纯数字）", ephemeral=True)
+                return
+                
             try:
                 # 尝试获取用户对象（可能不在服务器中）
-                target_user = await self.bot.fetch_user(user_id)
+                target_user = await self.bot.fetch_user(target_user_id)
                 target_user_name = str(target_user)
-                target_user_mention = f"<@{user_id}>"
+                target_user_mention = f"<@{target_user_id}>"
                 target_user_avatar = target_user.display_avatar.url
             except discord.NotFound:
                 # 用户不存在
@@ -593,11 +635,11 @@ class AdminCommands(commands.Cog):
                 return
             except Exception as e:
                 # 其他错误，仍然可以尝试封禁，但使用默认信息
-                target_user_name = f"用户 {user_id}"
-                target_user_mention = f"<@{user_id}>"
+                target_user_name = f"用户 {target_user_id}"
+                target_user_mention = f"<@{target_user_id}>"
                 target_user_avatar = None
                 if self.logger:
-                    self.logger.warning(f"无法获取用户信息 {user_id}: {e}")
+                    self.logger.warning(f"无法获取用户信息 {target_user_id}: {e}")
 
         # 私聊通知（仅当能获取到用户对象时）
         if target_user is not None:
@@ -667,9 +709,13 @@ class AdminCommands(commands.Cog):
 
     # ---- 撤销处罚 ----
     @admin.command(name="撤销处罚", description="按ID撤销处罚")
-    
     @app_commands.describe(punish_id="处罚ID", reason="原因（可选）")
     async def revoke_punish(self, interaction, punish_id: str, reason: str = None):
+        # 检查高级管理员权限
+        if not await self.is_senior_admin(interaction):
+            await interaction.response.send_message("❌ 您没有权限使用此命令", ephemeral=True)
+            return
+            
         guild = interaction.guild
         if guild is None:
             await interaction.response.send_message("此命令只能在服务器中使用", ephemeral=True)
@@ -761,7 +807,6 @@ class AdminCommands(commands.Cog):
 
     # ---- 频道管理 ----
     @admin.command(name="频道管理", description="编辑频道属性")
-    
     @app_commands.describe(
         channel="要编辑的频道",
         new_name="新名称(可选)",
@@ -794,6 +839,11 @@ class AdminCommands(commands.Cog):
         nsfw: bool = None,
         auto_archive: app_commands.Choice[int] = None,
     ):
+        # 检查管理员权限
+        if not await self.is_admin(interaction):
+            await interaction.response.send_message("❌ 您没有权限使用此命令", ephemeral=True)
+            return
+            
         await interaction.response.defer(ephemeral=True)
         params = {}
         if new_name:
@@ -816,10 +866,14 @@ class AdminCommands(commands.Cog):
 
     # ---- 一键删帖 ----
     @admin.command(name="一键删帖", description="一键删除某成员发布的全部帖子")
-    
     @app_commands.describe(member="要删除帖子的成员ID", channel="要删除帖子的频道")
     @app_commands.rename(member="成员id", channel="频道")
     async def delete_all_threads(self, interaction: discord.Interaction, member: str, channel: "discord.ForumChannel"):
+        # 检查高级管理员权限
+        if not await self.is_senior_admin(interaction):
+            await interaction.response.send_message("❌ 您没有权限使用此命令", ephemeral=True)
+            return
+            
         await interaction.response.defer(ephemeral=True)
         
         # 验证成员ID格式
@@ -933,7 +987,6 @@ class AdminCommands(commands.Cog):
     thread_manage_group = app_commands.Group(name="子区管理", description="子区线程管理", parent=admin)
 
     @thread_manage_group.command(name="锁定", description="锁定线程")
-    
     @app_commands.describe(thread="要锁定的子区（留空则为当前子区）")
     @app_commands.rename(thread="子区")
     async def lock_thread_admin(
@@ -941,6 +994,11 @@ class AdminCommands(commands.Cog):
         interaction, 
         thread: "discord.Thread" = None
     ):
+        # 检查管理员权限
+        if not await self.is_admin(interaction):
+            await interaction.response.send_message("❌ 您没有权限使用此命令", ephemeral=True)
+            return
+            
         await interaction.response.defer(ephemeral=True)
         if thread is None:
             thread = interaction.channel
@@ -958,7 +1016,6 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(f"❌ 锁定失败: {e}", ephemeral=True)
 
     @thread_manage_group.command(name="解锁", description="解锁线程")
-    
     @app_commands.describe(thread="要解锁的子区（留空则为当前子区）")
     @app_commands.rename(thread="子区")
     async def unlock_thread_admin(
@@ -966,6 +1023,11 @@ class AdminCommands(commands.Cog):
         interaction, 
         thread: "discord.Thread" = None
     ):
+        # 检查管理员权限
+        if not await self.is_admin(interaction):
+            await interaction.response.send_message("❌ 您没有权限使用此命令", ephemeral=True)
+            return
+            
         await interaction.response.defer(ephemeral=True)
         if thread is None:
             thread = interaction.channel
@@ -982,7 +1044,6 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(f"❌ 解锁失败: {e}", ephemeral=True)
 
     @thread_manage_group.command(name="archive", description="归档线程")
-    
     @app_commands.describe(thread="要归档的子区（留空则为当前子区）")
     @app_commands.rename(thread="子区")
     async def archive_thread_admin(
@@ -990,6 +1051,11 @@ class AdminCommands(commands.Cog):
         interaction, 
         thread: "discord.Thread" = None
     ):
+        # 检查管理员权限
+        if not await self.is_admin(interaction):
+            await interaction.response.send_message("❌ 您没有权限使用此命令", ephemeral=True)
+            return
+            
         await interaction.response.defer(ephemeral=True)
         if thread is None:
             thread = interaction.channel
@@ -1006,7 +1072,6 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(f"❌ 归档失败: {e}", ephemeral=True)
 
     @thread_manage_group.command(name="unarchive", description="取消归档线程")
-    
     @app_commands.describe(thread="要取消归档的子区（留空则为当前子区）")
     @app_commands.rename(thread="子区")
     async def unarchive_thread_admin(
@@ -1014,6 +1079,11 @@ class AdminCommands(commands.Cog):
         interaction, 
         thread: "discord.Thread" = None
     ):
+        # 检查管理员权限
+        if not await self.is_admin(interaction):
+            await interaction.response.send_message("❌ 您没有权限使用此命令", ephemeral=True)
+            return
+            
         await interaction.response.defer(ephemeral=True)
         if thread is None:
             thread = interaction.channel
@@ -1030,7 +1100,6 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(f"❌ 取消归档失败: {e}", ephemeral=True)
 
     @thread_manage_group.command(name="pin", description="置顶")
-    
     @app_commands.describe(thread="要置顶的子区（留空则为当前子区）")
     @app_commands.rename(thread="子区")
     async def pin_in_thread_admin(
@@ -1038,6 +1107,11 @@ class AdminCommands(commands.Cog):
         interaction,
         thread: "discord.Thread" = None
     ):
+        # 检查管理员权限
+        if not await self.is_admin(interaction):
+            await interaction.response.send_message("❌ 您没有权限使用此命令", ephemeral=True)
+            return
+            
         await interaction.response.defer(ephemeral=True)
         if thread is None:
             thread = interaction.channel
@@ -1051,12 +1125,16 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(f"❌ 置顶失败: {e}", ephemeral=True)
 
     @thread_manage_group.command(name="unpin", description="取消置顶")
-    
     async def unpin_in_thread_admin(
         self,
         interaction,
         thread: "discord.Thread" = None
     ):
+        # 检查管理员权限
+        if not await self.is_admin(interaction):
+            await interaction.response.send_message("❌ 您没有权限使用此命令", ephemeral=True)
+            return
+            
         await interaction.response.defer(ephemeral=True)
         if thread is None:
             thread = interaction.channel
@@ -1070,7 +1148,6 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(f"❌ 取消置顶失败: {e}", ephemeral=True)
 
     @thread_manage_group.command(name="删帖", description="删除线程")
-    
     @app_commands.describe(thread="要删除的子区（留空则为当前子区）")
     @app_commands.rename(thread="子区")
     async def delete_thread_admin(
@@ -1078,6 +1155,11 @@ class AdminCommands(commands.Cog):
         interaction,
         thread: "discord.Thread" = None
     ):  
+        # 检查管理员权限
+        if not await self.is_admin(interaction):
+            await interaction.response.send_message("❌ 您没有权限使用此命令", ephemeral=True)
+            return
+            
         await interaction.response.defer(ephemeral=True)
         if thread is None:
             thread = interaction.channel
@@ -1102,10 +1184,10 @@ class AdminCommands(commands.Cog):
 
     # ---- 答题处罚 ----
     @app_commands.command(name="答题处罚", description="移除身份组送往答题区")
-    
     @app_commands.describe(member="要处罚的成员", reason="原因（可选）")
     @app_commands.rename(member="成员", reason="原因")
     async def quiz_punish(self, interaction, member: "discord.Member", reason: str = None):
+            
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
         
