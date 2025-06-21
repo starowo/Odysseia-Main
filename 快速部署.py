@@ -81,19 +81,21 @@ def create_basic_config():
     """创建基础配置"""
     config = {
         "token": "",
+        "prefix": "!",
         "status": "watching",
         "status_text": "子区里的一切",
         "admins": [],
+        "senior_admins": [],
         "cogs": {
             "thread_manage": {"enabled": True, "description": "子区自助管理功能"},
             "admin": {"enabled": True, "description": "管理员功能"},
             "anonymous_feedback": {"enabled": True, "description": "匿名反馈系统"},
-            "verify": {"enabled": True, "description": "验证系统"},
+            "verify": {"enabled": True, "description": "答题验证功能"},
             "misc": {"enabled": True, "description": "杂项功能"},
-            "event": {"enabled": False, "description": "赛事管理功能"},
+            "event": {"enabled": False, "description": "赛事功能"},
             "bot_manage": {"enabled": True, "description": "机器人管理功能"},
-            "sync": {"enabled": False, "description": "服务器同步功能"},
-            "license": {"enabled": True, "description": "内容授权协议助手"},
+            "sync": {"enabled": False, "description": "同步功能"},
+            "license": {"enabled": True, "description": "许可证功能"},
         },
         "logging": {
             "enabled": False,
@@ -103,13 +105,12 @@ def create_basic_config():
         },
         "verified_role_id": 0,
         "buffer_role_id": 0,
-        "quiz_role_id": 0,
         "warned_role_id": 0,
         "punish_announce_channel_id": 0,
-        "event_managers": [],
-        "highest_role_available": 0,
+        "quiz_punish_whitelist": [],
         "license_cog": {
-            "monitored_channels": []
+            "monitored_channels": [],
+            "allow_commercial_use": False
         }
     }
     return config
@@ -156,16 +157,26 @@ def setup_admins(config):
     """设置管理员"""
     print_step(2, "管理员配置")
 
-    print("👑 管理员拥有机器人的最高权限")
-    print("💡 获取用户ID：右键用户头像 → 复制用户ID（需开启开发者模式）")
+    print("👑 管理员权限说明：")
+    print("📋 普通管理员：可使用大部分管理功能")
+    print("🔴 高级管理员：可使用永封、批量删除等高危功能（自动拥有普通管理员权限）")
+    print("💡 获取身份组ID：服务器设置 → 身份组 → 右键身份组 → 复制ID（需开启开发者模式）")
 
-    admin_ids = get_multiple_ids("请输入管理员的用户ID")
+    admin_ids = get_multiple_ids("请输入普通管理员的身份组ID")
     config["admins"] = admin_ids
 
+    senior_admin_ids = get_multiple_ids("请输入高级管理员的身份组ID（可选）")
+    config["senior_admins"] = senior_admin_ids
+
     if admin_ids:
-        print(f"✅ 已设置 {len(admin_ids)} 个管理员")
+        print(f"✅ 已设置 {len(admin_ids)} 个普通管理员身份组")
     else:
-        print("⚠️  未设置管理员，后续可在配置文件中手动添加")
+        print("⚠️  未设置普通管理员，后续可在配置文件中手动添加")
+    
+    if senior_admin_ids:
+        print(f"✅ 已设置 {len(senior_admin_ids)} 个高级管理员身份组")
+    else:
+        print("💡 未设置高级管理员，如需使用高危功能请后续手动添加")
 
 def setup_server_config(config):
     """设置服务器配置"""
@@ -183,7 +194,6 @@ def setup_server_config(config):
     role_configs = [
         ("verified_role_id", "已验证用户身份组ID"),
         ("buffer_role_id", "验证缓冲身份组ID"),
-        ("quiz_role_id", "答题验证身份组ID"),
         ("warned_role_id", "警告状态身份组ID")
     ]
 
@@ -191,6 +201,13 @@ def setup_server_config(config):
         role_id = get_input(f"请输入{role_desc}", input_type=int, required=False)
         if role_id:
             config[role_key] = role_id
+
+    # 答题验证白名单配置
+    print("\n🔐 答题验证白名单配置（可选）")
+    print("💡 这些用户可以绕过答题验证的处罚")
+    quiz_whitelist = get_multiple_ids("请输入免答题处罚的用户ID（可选）")
+    if quiz_whitelist:
+        config["quiz_punish_whitelist"] = quiz_whitelist
 
     # 频道配置
     print("\n📺 频道配置")
@@ -209,31 +226,21 @@ def setup_server_config(config):
         config["logging"]["guild_id"] = guild_id
         config["logging"]["channel_id"] = log_channel
 
-    # # <--- 新增开始: 内容授权协议助手配置 --->
-    print("\n📝 内容授权协议助手配置（可选）")
+    # 许可证功能配置
+    print("\n📝 许可证功能配置（可选）")
     print("💡 此功能会在用户发帖后，自动提供授权协议选项")
-    enable_license = get_input("是否配置内容授权协议助手？(y/n)", input_type=bool, default=True)
+    enable_license = get_input("是否配置许可证功能？(y/n)", input_type=bool, default=True)
     if enable_license:
         config["cogs"]["license"]["enabled"] = True
         monitored_channels = get_multiple_ids("请输入需要机器人监控的创作版块（论坛频道）ID")
         if monitored_channels:
             config["license_cog"]["monitored_channels"] = monitored_channels
+        
+        # 商业使用设置
+        allow_commercial = get_input("是否允许用户选择商业使用授权？(y/n)", input_type=bool, default=False)
+        config["license_cog"]["allow_commercial_use"] = allow_commercial
     else:
         config["cogs"]["license"]["enabled"] = False
-    # <--- 新增结束 --->
-
-    # 赛事管理配置（可选）
-    print("\n🏆 赛事管理配置（可选）")
-    enable_event = get_input("是否配置赛事管理？(y/n)", input_type=bool, default=False)
-    if enable_event:
-        config["cogs"]["event"]["enabled"] = True
-        event_managers = get_multiple_ids("请输入赛事管理员用户ID（可选）")
-        highest_role = get_input("请输入最高可管理身份组ID（可选）", input_type=int, required=False)
-
-        if event_managers:
-            config["event_managers"] = event_managers
-        if highest_role:
-            config["highest_role_available"] = highest_role
 
     print("✅ 服务器配置完成")
 
@@ -248,20 +255,15 @@ def setup_module_config(config):
         "thread_manage": "子区管理功能",
         "admin": "管理员命令",
         "anonymous_feedback": "匿名反馈系统（论坛专用，自动化无需配置）",
-        "verify": "验证系统",
+        "verify": "答题验证系统",
         "misc": "杂项命令",
-        "license": "内容授权协议助手",
-        "event": "赛事管理",
+        "license": "许可证功能",
+        "event": "赛事功能",
         "bot_manage": "机器人管理命令",
         "sync": "服务器同步功能（多服务器环境）"
     }
 
     for module_key, module_desc in modules.items():
-        # 如果赛事模块在之前已经配置，跳过询问
-        if module_key == "event" and config["cogs"][module_key]["enabled"]:
-            print(f"✅ {module_desc} 已在前面步骤中启用")
-            continue
-
         # 同步功能需要特殊说明
         if module_key == "sync":
             print(f"\n🔄 {module_desc}")
@@ -277,9 +279,9 @@ def setup_module_config(config):
     print("\n💡 功能说明：")
     print("📢 匿名反馈系统：论坛频道专用，用户可在帖子内发送匿名消息，无需额外配置")
     print("🔧 子区管理：支持帖主和管理员管理论坛帖子")
-    print("🛡️  验证系统：新用户入群验证功能")
-    print("📝 内容授权协议助手：在指定创作版块中，为作者提供内容授权协议选项")
-    print("🎮 赛事管理：身份组发放和赛事相关功能")
+    print("🛡️  答题验证系统：新用户入群验证功能")
+    print("📝 许可证功能：在指定创作版块中，为作者提供内容授权协议选项")
+    print("🎮 赛事功能：赛事相关功能")
     print("⚙️  机器人管理：运行时动态管理模块开关")
     print("🔄 服务器同步：多服务器身份组和处罚同步功能")
 
@@ -371,10 +373,11 @@ def show_next_steps():
 
     print("\n💡 特别提醒：")
     print("📢 匿名反馈系统只在论坛频道的帖子内可用，完全自动化")
-    print("🔸 管理员使用用户ID进行权限控制")
-    print("🔸 验证系统完全自动化，只需在Discord服务器中创建相关身份组")
-    print("📝 内容授权协议助手会在您指定的创作版块中自动为新帖子提供授权协议选项")
-    print("🔸 赛事管理为可选功能，可用于身份组发放和权限控制")
+    print("🔸 管理员使用身份组ID进行权限控制")
+    print("🔸 高级管理员自动拥有普通管理员的所有权限")
+    print("🔸 答题验证系统完全自动化，只需在Discord服务器中创建相关身份组")
+    print("📝 许可证功能会在您指定的创作版块中自动为新帖子提供授权协议选项")
+    print("🔸 赛事功能为可选功能，可用于赛事相关操作")
     print("🔸 机器人管理命令可以在运行时动态开关功能模块")
     print("🔄 服务器同步功能需要在多个服务器中部署相同配置的机器人")
 
