@@ -11,16 +11,20 @@ from src.utils.confirm_view import confirm_view, confirm_view_embed
 
 
 class TemporaryMessageView(discord.ui.View):
-    def __init__(self, author_id: int, content: str, image_url: str = None, timeout_seconds: int = 180):
-        super().__init__(timeout=timeout_seconds)
+    def __init__(self, author_id: int, content: str, image_url: str = None):
+        super().__init__(timeout=None)  # 不使用View的timeout
         self.author_id = author_id
         self.content = content
         self.image_url = image_url
-        self.timeout_seconds = timeout_seconds
+        self.is_deleted = False  # 标记消息是否已被删除
 
     @discord.ui.button(label="查看消息", style=discord.ButtonStyle.primary, emoji="👁️")
     async def view_message(self, interaction: discord.Interaction, button: discord.ui.Button):
         """查看临时消息内容"""
+        if self.is_deleted:
+            await interaction.response.send_message("❌ 消息已被删除！", ephemeral=True)
+            return
+            
         embed = discord.Embed(
             title="临时消息内容",
             description=self.content or "（无文字内容）",
@@ -39,6 +43,11 @@ class TemporaryMessageView(discord.ui.View):
             await interaction.response.send_message("❌ 只有消息的发布者才能删除此消息！", ephemeral=True)
             return
         
+        if self.is_deleted:
+            await interaction.response.send_message("❌ 消息已被删除！", ephemeral=True)
+            return
+        
+        self.is_deleted = True
         embed = discord.Embed(
             title="临时消息已删除",
             description="消息已被发布者手动删除",
@@ -46,19 +55,24 @@ class TemporaryMessageView(discord.ui.View):
         )
         await interaction.response.edit_message(embed=embed, view=None)
 
-    async def on_timeout(self):
-        """超时后自动删除消息"""
+    async def auto_delete(self, message: discord.Message, timeout_seconds: int):
+        """自动删除任务"""
         try:
-            embed = discord.Embed(
-                title="临时消息已过期",
-                description="消息已超过指定时长，自动删除",
-                color=discord.Color.orange()
-            )
-            # 尝试编辑消息（如果消息还存在的话）
-            if hasattr(self, 'message') and self.message:
-                await self.message.edit(embed=embed, view=None)
-        except:
-            pass  # 忽略编辑失败的情况
+            await asyncio.sleep(timeout_seconds)
+            if not self.is_deleted:
+                self.is_deleted = True
+                embed = discord.Embed(
+                    title="临时消息已过期",
+                    description="消息已超过指定时长，自动删除",
+                    color=discord.Color.orange()
+                )
+                await message.edit(embed=embed, view=None)
+        except discord.NotFound:
+            # 消息已被删除，忽略
+            pass
+        except Exception as e:
+            # 其他错误，记录但不抛出
+            print(f"自动删除临时消息时发生错误: {e}")
 
 
 class MiscCommands(commands.Cog):
@@ -71,6 +85,8 @@ class MiscCommands(commands.Cog):
         # 初始化配置缓存
         self._config_cache = {}
         self._config_cache_mtime = None
+        # 临时消息自动删除任务管理
+        self.temp_message_tasks: set[asyncio.Task] = set()
 
     def parse_duration(self, duration_str: str) -> int:
         """解析时长字符串，返回秒数"""
@@ -100,6 +116,15 @@ class MiscCommands(commands.Cog):
 
     async def on_ready(self):
         self.bot.logger.info(f"杂项命令已加载")
+
+    async def cog_unload(self):
+        """卸载Cog时清理所有未完成的任务"""
+        for task in self.temp_message_tasks:
+            task.cancel()
+        # 等待所有任务取消完成
+        if self.temp_message_tasks:
+            await asyncio.gather(*self.temp_message_tasks, return_exceptions=True)
+        self.temp_message_tasks.clear()
 
     # 权限检查装饰器
     def is_admin():
@@ -211,8 +236,7 @@ class MiscCommands(commands.Cog):
         view = TemporaryMessageView(
             author_id=interaction.user.id,
             content=文字,
-            image_url=图片.url if 图片 else None,
-            timeout_seconds=timeout_seconds
+            image_url=图片.url if 图片 else None
         )
         
         # 发送临时消息通知
@@ -227,7 +251,12 @@ class MiscCommands(commands.Cog):
         
         # 发送到频道
         message = await interaction.channel.send(embed=notification_embed, view=view)
-        view.message = message  # 保存消息引用用于超时处理
+        
+        # 创建自动删除任务并加入管理
+        task = asyncio.create_task(view.auto_delete(message, timeout_seconds))
+        self.temp_message_tasks.add(task)
+        # 任务完成后自动从集合中移除
+        task.add_done_callback(self.temp_message_tasks.discard)
         
         # 给用户发送成功确认
         success_embed = discord.Embed(
