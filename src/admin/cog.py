@@ -10,6 +10,81 @@ from typing import List, Tuple
 
 from src.utils.confirm_view import confirm_view
 
+# ---- 持久视图：删除子区审批 ----
+class ThreadDeleteApprovalView(discord.ui.View):
+    """一个持久视图，收集管理员对删除子区的投票。
+
+    需要至少 5 位管理员点击同意才会执行删除；任何管理员点击拒绝即刻否决。
+    """
+
+    def __init__(self, cog: "AdminCommands", thread: discord.Thread, initiator: discord.Member):
+        super().__init__(timeout=None)  # 持久视图
+        self.cog = cog
+        self.thread = thread
+        self.initiator = initiator
+        self.approvals: set[int] = set()
+        self.denied: bool = False
+        self.message: discord.Message | None = None  # 由外部在发送后赋值
+
+    async def _is_admin(self, interaction: discord.Interaction) -> bool:
+        """校验交互用户是否为管理员。"""
+        try:
+            return await self.cog.is_admin(interaction)
+        except Exception:
+            return False
+
+    async def _refresh_message(self):
+        """更新原始消息中的进度显示。"""
+        if self.message and not self.denied:
+            content = f"🗑️ 删除子区投票进行中：已获得 {len(self.approvals)}/5 位管理员同意。"
+            await self.message.edit(content=content, view=self)
+
+    @discord.ui.button(label="✅ 同意删除", style=discord.ButtonStyle.green, custom_id="thread_delete_approve")
+    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore
+        # 权限校验
+        if not await self._is_admin(interaction):
+            await interaction.response.send_message("❌ 只有管理员可以操作该按钮", ephemeral=True)
+            return
+
+        if self.denied:
+            await interaction.response.send_message("❌ 该请求已被否决", ephemeral=True)
+            return
+
+        # 记录同意
+        self.approvals.add(interaction.user.id)
+        await interaction.response.send_message(f"✅ 已记录您的同意 (当前 {len(self.approvals)}/5)", ephemeral=True)
+
+        # 刷新进度
+        await self._refresh_message()
+
+        # 判断是否达到删除条件
+        if len(self.approvals) >= 5:
+            try:
+                await self.thread.delete(reason=f"管理员共识删除 by {interaction.user}")
+                if self.message:
+                    await self.message.edit(content=f"✅ 线程【{self.thread.name}】已被删除", view=None)
+            except Exception as e:
+                if self.message:
+                    await self.message.edit(content=f"❌ 删除线程失败: {e}", view=None)
+            finally:
+                self.stop()
+
+    @discord.ui.button(label="❌ 拒绝删除", style=discord.ButtonStyle.red, custom_id="thread_delete_deny")
+    async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore
+        # 权限校验
+        if not await self._is_admin(interaction):
+            await interaction.response.send_message("❌ 只有管理员可以操作该按钮", ephemeral=True)
+            return
+
+        # 记录否决
+        self.denied = True
+        await interaction.response.send_message("已否决删除请求", ephemeral=True)
+
+        if self.message:
+            await self.message.edit(content=f"❌ 删除请求已被 {interaction.user.mention} 否决", view=None)
+
+        self.stop()
+
 class AdminCommands(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -870,7 +945,7 @@ class AdminCommands(commands.Cog):
     @app_commands.rename(member="成员id", channel="频道")
     async def delete_all_threads(self, interaction: discord.Interaction, member: str, channel: "discord.ForumChannel"):
         # 检查高级管理员权限
-        if not await self.is_senior_admin(interaction):
+        if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message("❌ 您没有权限使用此命令", ephemeral=True)
             return
             
@@ -985,36 +1060,6 @@ class AdminCommands(commands.Cog):
 
     # ---- 子区管理 ----
     thread_manage_group = app_commands.Group(name="子区管理", description="子区线程管理", parent=admin)
-
-    @thread_manage_group.command(name="锁定", description="锁定线程")
-    @app_commands.describe(thread="要锁定的子区（留空则为当前子区）")
-    @app_commands.rename(thread="子区")
-    async def lock_thread_admin(
-        self, 
-        interaction, 
-        thread: "discord.Thread" = None
-    ):
-        # 检查管理员权限
-        if not await self.is_admin(interaction):
-            await interaction.response.send_message("❌ 您没有权限使用此命令", ephemeral=True)
-            return
-            
-        await interaction.response.defer(ephemeral=True)
-        if thread is None:
-            thread = interaction.channel
-        if not isinstance(thread, discord.Thread):
-            await interaction.followup.send("❌ 请指定一个子区", ephemeral=True)
-            return
-            
-        if thread.locked:
-            await interaction.followup.send("已锁定", ephemeral=True)
-            return
-        try:
-            await thread.edit(locked=True, archived=False, reason=f"锁定 by {interaction.user}")
-            await interaction.followup.send("✅ 已锁定线程", ephemeral=True)
-        except Exception as e:
-            await interaction.followup.send(f"❌ 锁定失败: {e}", ephemeral=True)
-
     @thread_manage_group.command(name="解锁", description="解锁线程")
     @app_commands.describe(thread="要解锁的子区（留空则为当前子区）")
     @app_commands.rename(thread="子区")
@@ -1070,34 +1115,6 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send("✅ 已归档线程", ephemeral=True)
         except Exception as e:
             await interaction.followup.send(f"❌ 归档失败: {e}", ephemeral=True)
-
-    @thread_manage_group.command(name="unarchive", description="取消归档线程")
-    @app_commands.describe(thread="要取消归档的子区（留空则为当前子区）")
-    @app_commands.rename(thread="子区")
-    async def unarchive_thread_admin(
-        self, 
-        interaction, 
-        thread: "discord.Thread" = None
-    ):
-        # 检查管理员权限
-        if not await self.is_admin(interaction):
-            await interaction.response.send_message("❌ 您没有权限使用此命令", ephemeral=True)
-            return
-            
-        await interaction.response.defer(ephemeral=True)
-        if thread is None:
-            thread = interaction.channel
-        if not isinstance(thread, discord.Thread):
-            await interaction.followup.send("❌ 请指定一个子区", ephemeral=True)
-            return
-        if not thread.archived:
-            await interaction.followup.send("未归档", ephemeral=True)
-            return
-        try:
-            await thread.edit(archived=False, locked=False, reason=f"取消归档 by {interaction.user}")
-            await interaction.followup.send("✅ 已取消归档", ephemeral=True)
-        except Exception as e:
-            await interaction.followup.send(f"❌ 取消归档失败: {e}", ephemeral=True)
 
     @thread_manage_group.command(name="pin", description="置顶")
     @app_commands.describe(thread="要置顶的子区（留空则为当前子区）")
@@ -1167,20 +1184,29 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send("❌ 请指定一个子区", ephemeral=True)
             return
         
-        confirmed = await confirm_view(
-            interaction,
-            title="🔴 删除子区",
-            description=f"确定要删除 【{thread.name}】 吗？"
+        # 创建删除审批视图
+        approval_view = ThreadDeleteApprovalView(cog=self, thread=thread, initiator=interaction.user)
+
+        embed = discord.Embed(
+            title="🗑️ 删除子区请求",
+            description=(
+                f"{interaction.user.mention} 请求删除子区 **{thread.name}**\n\n"
+                "需要 **5** 位管理员点击同意才会执行删除；任意管理员点击拒绝即可一票否决。"
+            ),
+            colour=discord.Color.red(),
         )
 
-        if not confirmed:
-            await interaction.followup.send("❌ 已取消", ephemeral=True)
-            return
-        
-        try:
-            await thread.delete(reason=f"管理员删帖 by {interaction.user}")
-        except Exception as e:
-            await interaction.followup.send(f"❌ 删除失败: {e}", ephemeral=True)
+        # 在当前频道发送持久视图
+        message = await interaction.channel.send(embed=embed, view=approval_view)
+        approval_view.message = message
+
+        await interaction.followup.send("✅ 已发起删除请求，等待其他管理员确认", ephemeral=True)
+         
+        # 如果需要日志
+        if self.logger:
+            self.logger.info(
+                f"线程删除请求已发起: {thread.name} (ID: {thread.id}) by {interaction.user.display_name}({interaction.user.id})"
+            )
 
     # ---- 答题处罚 ----
     @app_commands.command(name="答题处罚", description="移除身份组送往答题区")

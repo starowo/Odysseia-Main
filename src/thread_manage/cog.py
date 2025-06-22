@@ -372,9 +372,9 @@ class ThreadSelfManage(commands.Cog):
             await interaction.response.send_message("此指令仅在子区内有效", ephemeral=True)
             return
         
-        # 验证是否是子区所有者或管理员
-        if not await self.can_manage_thread(interaction, channel):
-            await interaction.response.send_message("不能在他人子区内使用此指令", ephemeral=True)
+        # 验证是否是子区所有者 (不允许管理员删除子区)
+        if interaction.user.id != channel.owner_id:
+            await interaction.response.send_message("只有子区所有者可以删除子区", ephemeral=True)
             return
 
         await interaction.response.defer(ephemeral=True)
@@ -388,8 +388,17 @@ class ThreadSelfManage(commands.Cog):
         )
 
         if not confirmed:
-            # delete message
-            await interaction.delete_original_response()
+            return
+
+        # 二次确认
+        confirmed = await confirm_view(
+            interaction,
+            title="删除子区",
+            description=f"⚠️ **再次确认** ⚠️\n\n真的确定要删除子区 **{channel.name}** 吗？\n\n**此操作不可逆，将删除所有消息和历史记录！**",
+            colour=discord.Colour.red(),
+        )
+
+        if not confirmed:
             return
 
         # delay 500 ms
@@ -542,6 +551,56 @@ class ThreadSelfManage(commands.Cog):
                 await channel.send(f"⏱️ **慢速模式已设置为 {option.name}**\n\n由 {interaction.user.mention} 设置于 {discord.utils.format_dt(datetime.now())}")
         except discord.HTTPException as e:
             await interaction.followup.send(f"❌ 设置失败: {str(e)}", ephemeral=True)
+
+    # ---- 编辑子区标题 ----
+    @self_manage.command(name="编辑标题", description="修改子区标题")
+    @app_commands.describe(new_title="新的子区标题")
+    @app_commands.rename(new_title="新标题")
+    async def edit_title(self, interaction: discord.Interaction, new_title: str):
+        # 验证是否在子区内
+        channel = interaction.channel
+        if not isinstance(channel, discord.Thread):
+            await interaction.response.send_message("此指令仅在子区内有效", ephemeral=True)
+            return
+        
+        # 验证是否是子区所有者或管理员
+        if not await self.can_manage_thread(interaction, channel):
+            await interaction.response.send_message("不能在他人子区内使用此指令", ephemeral=True)
+            return
+
+        # 验证标题长度（Discord限制为100字符）
+        if len(new_title) > 100:
+            await interaction.response.send_message("❌ 标题长度不能超过100字符", ephemeral=True)
+            return
+        
+        # 验证标题不为空
+        if not new_title.strip():
+            await interaction.response.send_message("❌ 标题不能为空", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        
+        # 保存旧标题用于显示
+        old_title = channel.name
+        
+        # 编辑子区标题
+        try:
+            await channel.edit(name=new_title.strip())
+            
+            # 通知操作者
+            await interaction.followup.send(f"✅ 子区标题已更新为：**{new_title.strip()}**", ephemeral=True)
+            
+            # 在子区内发送通知
+            title_notice = (
+                f"📝 **子区标题已更新**\n\n"
+                f"**旧标题：** {old_title}\n"
+                f"**新标题：** {new_title.strip()}\n\n"
+                f"由 {interaction.user.mention} 更新于 {discord.utils.format_dt(datetime.now())}"
+            )
+            await channel.send(title_notice)
+            
+        except discord.HTTPException as e:
+            await interaction.followup.send(f"❌ 编辑标题失败: {str(e)}", ephemeral=True)
 
     # ---- 标注操作 ----
     @self_manage.command(name="标注", description="标注/取消标注消息")
