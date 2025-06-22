@@ -121,15 +121,12 @@ class ThreadSelfManage(commands.Cog):
         # 检查是否有正在进行的自动清理任务
         if self.auto_clear_manager.is_clearing_active(channel.id):
             await interaction.response.send_message(
-                "❌ 该子区正在进行自动清理任务，请等待自动清理完成后再手动执行清理", 
+                "❌ 该子区已经在清理中，请等待清理完成", 
                 ephemeral=True
             )
             return
 
         await interaction.response.defer(thinking=True, ephemeral=True)
-
-        # 标记手动清理开始
-        self.auto_clear_manager.mark_manual_clearing(channel.id, True)
 
         # 获取子区内的成员
         members = await channel.fetch_members()
@@ -161,6 +158,17 @@ class ThreadSelfManage(commands.Cog):
 
         if not confirmed:
             return
+        
+        # 再次检测是否正在清理
+        if self.auto_clear_manager.is_clearing_active(channel.id):
+            await interaction.response.send_message(
+                "❌ 该子区已经在清理中，请等待清理完成", 
+                ephemeral=True
+            )
+            return
+
+        # 标记手动清理开始
+        self.auto_clear_manager.mark_manual_clearing(channel.id, True)
 
         # 进行清理，实时更新进度
 
