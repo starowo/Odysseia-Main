@@ -193,6 +193,23 @@ class AutoClearManager:
                     f"移除 {task.members_removed} 人，剩余 {result['final_count']} 人"
                 )
                 
+            # 向子区发送自动清理完成报告
+            try:
+                summary_embed = discord.Embed(
+                    title="自动清理完成 ✅",
+                    colour=discord.Colour.green(),
+                    description=(
+                        f"🔹 已移除未发言成员：**{result['removed_inactive']}** 人\n"
+                        f"🔹 已移除低活跃成员：**{result['removed_active']}** 人\n"
+                        f"子区当前成员约为 **{result['final_count']}** 人"
+                    ),
+                    timestamp=datetime.now()
+                )
+                await channel.send("✅ 子区已自动清理完毕", embed=summary_embed)
+            except Exception as e:
+                if self.logger:
+                    self.logger.warning(f"发送自动清理完成报告失败: {e}")
+                
         except Exception as e:
             task.status = "失败"
             task.error_msg = str(e)
