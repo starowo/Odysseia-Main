@@ -744,15 +744,6 @@ class ThreadSelfManage(commands.Cog):
             if self.logger:
                 self.logger.error(f"自动清理检测出错: {e}")
         
-        # 禁言功能暂时关闭
-        return
-        '''
-        if message.author.bot:
-            return
-        # 只处理子区（Thread）中的消息
-        channel = message.channel
-        if not isinstance(channel, discord.Thread):
-            return
         guild = message.guild
         user = message.author
         # 管理组豁免
@@ -812,20 +803,12 @@ class ThreadSelfManage(commands.Cog):
                 except:
                     pass
             return
-            '''
+            
 
     @self_manage.command(name="禁言", description="在本子区禁言成员")
     @app_commands.describe(member="要禁言的成员", duration="时长(如10m,1h,1d，可选)", reason="原因(可选)")
     async def mute(self, interaction: discord.Interaction, member: discord.Member, duration: str = None, reason: str = None):
-        # 禁言功能暂时关闭
-        embed = discord.Embed(
-            title="子区禁言已停用",
-            description="子区禁言已停用，如需帮助，可开启慢速模式并@管理组。",
-            color=discord.Color.red()
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-        return
-        '''
+
         channel = interaction.channel
         if not isinstance(channel, discord.Thread):
             await interaction.response.send_message("此指令仅在子区内有效", ephemeral=True)
@@ -865,7 +848,7 @@ class ThreadSelfManage(commands.Cog):
         if duration:
             msg += f" 持续 {human}"
         await interaction.response.send_message(msg, ephemeral=True)
-        '''
+        
 
     @self_manage.command(name="解除禁言", description="在本子区解除禁言成员")
     @app_commands.describe(member="要解除禁言的成员")
