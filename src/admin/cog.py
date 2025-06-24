@@ -60,9 +60,10 @@ class ThreadDeleteApprovalView(discord.ui.View):
         # 判断是否达到删除条件
         if len(self.approvals) >= 5:
             try:
+                name = self.thread.name
                 await self.thread.delete(reason=f"管理员共识删除 by {interaction.user}")
                 if self.message:
-                    await self.message.edit(content=f"✅ 线程【{self.thread.name}】已被删除", view=None)
+                    await self.message.edit(content=f"✅ 线程【{name}】已被删除", view=None)
             except Exception as e:
                 if self.message:
                     await self.message.edit(content=f"❌ 删除线程失败: {e}", view=None)
