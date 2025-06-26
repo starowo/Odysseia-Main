@@ -640,6 +640,88 @@ class AdminCommands(commands.Cog):
             embed.set_footer(text=f"处罚ID: {record_id}")
             await announce_channel.send(embed=embed)
 
+    # ---- 踢出 ----
+    @admin.command(name="踢出", description="踢出成员并公示")
+    @app_commands.describe(member="要踢出的成员", reason="原因（可选）", img="图片（可选）")
+    @app_commands.rename(member="成员", reason="原因", img="图片")
+    async def kick_member(
+        self,
+        interaction,  # type: discord.Interaction
+        member: "discord.Member",
+        reason: str = None,
+        img: discord.Attachment = None,
+    ):
+        # 检查高级管理员权限
+        if not await self.is_senior_admin(interaction):
+            await interaction.response.send_message("❌ 您没有权限使用此命令", ephemeral=True)
+            return
+            
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message("此命令只能在服务器中使用", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        # 私聊通知
+        try:
+            await member.send(embed=discord.Embed(title="👋 移出服务器", description=f"您因 {reason} 被踢出服务器。如有异议，请联系管理组成员。"))
+        except discord.Forbidden:
+            pass
+        except Exception:
+            # 发送私聊失败，继续执行
+            pass
+        
+        # 执行踢出
+        try:
+            await guild.kick(member, reason=reason)
+        except discord.Forbidden:
+            await interaction.followup.send("❌ 无权限踢出该成员", ephemeral=True)
+            return
+        except discord.NotFound:
+            await interaction.followup.send("❌ 成员不存在", ephemeral=True)
+            return
+
+        # 保存记录 & 公示
+        record_id = self._save_punish_record(guild.id, {
+            "type": "kick",
+            "user_id": member.id,
+            "moderator_id": interaction.user.id,
+            "reason": reason,
+        })
+
+        await interaction.followup.send(f"✅ 已踢出 {member.mention}。处罚ID: `{record_id}`", ephemeral=True)
+
+        # 同步处罚到其他服务器
+        sync_cog = self.bot.get_cog("ServerSyncCommands")
+        if sync_cog:
+            await sync_cog.sync_punishment(
+                guild=guild,
+                punishment_type="kick",
+                member=member,
+                moderator=interaction.user,
+                reason=reason,
+                punishment_id=record_id,
+                img=img
+            )
+
+        # 当前频道公示
+        await interaction.followup.send(embed=discord.Embed(title="👋 移出服务器", description=f"{member.mention} 因 {reason} 被踢出服务器。请注意遵守社区规则。"), ephemeral=False)
+
+        # 公示频道
+        channel_id = self.config.get("punish_announce_channel_id", 0)
+        announce_channel = guild.get_channel(int(channel_id))
+        if announce_channel:
+            embed = discord.Embed(title="👋 移出服务器", color=discord.Color.orange())
+            embed.add_field(name="成员", value=f"{member.mention} ({member.id})")
+            embed.add_field(name="管理员", value=interaction.user.mention)
+            embed.set_thumbnail(url=member.display_avatar.url)
+            embed.add_field(name="原因", value=reason or "未提供", inline=False)
+            if img:
+                embed.set_image(url=img.url)
+            embed.set_footer(text=f"处罚ID: {record_id}")
+            await announce_channel.send(embed=embed)
+
     # ---- 永封 ----
     @admin.command(name="永封", description="永久封禁成员并公示")
     @app_commands.describe(member="要封禁的成员", user_id="用户ID（可直接封禁不在服务器的用户）", reason="原因（可选）", img="图片（可选）", delete_message_days="删除消息天数（0-7）")
