@@ -1,8 +1,11 @@
 import json
+import logging
 import pathlib
 from functools import wraps
 import discord
 from discord import app_commands
+
+logger = logging.getLogger('bot')
 
 def _load_config():
     """加载配置文件"""
@@ -28,7 +31,7 @@ async def check_senior_admin_permission(interaction: discord.Interaction) -> boo
         return False
 
     for role_id in senior_admin_roles:
-        role = interaction.guild.get_role(role_id)
+        role = interaction.guild.get_role(int(role_id))
         if role and role in member.roles:
             return True
             
@@ -40,19 +43,24 @@ async def check_admin_permission(interaction: discord.Interaction) -> bool:
         return True
     
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        logger.info(f"user 不是discord.Member")
         return False
         
     config = _load_config()
     admin_roles = config.get('admins', [])
     if not admin_roles:
+        logger.info(f"管理组配置不存在/未加载")
         return False
 
     member: discord.Member = interaction.user
     for role_id in admin_roles:
-        role = interaction.guild.get_role(role_id)
+        role = interaction.guild.get_role(int(role_id))
+        logger.info(f"管理组为{admin_roles}，用户role_id : {role_id}")
         if role and role in member.roles:
+            logger.info(f"通过，用户在管理组中")
             return True
             
+    logger.info(f"用户不在管理组")
     return False
 
 def is_senior_admin():

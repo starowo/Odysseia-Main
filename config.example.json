@@ -87,6 +87,8 @@
     
     "_channels_comment": "频道配置 - 这些频道需要在Discord服务器中预先创建",
     "punish_announce_channel_id": 123456789012345683,
+    "appeal_channel_id": 123456789012345684,
+    "pending_ban_role_id": 123456789012345685,
     
     "_notes": [
         "配置说明：",
