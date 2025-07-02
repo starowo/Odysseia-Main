@@ -103,6 +103,10 @@ class AdminCommands(commands.Cog):
         asyncio.create_task(self._auto_remove_warn())
         if self.logger:
             self.logger.info("警告自动移除任务已启动")
+        # 启动永封审查自动处理任务
+        asyncio.create_task(self._auto_ban_checker())
+        if self.logger:
+            self.logger.info("永封审查自动处理任务已启动")
     
     async def _auto_remove_warn(self):
         while True:
@@ -157,6 +161,78 @@ class AdminCommands(commands.Cog):
                 except Exception as e:
                     if self.logger:
                         self.logger.error(f"处理服务器警告目录失败: {guild_dir}, 错误: {e}")
+                    continue
+
+    async def _auto_ban_checker(self):
+        """后台任务，定期检查并处理到期的永封审查。"""
+        while True:
+            # 每一小时检查一次
+            await asyncio.sleep(1 * 60)
+            base_dir = pathlib.Path("data") / "pending_bans"
+            if not base_dir.exists():
+                continue
+
+            for guild_dir in base_dir.iterdir():
+                if not guild_dir.is_dir():
+                    continue
+
+                try:
+                    guild_id = int(guild_dir.name)
+                    guild = self.bot.get_guild(guild_id)
+                    if not guild:
+                        continue
+
+                    for file in guild_dir.glob("*.json"):
+                        try:
+                            with open(file, "r", encoding="utf-8") as f:
+                                record = json.load(f)
+
+                            expires_at = datetime.datetime.fromisoformat(record["expires_at"])
+                            if datetime.datetime.now(datetime.timezone.utc) > expires_at:
+                                user_id = record["user_id"]
+                                reason = f"永封审查到期自动执行。原始原因: {record.get('reason', 'N/A')}"
+                                appeal_thread_id = record.get("appeal_thread_id")
+                                
+                                try:
+                                    await guild.ban(discord.Object(id=user_id), reason=reason)
+                                    if self.logger:
+                                        self.logger.info(f"永封审查到期，已自动封禁用户 {user_id} in guild {guild.name}")
+
+                                    # 锁定帖子
+                                    if appeal_thread_id:
+                                        try:
+                                            thread = await self.bot.fetch_channel(appeal_thread_id)
+                                            await thread.edit(locked=True, archived=True, reason="审查到期，自动关闭")
+                                        except Exception as e:
+                                            if self.logger:
+                                                self.logger.warning(f"无法自动锁定申诉帖 {appeal_thread_id}: {e}")
+
+                                    # 公示
+                                    channel_id = self.config.get("punish_announce_channel_id", 0)
+                                    announce_channel = guild.get_channel(int(channel_id))
+                                    if announce_channel and isinstance(announce_channel, discord.abc.Messageable):
+                                        embed = discord.Embed(title="⛔ 自动执行永久封禁", color=discord.Color.red())
+                                        embed.add_field(name="成员", value=f"<@{user_id}> ({user_id})")
+                                        embed.add_field(name="原因", value=reason, inline=False)
+                                        embed.set_footer(text=f"原始审查ID: {record['id']}")
+                                        await announce_channel.send(embed=embed)
+
+                                except discord.Forbidden:
+                                    if self.logger:
+                                        self.logger.error(f"自动封禁失败（无权限）: 用户 {user_id}")
+                                except Exception as e:
+                                    if self.logger:
+                                        self.logger.error(f"自动封禁时发生错误: {e}")
+                                finally:
+                                    # 无论成功与否，都删除记录文件
+                                    file.unlink(missing_ok=True)
+
+                        except Exception as e:
+                            if self.logger:
+                                self.logger.error(f"处理永封审查文件失败: {file}, 错误: {e}")
+                except Exception as e:
+                    if self.logger:
+                        self.logger.error(f"处理服务器永封审查目录失败: {guild_dir}, 错误: {e}")
                     continue
 
     @property
@@ -218,6 +294,26 @@ class AdminCommands(commands.Cog):
         with open(warn_dir / f"{record_id}.json", "w", encoding="utf-8") as f:
             json.dump(record, f, ensure_ascii=False, indent=2)
         return record_id
+
+    def _save_pending_ban_record(self, guild_id: int, record: dict):
+        """保存永封审查记录到 data/pending_bans 目录"""
+        record_id = uuid.uuid4().hex[:8]
+        record["id"] = record_id
+        record["timestamp"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+        pending_ban_dir = pathlib.Path("data") / "pending_bans" / str(guild_id)
+        pending_ban_dir.mkdir(parents=True, exist_ok=True)
+        with open(pending_ban_dir / f"{record_id}.json", "w", encoding="utf-8") as f:
+            json.dump(record, f, ensure_ascii=False, indent=2)
+        return record_id
+
+    def _get_pending_ban_record(self, guild_id: int, record_id: str):
+        """获取永封审查记录"""
+        path = pathlib.Path("data") / "pending_bans" / str(guild_id) / f"{record_id}.json"
+        if not path.exists():
+            return None, path
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f), path
 
     # ---- 添加/移除身份组 ----
     @admin.command(name="身份组", description="添加/移除身份组")
@@ -805,6 +901,127 @@ class AdminCommands(commands.Cog):
             embed.set_footer(text=f"处罚ID: {record_id}")
             await announce_channel.send(embed=embed)
 
+    # ---- 永封审查 ----
+    @admin.command(name="永封审查", description="启动一个为期7天的永封审查流程")
+    @app_commands.describe(member="要审查的成员", reason="原因", img="图片（可选）")
+    @app_commands.rename(member="成员", reason="原因", img="图片")
+    @is_admin()
+    async def pending_ban(
+        self,
+        interaction: discord.Interaction,
+        member: discord.Member,
+        reason: str,
+        img: discord.Attachment = None,
+    ):
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message("此命令只能在服务器中使用", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        # 从配置加载频道和身份组ID
+        appeal_channel_id = self.config.get("appeal_channel_id", 0)
+        pending_ban_role_id = self.config.get("pending_ban_role_id", 0)
+
+        if not appeal_channel_id or not pending_ban_role_id:
+            await interaction.followup.send("❌ `appeal_channel_id` 或 `pending_ban_role_id` 未在 config.json 中配置。", ephemeral=True)
+            return
+
+        appeal_channel = guild.get_channel(int(appeal_channel_id))
+        pending_ban_role = guild.get_role(int(pending_ban_role_id))
+
+        if not appeal_channel or not pending_ban_role:
+            await interaction.followup.send("❌ 无法在服务器中找到配置的申诉频道或审查身份组。", ephemeral=True)
+            return
+
+        # 保存用户当前身份组
+        original_roles = [role.id for role in member.roles if not role.is_default()]
+        expires_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=10)
+
+        # 1. 创建记录文件
+        record_id = self._save_pending_ban_record(guild.id, {
+            "user_id": member.id,
+            "moderator_id": interaction.user.id,
+            "reason": reason,
+            "original_roles": original_roles,
+            "expires_at": expires_at.isoformat(),
+            "appeal_thread_id": None,
+        })
+        
+        record, record_path = self._get_pending_ban_record(guild.id, record_id)
+        if not record:
+            await interaction.followup.send("❌ 内部错误：无法创建审查记录文件。", ephemeral=True)
+            return
+
+        # 2. 移除所有身份组并添加审查身份组
+        try:
+            await member.edit(roles=[pending_ban_role], reason=f"永封审查 by {interaction.user}")
+        except discord.Forbidden:
+            record_path.unlink(missing_ok=True) # 回滚：删除记录文件
+            await interaction.followup.send("❌ 无权限修改该成员的身份组。操作已取消。", ephemeral=True)
+            return
+        except Exception as e:
+            record_path.unlink(missing_ok=True) # 回滚：删除记录文件
+            await interaction.followup.send(f"❌ 修改身份组时发生未知错误: {e}。操作已取消。", ephemeral=True)
+            return
+
+        # 3. 创建申诉帖
+        try:
+            thread_name = f"永封审查 - {member.name} ({record_id})"
+            thread_message = (
+                f"成员: {member.mention} ({member.id})\n"
+                f"发起人: {interaction.user.mention}\n"
+                f"原因: {reason}\n\n"
+                "请在此帖内陈述您的申诉。"
+            )
+            thread = await appeal_channel.create_thread(name=thread_name, content=thread_message)
+            
+            # 更新记录文件，加入帖子ID
+            record["appeal_thread_id"] = thread.id
+            with open(record_path, "w", encoding="utf-8") as f:
+                json.dump(record, f, ensure_ascii=False, indent=2)
+
+        except Exception as e:
+            # 如果创建帖子失败，这是一个非关键性错误，只记录日志，不回滚操作
+            if self.logger:
+                self.logger.error(f"为审查 {record_id} 创建申诉帖失败: {e}")
+
+        # 4. 私信通知
+        dm_failed = False
+        try:
+            embed = discord.Embed(title="⚠️ 永封审查通知", color=discord.Color.dark_red())
+            embed.description = (
+                f"您因 **{reason or '未提供原因'}** 已被置于为期7天的永封审查流程中。\n\n"
+                f"在此期间，您仅能在 {appeal_channel.mention} 内新创建的专属帖子中发言以进行申诉。\n"
+                f"如果7天后此审查未被管理员撤销，系统将自动对您执行永久封禁。"
+            )
+            embed.set_footer(text=f"审查ID: {record_id}")
+            await member.send(embed=embed)
+        except discord.Forbidden:
+            dm_failed = True
+
+        # 5. 公示
+        announce_channel_id = self.config.get("punish_announce_channel_id", 0)
+        announce_channel = guild.get_channel(int(announce_channel_id))
+        if announce_channel and isinstance(announce_channel, discord.abc.Messageable):
+            embed = discord.Embed(title="⚖️ 永封审查启动", color=discord.Color.dark_orange())
+            embed.add_field(name="成员", value=f"{member.mention} ({member.id})")
+            embed.add_field(name="管理员", value=interaction.user.mention)
+            embed.add_field(name="审查期限", value="7天", inline=False)
+            embed.add_field(name="到期时间", value=f"<t:{int(expires_at.timestamp())}:F>", inline=False)
+            embed.add_field(name="原因", value=reason or "未提供", inline=False)
+            if img:
+                embed.set_image(url=img.url)
+            embed.set_footer(text=f"审查ID: {record_id}")
+            await announce_channel.send(embed=embed)
+
+        # 6. 发送给管理员的消息
+        success_message = f"✅ 已启动对 {member.mention} 的永封审查。审查ID: `{record_id}`"
+        if dm_failed:
+            success_message += "\n(⚠️ 发送私信失败，用户可能已关闭私信)"
+        await interaction.followup.send(success_message, ephemeral=True)
+
     # ---- 撤销处罚 ----
     @admin.command(name="撤销处罚", description="按ID撤销处罚")
     @app_commands.describe(punish_id="处罚ID", reason="原因（可选）")
@@ -898,6 +1115,66 @@ class AdminCommands(commands.Cog):
             if self.logger:
                 self.logger.error(f"撤销处罚时发生错误: {e}")
             await interaction.followup.send("❌ 撤销处罚时发生错误，请检查处罚ID是否正确", ephemeral=True)
+
+    # ---- 撤销永封审查 ----
+    @admin.command(name="撤销永封审查", description="按ID撤销一个正在进行的永封审查")
+    @app_commands.describe(punish_id="审查ID", reason="原因（可选）")
+    @is_admin()
+    async def revoke_pending_ban(self, interaction: discord.Interaction, punish_id: str, reason: str = None):
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message("此命令只能在服务器中使用", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        record, path = self._get_pending_ban_record(guild.id, punish_id)
+        if record is None:
+            await interaction.followup.send("❌ 未找到对应的永封审查记录", ephemeral=True)
+            return
+
+        user_id = record["user_id"]
+        member = guild.get_member(user_id)
+        if not member:
+            await interaction.followup.send("❌ 成员已不在服务器中，无法恢复身份组。记录已清除。", ephemeral=True)
+            path.unlink(missing_ok=True)
+            return
+
+        # 恢复身份组
+        original_role_ids = record.get("original_roles", [])
+        roles_to_restore = [guild.get_role(role_id) for role_id in original_role_ids if guild.get_role(role_id)]
+        
+        try:
+            await member.edit(roles=roles_to_restore, reason=f"撤销永封审查 by {interaction.user}")
+        except discord.Forbidden:
+            await interaction.followup.send("❌ 无权限修改该成员的身份组。", ephemeral=True)
+            return
+        
+        # 锁定帖子
+        appeal_thread_id = record.get("appeal_thread_id")
+        if appeal_thread_id:
+            try:
+                thread = await self.bot.fetch_channel(appeal_thread_id)
+                await thread.edit(locked=True, archived=True, reason="审查已撤销，自动关闭")
+            except Exception as e:
+                if self.logger:
+                    self.logger.warning(f"无法自动锁定申诉帖 {appeal_thread_id}: {e}")
+
+        # 删除记录文件
+        path.unlink(missing_ok=True)
+
+        await interaction.followup.send(f"✅ 已撤销对 {member.mention} 的永封审查。", ephemeral=True)
+
+        # 公示
+        announce_channel_id = self.config.get("punish_announce_channel_id", 0)
+        announce_channel = guild.get_channel(int(announce_channel_id))
+        if announce_channel and isinstance(announce_channel, discord.abc.Messageable):
+            embed = discord.Embed(title="✅ 撤销永封审查", color=discord.Color.green())
+            embed.add_field(name="审查ID", value=punish_id)
+            embed.add_field(name="成员", value=member.mention)
+            embed.add_field(name="撤销管理员", value=interaction.user.mention)
+            embed.add_field(name="原因", value=reason or "未提供", inline=False)
+            await announce_channel.send(embed=embed)
 
     # ---- 频道管理 ----
     @admin.command(name="频道管理", description="编辑频道属性")

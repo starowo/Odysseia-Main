@@ -4,6 +4,7 @@ from datetime import datetime
 from pathlib import Path
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
@@ -71,6 +72,8 @@ if CONFIG.get('logging', {}).get('enabled', False):
         _discord_handler.setLevel(level_map.get(level_str, logging.INFO))
 
 class OdysseiaBot(commands.Bot):
+    logger: logging.Logger
+
     def __init__(self, **kwargs):
         intents = discord.Intents.default()
         intents.message_content = True
@@ -146,6 +149,28 @@ async def on_command_error(ctx, error):
     logger.error(f"命令错误: {error}")
     if hasattr(ctx, 'send'):
         await ctx.send(f"执行命令时发生错误: {error}")
+
+
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    """全局应用命令错误处理"""
+    command_name = interaction.command.name if interaction.command else "未知命令"
+    if isinstance(error, app_commands.errors.CheckFailure):
+        # 此时 auth.py 中的检查函数已经发送了临时消息，所以这里不需要再发送
+        return
+
+    # 对于其他错误，记录日志并回复用户
+    logger.error(f"应用命令 '{command_name}' 发生未处理的错误: {error}", exc_info=True)
+    
+    # 尝试回复用户，防止交互卡死
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send("❌ 执行命令时发生了一个未知错误，请联系管理员。", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ 执行命令时发生了一个未知错误，请联系管理员。", ephemeral=True)
+    except Exception as e:
+        logger.error(f"在发送错误消息时再次发生错误: {e}")
+
 
 def main():
     """主函数"""
