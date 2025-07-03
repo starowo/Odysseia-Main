@@ -107,6 +107,8 @@ def create_basic_config():
         "buffer_role_id": 0,
         "warned_role_id": 0,
         "punish_announce_channel_id": 0,
+        "appeal_channel_id": 0,
+        "pending_ban_role_id": 0,
         "quiz_punish_whitelist": [],
         "license_cog": {
             "monitored_channels": [],
@@ -194,7 +196,8 @@ def setup_server_config(config):
     role_configs = [
         ("verified_role_id", "已验证用户身份组ID"),
         ("buffer_role_id", "验证缓冲身份组ID"),
-        ("warned_role_id", "警告状态身份组ID")
+        ("warned_role_id", "警告状态身份组ID"),
+        ("pending_ban_role_id", "永封审查身份组ID")
     ]
 
     for role_key, role_desc in role_configs:
@@ -216,6 +219,10 @@ def setup_server_config(config):
     punish_channel = get_input("请输入处罚公示频道ID", input_type=int, required=False)
     if punish_channel:
         config["punish_announce_channel_id"] = punish_channel
+
+    appeal_channel = get_input("请输入永封审查申诉频道ID (需要为论坛频道)", input_type=int, required=False)
+    if appeal_channel:
+        config["appeal_channel_id"] = appeal_channel
 
     # 日志配置
     print("\n📋 日志配置")
@@ -375,6 +382,7 @@ def show_next_steps():
     print("📢 匿名反馈系统只在论坛频道的帖子内可用，完全自动化")
     print("🔸 管理员使用身份组ID进行权限控制")
     print("🔸 高级管理员自动拥有普通管理员的所有权限")
+    print("🔸 永封审查功能需要配置申诉频道和永封审查身份组才能使用")
     print("🔸 答题验证系统完全自动化，只需在Discord服务器中创建相关身份组")
     print("📝 许可证功能会在您指定的创作版块中自动为新帖子提供授权协议选项")
     print("🔸 赛事功能为可选功能，可用于赛事相关操作")
