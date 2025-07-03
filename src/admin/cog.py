@@ -9,7 +9,7 @@ import pathlib
 from typing import List, Tuple, Optional
 
 from src.utils.confirm_view import confirm_view
-from src.utils.auth import is_admin, is_senior_admin, check_admin_permission
+from src.utils.auth import is_admin, is_senior_admin, check_admin_permission, is_admin_member, guild_only
 
 # ---- 持久视图：删除子区审批 ----
 class ThreadDeleteApprovalView(discord.ui.View):
@@ -166,8 +166,8 @@ class AdminCommands(commands.Cog):
     async def _auto_ban_checker(self):
         """后台任务，定期检查并处理到期的永封审查。"""
         while True:
-            # 每一分钟检查一次
-            await asyncio.sleep(1 * 60)
+            # 每小时检查一次
+            await asyncio.sleep(60 * 60)
             base_dir = pathlib.Path("data") / "pending_bans"
             if not base_dir.exists():
                 continue
@@ -214,6 +214,8 @@ class AdminCommands(commands.Cog):
                                         embed = discord.Embed(title="⛔ 永封审查通过", color=discord.Color.red())
                                         embed.add_field(name="成员", value=f"<@{user_id}> ({user_id})")
                                         embed.add_field(name="审查原因", value=reason, inline=False)
+                                        if appeal_thread_id:
+                                            embed.add_field(name="申诉帖", value=f"<#{appeal_thread_id}>", inline=False)
                                         embed.set_footer(text=f"审查ID: {record['id']}")
                                         await announce_channel.send(embed=embed)
 
@@ -330,6 +332,7 @@ class AdminCommands(commands.Cog):
         ]
     )
     @is_admin()
+    @guild_only()
     async def add_role(
         self,
         interaction, # type: discord.Interaction
@@ -339,10 +342,6 @@ class AdminCommands(commands.Cog):
         reason: Optional[str] = None,
     ):
         guild = interaction.guild
-        if guild is None:
-            await interaction.response.send_message("此命令只能在服务器中使用", ephemeral=True)
-            return
-
         await interaction.response.defer(ephemeral=True)
 
         # 阻止用户操作比自己权限高的身份组
@@ -560,6 +559,7 @@ class AdminCommands(commands.Cog):
     )
     @app_commands.rename(member="成员", time="时长", reason="原因", img="图片", warn="警告天数")
     @is_admin()
+    @guild_only()
     async def mute_member(
         self,
         interaction,  # type: discord.Interaction
@@ -570,10 +570,6 @@ class AdminCommands(commands.Cog):
         warn: int = 0,
     ):
         guild = interaction.guild
-        if guild is None:
-            await interaction.response.send_message("此命令只能在服务器中使用", ephemeral=True)
-            return
-
         # 将字符串时间转换为数字时长
         mute_time, mute_time_str = self._parse_time(time)
         if mute_time == -1:
@@ -689,6 +685,7 @@ class AdminCommands(commands.Cog):
     @app_commands.describe(member="要踢出的成员", reason="原因（可选）", img="图片（可选）")
     @app_commands.rename(member="成员", reason="原因", img="图片")
     @is_senior_admin()
+    @guild_only()
     async def kick_member(
         self,
         interaction,  # type: discord.Interaction
@@ -697,10 +694,6 @@ class AdminCommands(commands.Cog):
         img: discord.Attachment = None,
     ):
         guild = interaction.guild
-        if guild is None:
-            await interaction.response.send_message("此命令只能在服务器中使用", ephemeral=True)
-            return
-
         await interaction.response.defer(ephemeral=True)
 
         # 私聊通知
@@ -767,6 +760,7 @@ class AdminCommands(commands.Cog):
     @app_commands.describe(member="要封禁的成员", user_id="用户ID（可直接封禁不在服务器的用户）", reason="原因（可选）", img="图片（可选）", delete_message_days="删除消息天数（0-7）")
     @app_commands.rename(member="成员", user_id="用户id", reason="原因", img="图片", delete_message_days="删除消息天数")
     @is_senior_admin()
+    @guild_only()
     async def ban_member(
         self,
         interaction,  # type: discord.Interaction
@@ -777,10 +771,6 @@ class AdminCommands(commands.Cog):
         delete_message_days: int = 0,
     ):
         guild = interaction.guild
-        if guild is None:
-            await interaction.response.send_message("此命令只能在服务器中使用", ephemeral=True)
-            return
-
         # 验证至少提供了一个参数
         if not member and not user_id:
             await interaction.response.send_message("❌ 请提供要封禁的成员或用户ID", ephemeral=True)
@@ -902,30 +892,38 @@ class AdminCommands(commands.Cog):
             await announce_channel.send(embed=embed)
 
     # ---- 永封审查 ----
-    @admin.command(name="永封审查", description="启动一个为期7天的永封审查流程")
-    @app_commands.describe(member="要审查的成员", reason="原因", attachment="附件（可选）")
-    @app_commands.rename(member="成员", reason="原因", attachment="附件")
+    @admin.command(name="永封审查", description="启动永封审查流程")
+    @app_commands.describe(
+        member="要审查的成员",
+        reason="原因",
+        check_days="审查天数 (5-30天, 默认7天)",
+        attachment="附件（可选）",
+    )
+    @app_commands.rename(member="成员", reason="原因", check_days="审查天数", attachment="附件")
     @is_admin()
+    @guild_only()
     async def pending_ban(
         self,
         interaction: discord.Interaction,
         member: discord.Member,
         reason: str,
+        check_days: app_commands.Range[int, 5, 30] = 7,
         attachment: discord.Attachment = None,
     ):
         guild = interaction.guild
-        if guild is None:
-            await interaction.response.send_message("此命令只能在服务器中使用", ephemeral=True)
-            return
-
         await interaction.response.defer(ephemeral=True)
+
+        # 检查目标是否为管理员
+        if is_admin_member(member):
+            await interaction.followup.send("❌ 无法对管理员启动永封审查。", ephemeral=True)
+            return
 
         # 从配置加载频道和身份组ID
         appeal_channel_id = self.config.get("appeal_channel_id", 0)
         pending_ban_role_id = self.config.get("pending_ban_role_id", 0)
 
         if not appeal_channel_id or not pending_ban_role_id:
-            await interaction.followup.send("❌ `appeal_channel_id` 或 `pending_ban_role_id` 未在 config.json 中配置。", ephemeral=True)
+            await interaction.followup.send("❌ 辩诉频道 或 永封审查身份组 未配置。", ephemeral=True)
             return
 
         appeal_channel = guild.get_channel(int(appeal_channel_id))
@@ -937,7 +935,7 @@ class AdminCommands(commands.Cog):
 
         # 保存用户当前身份组
         original_roles = [role.id for role in member.roles if not role.is_default()]
-        expires_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=10)
+        expires_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=check_days)
 
         appeal_thread = None
         record_id = None
@@ -959,7 +957,7 @@ class AdminCommands(commands.Cog):
             record, record_path = self._get_pending_ban_record(guild.id, record_id)
 
             # 2. 创建申诉帖
-            thread_name = f"永封审查 - {member.name}"
+            thread_name = f"永封审查 - {member.display_name}"
             thread_message = (
                 f"成员: {member.mention} ({member.id})\n"
                 f"发起人: {interaction.user.mention}\n\n"
@@ -978,7 +976,6 @@ class AdminCommands(commands.Cog):
                     file=thread_file
                 )
             else:
-                thread_message += f"\n\n**附件**\n\n"
                 thread_with_message = await appeal_channel.create_thread(
                     name=thread_name,
                     content=thread_message
@@ -1019,9 +1016,9 @@ class AdminCommands(commands.Cog):
         try:
             embed = discord.Embed(title="⚠️ 永封审查通知", color=discord.Color.dark_red())
             embed.description = (
-                f"您因 **{reason or '未提供原因'}** 已被置于为期7天的永封审查流程中。\n\n"
-                f"在此期间，您仅能在 {appeal_channel.mention} 内新创建的专属帖子中发言以进行申诉。\n"
-                f"如果7天后此审查未被撤销，系统将自动对您执行永久封禁。"
+                f"您因 **{reason or '未提供原因'}** 被置于为期 {check_days} 天的永封审查流程中。\n\n"
+                f"请在专属申诉帖 {appeal_thread.mention} 中发言以进行申诉。\n"
+                f"如果 {check_days} 天后此审查未被撤销，系统将自动对您执行永久封禁。"
             )
             embed.add_field(name="审查到期时间", value=f"<t:{int(expires_at.timestamp())}:F>", inline=False)
             embed.set_footer(text=f"审查ID: {record_id}")
@@ -1042,9 +1039,10 @@ class AdminCommands(commands.Cog):
             embed = discord.Embed(title="⚖️ 永封审查启动", color=discord.Color.dark_orange())
             embed.add_field(name="成员", value=f"{member.mention} ({member.id})")
             embed.add_field(name="发起人", value=interaction.user.mention)
-            embed.add_field(name="审查期限", value="7天", inline=False)
+            embed.add_field(name="审查期限", value=f"{check_days}天", inline=False)
             embed.add_field(name="到期时间", value=f"<t:{int(expires_at.timestamp())}:F>", inline=False)
             embed.add_field(name="原因", value=reason or "未提供", inline=False)
+            embed.add_field(name="申诉帖", value=f"{appeal_thread.mention}", inline=False)
             if attachment:
                 if attachment.content_type and attachment.content_type.startswith("image/"):
                     embed.add_field(name="附件", value="", inline=False)
@@ -1064,12 +1062,9 @@ class AdminCommands(commands.Cog):
     @admin.command(name="撤销处罚", description="按ID撤销处罚")
     @app_commands.describe(punish_id="处罚ID", reason="原因（可选）")
     @is_senior_admin()
+    @guild_only()
     async def revoke_punish(self, interaction, punish_id: str, reason: str = None):
         guild = interaction.guild
-        if guild is None:
-            await interaction.response.send_message("此命令只能在服务器中使用", ephemeral=True)
-            return
-
         await interaction.response.defer(ephemeral=True)
         
         try:
@@ -1159,12 +1154,9 @@ class AdminCommands(commands.Cog):
     @app_commands.describe(punish_id="审查ID", reason="撤销原因", attachment="附件（可选）")
     @app_commands.rename(punish_id="审查id", reason="撤销原因", attachment="附件")
     @is_admin()
+    @guild_only()
     async def revoke_pending_ban(self, interaction: discord.Interaction, punish_id: str, reason: str, attachment: discord.Attachment = None):
         guild = interaction.guild
-        if guild is None:
-            await interaction.response.send_message("此命令只能在服务器中使用", ephemeral=True)
-            return
-
         await interaction.response.defer(ephemeral=True)
 
         record, path = self._get_pending_ban_record(guild.id, punish_id)
@@ -1183,7 +1175,9 @@ class AdminCommands(commands.Cog):
         dm_failed = False
         try:
             embed = discord.Embed(title="✅ 永封审查已撤销", color=discord.Color.green())
-            embed.description = f"您好，关于您的永封审查已被撤销。\n\n**撤销原因** :\n\n{reason}"
+            appeal_thread_id = record.get("appeal_thread_id")
+            appeal_thread_mention = f"申诉帖(<#{appeal_thread_id}>)" if appeal_thread_id else ""
+            embed.description = f"您好，关于您的永封审查已被撤销。\n\n**撤销原因** :\n\n{reason}\n\n申诉帖 : {appeal_thread_mention}"
             embed.set_footer(text=f"审查ID: {punish_id}")
             if attachment:
                 if attachment.content_type and attachment.content_type.startswith("image/"):
@@ -1215,7 +1209,7 @@ class AdminCommands(commands.Cog):
             try:
                 thread = await self.bot.fetch_channel(appeal_thread_id)
                 self.logger.info(f"永封审查已撤销，自动关闭申诉帖 {appeal_thread_id}")
-                await thread.edit(locked=True, archived=True, reason="审查已撤销，自动关闭")
+                await thread.edit(locked=True, archived=True, reason="永封审查已撤销，自动关闭申诉帖")
             except Exception as e:
                 if self.logger:
                     self.logger.warning(f"无法自动锁定申诉帖 {appeal_thread_id}: {e}")
@@ -1233,10 +1227,13 @@ class AdminCommands(commands.Cog):
         announce_channel = guild.get_channel(int(announce_channel_id))
         if announce_channel and isinstance(announce_channel, discord.abc.Messageable):
             embed = discord.Embed(title="✅ 撤销永封审查", color=discord.Color.green())
-            embed.add_field(name="审查ID", value=punish_id)
             embed.add_field(name="成员", value=member.mention)
             embed.add_field(name="撤销人", value=interaction.user.mention)
             embed.add_field(name="原因", value=reason or "未提供", inline=False)
+            appeal_thread_id = record.get("appeal_thread_id")
+            if appeal_thread_id:
+                embed.add_field(name="申诉帖", value=f"<#{appeal_thread_id}>", inline=False)
+            embed.set_footer(text=f"审查ID: {punish_id}")
             if attachment:
                 if attachment.content_type and attachment.content_type.startswith("image/"):
                     embed.add_field(name="附件", value="", inline=False)
