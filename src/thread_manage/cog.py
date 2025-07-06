@@ -456,8 +456,6 @@ class ThreadSelfManage(commands.Cog):
 
         # 锁定子区
         try:
-            await channel.edit(locked=True, archived=False)
-            
             # 发送公告消息
             lock_notice = f"🔒 **子区已锁定**"
             if reason:
@@ -469,6 +467,9 @@ class ThreadSelfManage(commands.Cog):
             
             # 通知操作者
             await interaction.followup.send("✅ 子区已锁定", ephemeral=True)
+
+            await channel.edit(locked=True, archived=True)
+
         except discord.HTTPException as e:
             await interaction.followup.send(f"❌ 锁定失败: {str(e)}", ephemeral=True)
 
