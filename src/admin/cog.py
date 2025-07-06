@@ -218,6 +218,8 @@ class AdminCommands(commands.Cog):
                                             embed.add_field(name="申诉帖", value=f"<#{appeal_thread_id}>", inline=False)
                                         embed.set_footer(text=f"审查ID: {record['id']}")
                                         await announce_channel.send(embed=embed)
+                                     # 删除记录文件
+                                    file.unlink(missing_ok=True)
 
                                 except discord.Forbidden:
                                     if self.logger:
@@ -225,9 +227,6 @@ class AdminCommands(commands.Cog):
                                 except Exception as e:
                                     if self.logger:
                                         self.logger.error(f"自动封禁时发生错误: {e}")
-                                finally:
-                                    # 无论成功与否，都删除记录文件
-                                    file.unlink(missing_ok=True)
 
                         except Exception as e:
                             if self.logger:
@@ -934,7 +933,7 @@ class AdminCommands(commands.Cog):
             return
 
         # 保存用户当前身份组
-        original_roles = [role.id for role in member.roles if not role.is_default()]
+        original_roles = [role.id for role in member.roles if not role.is_default() and not role.managed]
         expires_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=check_days)
 
         appeal_thread = None
@@ -987,8 +986,10 @@ class AdminCommands(commands.Cog):
             with open(record_path, "w", encoding="utf-8") as f:
                 json.dump(record, f, ensure_ascii=False, indent=2)
 
-            # 3. 移除所有身份组并添加审查身份组
-            await member.edit(roles=[pending_ban_role], reason=f"{interaction.user} 发起了永封审查")
+            # 3. 移除所有非托管身份组并添加审查身份组
+            roles_to_set = [pending_ban_role]
+            roles_to_set.extend([role for role in member.roles if role.managed])
+            await member.edit(roles=roles_to_set, reason=f"{interaction.user} 发起了永封审查")
 
         except Exception as e:
             # --- 回滚机制 ---
@@ -1029,7 +1030,9 @@ class AdminCommands(commands.Cog):
                 else:
                     embed.add_field(name="附件", value=f"[{attachment.filename}]({attachment.url})", inline=False)
             await member.send(embed=embed)
-        except discord.Forbidden:
+        except Exception as e:
+            if self.logger:
+                self.logger.warning(f"发送撤销审查私信失败: {e}")
             dm_failed = True
 
         # 5. 公示
@@ -1176,7 +1179,7 @@ class AdminCommands(commands.Cog):
         try:
             embed = discord.Embed(title="✅ 永封审查已撤销", color=discord.Color.green())
             appeal_thread_id = record.get("appeal_thread_id")
-            appeal_thread_mention = f"申诉帖(<#{appeal_thread_id}>)" if appeal_thread_id else ""
+            appeal_thread_mention = f"<#{appeal_thread_id}>" if appeal_thread_id else ""
             embed.description = f"您好，关于您的永封审查已被撤销。\n\n**撤销原因** :\n\n{reason}\n\n申诉帖 : {appeal_thread_mention}"
             embed.set_footer(text=f"审查ID: {punish_id}")
             if attachment:
@@ -1186,8 +1189,6 @@ class AdminCommands(commands.Cog):
                 else:
                     embed.add_field(name="附件", value=f"[{attachment.filename}]({attachment.url})", inline=False)
             await member.send(embed=embed)
-        except discord.Forbidden:
-            dm_failed = True
         except Exception as e:
             if self.logger:
                 self.logger.warning(f"发送撤销审查私信失败: {e}")
@@ -1196,6 +1197,11 @@ class AdminCommands(commands.Cog):
         # 恢复身份组
         original_role_ids = record.get("original_roles", [])
         roles_to_restore = [guild.get_role(role_id) for role_id in original_role_ids if guild.get_role(role_id)]
+        
+        managed_roles = [role for role in member.roles if role.managed]
+        for role in managed_roles:
+            if role not in roles_to_restore:
+                roles_to_restore.append(role)
         
         try:
             await member.edit(roles=roles_to_restore, reason=f"撤销永封审查 by {interaction.user}")
