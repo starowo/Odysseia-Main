@@ -648,7 +648,7 @@ class AdminCommands(commands.Cog):
         if duration.total_seconds() > 0:
             try:
                 # await member.send(embed=discord.Embed(title="🔇 禁言处罚", description=f"您因 {reason} 被禁言 {mute_time_str}。请注意遵守社区规则。"))
-                await dm.send_dm(member, embed=discord.Embed(title="🔇 禁言处罚", description=f"您因 {reason} 被禁言 {mute_time_str}。请注意遵守社区规则。"))
+                await dm.send_dm(member.guild, member, embed=discord.Embed(title="🔇 禁言处罚", description=f"您因 {reason} 被禁言 {mute_time_str}。请注意遵守社区规则。"))
             except discord.Forbidden:
                 pass
             except Exception as e:
@@ -656,7 +656,7 @@ class AdminCommands(commands.Cog):
         elif warn > 0:
             try:
                 # await member.send(embed=discord.Embed(title="⚠️ 警告处罚", description=f"您因 {reason} 被警告 {warn} 天。请注意遵守社区规则。"))
-                await dm.send_dm(member, embed=discord.Embed(title="⚠️ 警告处罚", description=f"您因 {reason} 被警告 {warn} 天。请注意遵守社区规则。"))
+                await dm.send_dm(member.guild, member, embed=discord.Embed(title="⚠️ 警告处罚", description=f"您因 {reason} 被警告 {warn} 天。请注意遵守社区规则。"))
             except discord.Forbidden:
                 pass
             except Exception as e:
@@ -705,7 +705,7 @@ class AdminCommands(commands.Cog):
         # 私聊通知
         try:
             # await member.send(embed=discord.Embed(title="👋 移出服务器", description=f"您因 {reason} 被踢出服务器。如有异议，请联系管理组成员。"))
-            await dm.send_dm(member, embed=discord.Embed(title="👋 移出服务器", description=f"您因 {reason} 被踢出服务器。如有异议，请联系管理组成员。"))
+            await dm.send_dm(member.guild, member, embed=discord.Embed(title="👋 移出服务器", description=f"您因 {reason} 被踢出服务器。如有异议，请联系管理组成员。"))
         except discord.Forbidden:
             pass
         except Exception:
@@ -836,7 +836,7 @@ class AdminCommands(commands.Cog):
         if target_user is not None:
             try:
                 # await target_user.send(embed=discord.Embed(title="⛔ 永久封禁", description=f"您因 {reason} 被永久封禁。如有异议，请联系管理组成员。"))
-                await dm.send_dm(target_user, embed=discord.Embed(title="⛔ 永久封禁", description=f"您因 {reason} 被永久封禁。如有异议，请联系管理组成员。"))
+                await dm.send_dm(target_user.guild, target_user, embed=discord.Embed(title="⛔ 永久封禁", description=f"您因 {reason} 被永久封禁。如有异议，请联系管理组成员。"))
             except discord.Forbidden:
                 pass
             except Exception:
@@ -1610,7 +1610,7 @@ class AdminCommands(commands.Cog):
                 # 私聊通知
                 try:    
                     # await member.send(embed=discord.Embed(title="🔴 答题处罚", description=f"您因 {reason} 被移送答题区。请重新阅读规则并遵守。"))
-                    await dm.send_dm(member, embed=discord.Embed(title="🔴 答题处罚", description=f"您因 {reason} 被移送答题区。请重新阅读规则并遵守。"))
+                    await dm.send_dm(member.guild, member, embed=discord.Embed(title="🔴 答题处罚", description=f"您因 {reason} 被移送答题区。请重新阅读规则并遵守。"))
                 except discord.Forbidden:
                     pass
                 except Exception as e:
