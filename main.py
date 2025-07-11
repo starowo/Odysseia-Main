@@ -112,7 +112,7 @@ class OdysseiaBot(commands.Bot):
         else:
             logger.warning("未找到主服务器配置，跳过命令同步")
 
-        if CONFIG.get('dm_bot_token') and CONFIG.get('dm_bot_token') != CONFIG['token']:
+        if CONFIG['dm_bot_token'] and CONFIG['dm_bot_token'] != CONFIG['token']:
             await dm.init_dm_bot(CONFIG['dm_bot_token'])
         else:
             dm.dm_bot = self
