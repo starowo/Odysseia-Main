@@ -9,6 +9,7 @@ from discord.ext import commands
 from dotenv import load_dotenv
 
 from src.bot_manage.cogUtils import CogManager
+from src.utils import dm
 from src.utils.log import SingleEmbedLogHandler
 
 # 加载环境变量
@@ -110,7 +111,12 @@ class OdysseiaBot(commands.Bot):
                 logger.info(f"已同步服务器命令: {command.name}")
         else:
             logger.warning("未找到主服务器配置，跳过命令同步")
-            
+
+        if CONFIG.get('dm_bot_token') and CONFIG.get('dm_bot_token') != CONFIG['token']:
+            await dm.init_dm_bot(CONFIG['dm_bot_token'])
+        else:
+            dm.dm_bot = self
+
         status_type = CONFIG.get('status', 'watching').lower()
         status_text = CONFIG.get('status_text', '子区里的一切')
             
