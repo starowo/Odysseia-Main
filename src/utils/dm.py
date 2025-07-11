@@ -10,6 +10,6 @@ async def init_dm_bot(token: str):
     await dm_bot.connect()
     return dm_bot
 
-async def send_dm(user: discord.User, message: str = None, embed: discord.Embed = None):
+async def send_dm(guild: discord.Guild, user: discord.User, message: str = None, embed: discord.Embed = None):
     # send dm using another bot
-    await dm_bot.get_user(user.id).send(content=message, embed=embed)
+    await dm_bot.get_guild(guild.id).get_member(user.id).send(content=message, embed=embed)
