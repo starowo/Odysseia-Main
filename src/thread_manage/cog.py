@@ -475,12 +475,20 @@ class ThreadSelfManage(commands.Cog):
 
     # ---- 解锁子区 ----
     @self_manage.command(name="解锁子区", description="解锁子区，允许发言")
-    @app_commands.describe(thread="要解锁的子区（留空则为当前子区）")
-    async def unlock_thread(self, interaction: discord.Interaction, thread: discord.Thread = None):
+    @app_commands.describe(thread_id="要解锁的子区id")
+    async def unlock_thread(self, interaction: discord.Interaction, thread_id: str):
         # 验证是否在子区内
-        channel = thread or interaction.channel
+        
+        # 验证是否是子区id
+        try:
+            thread_id_int = int(thread_id)
+        except ValueError:
+            await interaction.response.send_message("请提供有效的子区ID", ephemeral=True)
+            return
+        
+        channel = interaction.guild.get_channel(thread_id_int)
         if not isinstance(channel, discord.Thread):
-            await interaction.response.send_message("此指令仅在子区内有效", ephemeral=True)
+            await interaction.response.send_message("请提供有效的子区ID", ephemeral=True)
             return
         
         # 验证是否是子区所有者或管理员
