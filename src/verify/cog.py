@@ -245,6 +245,8 @@ class VerifyCommands(commands.Cog):
                         self.logger.info(f"自动升级成功: {member} (ID: {member.id}) 在服务器 {guild.name}")
                     
                     # 发送私聊通知
+                    # 会导致bot被标记为垃圾邮件发送者
+                    '''
                     try:
                         embed = discord.Embed(
                             title="🎉 自动升级通知", 
@@ -256,6 +258,7 @@ class VerifyCommands(commands.Cog):
                         await member.send(embed=embed)
                     except discord.Forbidden:
                         pass  # 无法发送私聊，跳过
+                    '''
                         
                 except discord.Forbidden:
                     if self.logger:
