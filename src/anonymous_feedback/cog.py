@@ -1471,16 +1471,17 @@ class AnonymousFeedbackCog(commands.Cog):
             await interaction.followup.send(f"❌ 反馈 #{反馈编号:06d} 已被删除", ephemeral=True)
             return
         
-        # 简化时间处理 - 直接使用数据库时间戳进行计算
+        # fix:兼容不同格式的时间戳
         try:
-            # 将数据库时间转换为时间戳，用于Discord显示
-            if created_at.endswith('Z'):
-                feedback_time = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-            elif 'T' in created_at and ('+' in created_at or created_at.endswith('Z')):
-                feedback_time = datetime.fromisoformat(created_at)
+            # 兼容 SQLite 的时间格式 'YYYY-MM-DD HH:MM:SS'
+            if 'T' not in created_at and ' ' in created_at:
+                feedback_time = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
             else:
-                # 假设为UTC时间
-                feedback_time = datetime.fromisoformat(created_at).replace(tzinfo=timezone.utc)
+                feedback_time = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+
+            # 确保时区信息存在
+            if feedback_time.tzinfo is None:
+                feedback_time = feedback_time.replace(tzinfo=timezone.utc)
             
             # 检查是否超过24小时
             current_time = datetime.now(timezone.utc)
@@ -1493,12 +1494,12 @@ class AnonymousFeedbackCog(commands.Cog):
                     f"💡 反馈发送时间：<t:{feedback_timestamp}:F>", 
                     ephemeral=True
                 )
-            return
+                return
         
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             if self.logger:
-                self.logger.error(f"匿名反馈系统 - 时间处理失败: {e}, created_at={created_at}")
-            await interaction.followup.send("❌ 时间处理失败，无法删除", ephemeral=True)
+                self.logger.error(f"匿名反馈系统 - 删除反馈时时间处理失败: {e}, created_at='{created_at}'")
+            await interaction.followup.send("❌ 时间格式处理异常，无法完成删除操作。请联系管理员。", ephemeral=True)
             return
         
         # 标记为已删除
