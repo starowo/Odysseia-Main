@@ -790,7 +790,7 @@ class VerifyCommands(commands.Cog):
                 fail_msg += f"\n{cooldown_msg}"
             else:
                 remaining = max_attempts - failed_attempts
-                remaining_msg = f"剩余尝试次数：{remaining}" if language == "zh_cn" else f"Remaining attempts: {remaining}"
+                remaining_msg = f"冷却前剩余尝试次数：{remaining}" if language == "zh_cn" else f"Remaining attempts before cooldown: {remaining}"
                 fail_msg += f"\n{remaining_msg}"
             
             await interaction.followup.send(fail_msg, ephemeral=True)
