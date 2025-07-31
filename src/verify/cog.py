@@ -3,6 +3,7 @@ import json
 import random
 import pathlib
 import datetime
+import uuid
 from typing import List, Dict, Optional
 
 import discord
@@ -23,6 +24,8 @@ class VerifyCommands(commands.Cog):
         self._config_cache_mtime = None
         # 自动升级功能状态
         self.auto_upgrade_enabled = True
+        # 活跃的答题会话
+        self.active_quiz_sessions = {}
 
     @property
     def config(self):
@@ -92,7 +95,8 @@ class VerifyCommands(commands.Cog):
             user_data = {
                 "attempts": [],
                 "last_success": None,
-                "timeout_until": None
+                "timeout_until": None,  # 保持向后兼容
+                "quiz_cooldown_until": None  # 新增：答题冷却时间
             }
         
         # 添加新记录
@@ -123,11 +127,12 @@ class VerifyCommands(commands.Cog):
         return {
             "attempts": [],
             "last_success": None,
-            "timeout_until": None
+            "timeout_until": None,  # 保持向后兼容
+            "quiz_cooldown_until": None  # 新增：答题冷却时间
         }
 
     def _set_user_timeout(self, guild_id: int, user_id: int, minutes: int):
-        """设置用户禁言时间"""
+        """设置用户禁言时间（保持向后兼容）"""
         data_dir = pathlib.Path("data") / "verify" / str(guild_id)
         data_dir.mkdir(parents=True, exist_ok=True)
         file_path = data_dir / f"{user_id}.json"
@@ -139,8 +144,21 @@ class VerifyCommands(commands.Cog):
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(user_data, f, ensure_ascii=False, indent=2)
 
+    def _set_user_quiz_cooldown(self, guild_id: int, user_id: int, minutes: int):
+        """设置用户答题冷却时间"""
+        data_dir = pathlib.Path("data") / "verify" / str(guild_id)
+        data_dir.mkdir(parents=True, exist_ok=True)
+        file_path = data_dir / f"{user_id}.json"
+        
+        user_data = self._get_user_data(guild_id, user_id)
+        cooldown_until = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=minutes)
+        user_data["quiz_cooldown_until"] = cooldown_until.isoformat()
+        
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(user_data, f, ensure_ascii=False, indent=2)
+
     def _is_user_in_timeout(self, guild_id: int, user_id: int) -> bool:
-        """检查用户是否在禁言期间"""
+        """检查用户是否在禁言期间（保持向后兼容）"""
         user_data = self._get_user_data(guild_id, user_id)
         timeout_until = user_data.get("timeout_until")
         
@@ -149,6 +167,31 @@ class VerifyCommands(commands.Cog):
             return datetime.datetime.now(datetime.timezone.utc) < timeout_time
         
         return False
+
+    def _is_user_in_quiz_cooldown(self, guild_id: int, user_id: int) -> bool:
+        """检查用户是否在答题冷却期间"""
+        user_data = self._get_user_data(guild_id, user_id)
+        cooldown_until = user_data.get("quiz_cooldown_until")
+        
+        if cooldown_until:
+            cooldown_time = datetime.datetime.fromisoformat(cooldown_until)
+            return datetime.datetime.now(datetime.timezone.utc) < cooldown_time
+        
+        return False
+
+    def _get_quiz_cooldown_remaining(self, guild_id: int, user_id: int) -> Optional[int]:
+        """获取答题冷却剩余时间（分钟）"""
+        user_data = self._get_user_data(guild_id, user_id)
+        cooldown_until = user_data.get("quiz_cooldown_until")
+        
+        if cooldown_until:
+            cooldown_time = datetime.datetime.fromisoformat(cooldown_until)
+            now = datetime.datetime.now(datetime.timezone.utc)
+            if now < cooldown_time:
+                remaining_seconds = (cooldown_time - now).total_seconds()
+                return int(remaining_seconds / 60) + 1  # 向上取整
+        
+        return None
 
     def _get_recent_failed_attempts(self, guild_id: int, user_id: int) -> int:
         """获取最近失败次数"""
@@ -168,6 +211,46 @@ class VerifyCommands(commands.Cog):
                 break  # 遇到成功记录就停止计数
         
         return recent_failures
+
+    def _create_quiz_session(self, guild_id: int, user_id: int, questions: List[Dict], language: str) -> str:
+        """创建答题会话"""
+        session_id = str(uuid.uuid4())
+        session_data = {
+            "session_id": session_id,
+            "guild_id": guild_id,
+            "user_id": user_id,
+            "questions": questions,
+            "language": language,
+            "current_question": 0,
+            "answers": [None] * len(questions),
+            "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat()
+        }
+        self.active_quiz_sessions[session_id] = session_data
+        return session_id
+
+    def _get_quiz_session(self, session_id: str) -> Optional[Dict]:
+        """获取答题会话"""
+        return self.active_quiz_sessions.get(session_id)
+
+    def _update_quiz_session(self, session_id: str, **kwargs):
+        """更新答题会话"""
+        if session_id in self.active_quiz_sessions:
+            self.active_quiz_sessions[session_id].update(kwargs)
+
+    def _clear_quiz_session(self, session_id: str):
+        """清除答题会话"""
+        if session_id in self.active_quiz_sessions:
+            del self.active_quiz_sessions[session_id]
+
+    def _clear_user_quiz_sessions(self, guild_id: int, user_id: int):
+        """清除用户的所有答题会话"""
+        to_remove = []
+        for session_id, session in self.active_quiz_sessions.items():
+            if session["guild_id"] == guild_id and session["user_id"] == user_id:
+                to_remove.append(session_id)
+        
+        for session_id in to_remove:
+            del self.active_quiz_sessions[session_id]
 
     async def _auto_upgrade_task(self):
         """自动升级任务 - 将缓冲区用户升级到已验证用户"""
@@ -209,7 +292,7 @@ class VerifyCommands(commands.Cog):
             # 获取拥有缓冲区身份组的成员
             eligible_members = []
             current_time = datetime.datetime.now(datetime.timezone.utc)
-            upgrade_threshold = datetime.timedelta(days=3)  # 3天后自动升级
+            upgrade_threshold = datetime.timedelta(days=5)  # 5天后自动升级
             
             for member in buffer_role.members:
                 if verified_role in member.roles:
@@ -235,11 +318,11 @@ class VerifyCommands(commands.Cog):
                     # 检查是否启用同步模块
                     sync_cog = self.bot.get_cog("ServerSyncCommands")
                     if sync_cog:
-                        await sync_cog.sync_add_role(guild, member, verified_role, "自动升级：缓冲区3天期满")
-                        await sync_cog.sync_remove_role(guild, member, buffer_role, "自动升级：缓冲区3天期满")
+                        await sync_cog.sync_add_role(guild, member, verified_role, "自动升级：缓冲区5天期满")
+                        await sync_cog.sync_remove_role(guild, member, buffer_role, "自动升级：缓冲区5天期满")
                     else:
-                        await member.add_roles(verified_role, reason="自动升级：缓冲区3天期满")
-                        await member.remove_roles(buffer_role, reason="自动升级：缓冲区3天期满")
+                        await member.add_roles(verified_role, reason="自动升级：缓冲区5天期满")
+                        await member.remove_roles(buffer_role, reason="自动升级：缓冲区5天期满")
                     
                     if self.logger:
                         self.logger.info(f"自动升级成功: {member} (ID: {member.id}) 在服务器 {guild.name}")
@@ -281,6 +364,8 @@ class VerifyCommands(commands.Cog):
         # 注册持久化按钮视图
         self.bot.add_view(VerifyButtonView(self, "zh_cn"))
         self.bot.add_view(VerifyButtonView(self, "en_us"))
+        # 注册答题视图（在重启后重新加载会话）
+        # 注意：重启后会话会丢失，这是预期的行为
         # 启动自动升级任务
         asyncio.create_task(self._auto_upgrade_task())
         if self.logger:
@@ -320,8 +405,8 @@ class VerifyCommands(commands.Cog):
         zh_embed = discord.Embed(
             title="🎯 答题验证",
             description="\n".join([
-                "阅读上述规则后，请点击下方按钮，然后将答案填入命令中回答。",
-                "使用命令：`/答题 <答案1> <答案2> <答案3> <答案4> <答案5>`"
+                "阅读上述规则后，点击下方按钮即可开始答题。",
+                "若答题时间过久导致按钮失效，可重新点击按钮获取新的题目。"
             ]),
             color=discord.Color.blue()
         )
@@ -330,8 +415,8 @@ class VerifyCommands(commands.Cog):
         en_embed = discord.Embed(
             title="🎯 Quiz Verification",
             description="\n".join([
-                "After reading the rules, please click the button below and fill in the answers in the command.",
-                "Use the command: `/answer <answer1> <answer2> <answer3> <answer4> <answer5>`"
+                "After reading the rules, please click the button below to start the quiz.",
+                "If the button fails due to long quiz time, you can click the button again to get new questions."
             ]),
             color=discord.Color.green()
         )
@@ -573,7 +658,7 @@ class VerifyCommands(commands.Cog):
                             await sync_cog.sync_add_role(guild, user, role, "答题验证通过")
                         else:
                             await user.add_roles(role, reason="答题验证通过")
-                        success_msg += "\n✅ 已添加缓冲区身份组\n服务器当前处于缓冲准入模式，您可浏览资源区，但只能在有慢速限制的答疑频道发言。\n服务器会适时将缓冲状态用户转移到可正常发言的身份组。" if language == "zh_cn" else "\n✅ Buffer role added\nThe server is currently in buffer access mode, you can browse the resource area, but you can only speak in the slow-speed restricted answer channel.\nThe server will transfer buffer status users to the normal speaking identity group at the appropriate time."
+                        success_msg += "\n✅ 已添加缓冲区身份组\n服务器当前处于缓冲准入模式，您可浏览资源区，但无法在服务器内发言\n您将在缓冲区等待5天，之后会自动转移到可正常发言的身份组。\n如果想要提前离开缓冲区，并获取答疑区发言权限，可以前往https://discord.com/channels/1134557553011998840/1400260572070547666 进行进阶答题" if language == "zh_cn" else "\n✅ Buffer role added\nThe server is currently in buffer access mode, you can browse the resource area, but you can only speak in the slow-speed restricted answer channel.\nThe server will transfer buffer status users to the normal speaking identity group at the appropriate time.\nIf you want to leave the buffer zone early, and get the support channel speaking permission, you can go to https://discord.com/channels/1134557553011998840/1400260572070547666 to take the advanced quiz"
                 else:
                     role = guild.get_role(int(verified_role_id))
                     if role:
@@ -617,6 +702,119 @@ class VerifyCommands(commands.Cog):
             
             await interaction.followup.send(fail_msg, ephemeral=True)
 
+    async def _process_quiz_submission(self, session_id: str, interaction: discord.Interaction):
+        """处理答题提交"""
+        session = self._get_quiz_session(session_id)
+        if not session:
+            await interaction.response.send_message("❌ 答题会话已过期", ephemeral=True)
+            return
+
+        guild_id = session["guild_id"]
+        user_id = session["user_id"]
+        questions = session["questions"]
+        answers = session["answers"]
+        language = session["language"]
+
+        guild = interaction.guild
+        user = interaction.user
+
+        if not guild or not user or guild.id != guild_id or user.id != user_id:
+            await interaction.response.send_message("❌ 系统错误", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        # 检查答案
+        correct_count = 0
+        for i, (question, user_answer) in enumerate(zip(questions, answers)):
+            if user_answer is None:
+                continue
+            
+            # 处理不同题型的答案
+            question_type = question.get("type", "single_choice")
+            correct_answer = question.get("answer", "")
+            
+            if question_type == "single_choice":
+                if user_answer.strip().upper() == correct_answer.upper():
+                    correct_count += 1
+            elif question_type == "multiple_choice":
+                # 多选题答案格式如 "ABCEF"，用户答案也应该是这种格式
+                if sorted(user_answer.strip().upper()) == sorted(correct_answer.upper()):
+                    correct_count += 1
+            elif question_type == "fill_in_blank":
+                if user_answer.strip() == correct_answer.strip():
+                    correct_count += 1
+
+        # 判定结果
+        is_success = correct_count == len(questions)
+
+        # 保存记录
+        self._save_user_attempt(guild_id, user_id, is_success)
+
+        # 清除答题会话
+        self._clear_quiz_session(session_id)
+
+        if is_success:
+            # 答题成功
+            success_msg = f"🎉 恭喜！您已成功通过验证（{correct_count}/{len(questions)}）" if language == "zh_cn" else f"🎉 Congratulations! You have passed the verification ({correct_count}/{len(questions)})"
+            
+            # 添加身份组
+            try:
+                buffer_mode = self.config.get("buffer_mode", True)
+                buffer_role_id = self.config.get("buffer_role_id")
+                verified_role_id = self.config.get("verified_role_id")
+                
+                if buffer_mode and buffer_role_id and buffer_role_id != "请填入缓冲区身份组ID":
+                    role = guild.get_role(int(buffer_role_id))
+                    if role:
+                        # 检查是否启用同步模块
+                        sync_cog = self.bot.get_cog("ServerSyncCommands")
+                        if sync_cog:
+                            await sync_cog.sync_add_role(guild, user, role, "答题验证通过")
+                        else:
+                            await user.add_roles(role, reason="答题验证通过")
+                        success_msg += "\n✅ 已添加缓冲区身份组\n服务器当前处于缓冲准入模式，您可浏览资源区，但只能在有慢速限制的答疑频道发言。\n服务器会适时将缓冲状态用户转移到可正常发言的身份组。" if language == "zh_cn" else "\n✅ Buffer role added\nThe server is currently in buffer access mode, you can browse the resource area, but you can only speak in the slow-speed restricted answer channel.\nThe server will transfer buffer status users to the normal speaking identity group at the appropriate time."
+                else:
+                    role = guild.get_role(int(verified_role_id))
+                    if role:
+                        # 检查是否启用同步模块
+                        sync_cog = self.bot.get_cog("ServerSyncCommands")
+                        if sync_cog:
+                            await sync_cog.sync_add_role(guild, user, role, "答题验证通过")
+                        else:
+                            await user.add_roles(role, reason="答题验证通过")
+                        success_msg += "\n✅ 已添加已验证身份组" if language == "zh_cn" else "\n✅ Verified role added"
+            except discord.Forbidden:
+                error_msg = "\n⚠️ 无法添加身份组，请联系管理员" if language == "zh_cn" else "\n⚠️ Cannot add role, please contact administrators"
+                success_msg += error_msg
+
+            await interaction.followup.send(success_msg, ephemeral=True)
+        else:
+            # 答题失败
+            failed_attempts = self._get_recent_failed_attempts(guild_id, user_id)
+            max_attempts = self.config.get("max_attempts_per_period", 3)
+            
+            fail_msg = f"❌ 答题失败（{correct_count}/{len(questions)}）" if language == "zh_cn" else f"❌ Quiz failed ({correct_count}/{len(questions)})"
+            
+            if failed_attempts >= max_attempts:
+                # 达到最大失败次数，设置冷却时间
+                cooldown_minutes = self.config.get("fail_cooldown_minutes", [10, 60])
+                
+                if failed_attempts == max_attempts:
+                    minutes = cooldown_minutes[0] if len(cooldown_minutes) > 0 else 10
+                else:
+                    minutes = cooldown_minutes[1] if len(cooldown_minutes) > 1 else 60
+                
+                self._set_user_quiz_cooldown(guild_id, user_id, minutes)
+                cooldown_msg = f"由于多次答题失败，您需要冷却 {minutes} 分钟后才能再次答题" if language == "zh_cn" else f"Due to multiple quiz failures, you need to wait {minutes} minutes before taking the quiz again"
+                fail_msg += f"\n{cooldown_msg}"
+            else:
+                remaining = max_attempts - failed_attempts
+                remaining_msg = f"剩余尝试次数：{remaining}" if language == "zh_cn" else f"Remaining attempts: {remaining}"
+                fail_msg += f"\n{remaining_msg}"
+            
+            await interaction.followup.send(fail_msg, ephemeral=True)
+
     async def _get_user_questions(self, guild_id: int, user_id: int) -> Optional[List[Dict]]:
         """获取用户的题目"""
         cache_dir = pathlib.Path("data") / "thread_cache"
@@ -653,11 +851,30 @@ class VerifyCommands(commands.Cog):
             await interaction.response.send_message("❌ 系统错误", ephemeral=True)
             return
 
-        # 检查是否在禁言期
-        if self._is_user_in_timeout(guild.id, user.id):
-            timeout_msg = "您因多次答题错误被临时禁言，请稍后再试" if language == "zh_cn" else "You are temporarily timed out due to multiple wrong answers. Please try again later."
-            await interaction.response.send_message(f"❌ {timeout_msg}", ephemeral=True)
+        # 检查是否在答题冷却期
+        if self._is_user_in_quiz_cooldown(guild.id, user.id):
+            remaining = self._get_quiz_cooldown_remaining(guild.id, user.id)
+            cooldown_msg = f"您因多次答题错误需要冷却 {remaining} 分钟后才能再次答题" if language == "zh_cn" else f"You need to wait {remaining} minutes before taking the quiz again due to multiple failures."
+            await interaction.response.send_message(f"❌ {cooldown_msg}", ephemeral=True)
             return
+
+        # 检查是否已有身份组
+        buffer_role_id = self.config.get("buffer_role_id")
+        verified_role_id = self.config.get("verified_role_id")
+        
+        if buffer_role_id and buffer_role_id != "请填入缓冲区身份组ID":
+            buffer_role = guild.get_role(int(buffer_role_id))
+            if buffer_role and buffer_role in user.roles:
+                already_msg = "您已拥有相关身份组，无需重复验证" if language == "zh_cn" else "You already have the required role, no need to verify again."
+                await interaction.response.send_message(f"❌ {already_msg}", ephemeral=True)
+                return
+
+        if verified_role_id and verified_role_id != "请填入已验证身份组ID":
+            verified_role = guild.get_role(int(verified_role_id))
+            if verified_role and verified_role in user.roles:
+                already_msg = "您已拥有相关身份组，无需重复验证" if language == "zh_cn" else "You already have the required role, no need to verify again."
+                await interaction.response.send_message(f"❌ {already_msg}", ephemeral=True)
+                return
 
         # 随机选择题目
         questions_per_quiz = self.config.get("questions_per_quiz", 5)
@@ -668,36 +885,358 @@ class VerifyCommands(commands.Cog):
 
         selected_questions = random.sample(self.questions, questions_per_quiz)
         
-        # 保存用户题目
-        await self._save_user_questions(guild.id, user.id, selected_questions)
+        # 清除用户之前的答题会话
+        self._clear_user_quiz_sessions(guild.id, user.id)
+        
+        # 创建新的答题会话
+        session_id = self._create_quiz_session(guild.id, user.id, selected_questions, language)
+        
+        # 显示第一题
+        view = QuizView(self, session_id)
+        embed = await view.create_question_embed()
+        await view.update_view_without_interaction()  # 初始化按钮
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-        # 构建题目展示
-        embed = discord.Embed(
-            title="🎯 答题验证" if language == "zh_cn" else "🎯 Quiz Verification",
-            color=discord.Color.blue()
-        )
 
-        question_text = ""
-        for i, question in enumerate(selected_questions, 1):
-            q_text = question.get("zh_cn" if language == "zh_cn" else "en_us", "题目加载失败")
-            question_text += f"**{i}.** {q_text}\n\n"
-
-        embed.description = question_text
-
-        if language == "zh_cn":
-            embed.add_field(
-                name="📝 如何回答",
-                value="使用命令：`/答题 <答案1> <答案2> <答案3> <答案4> <答案5>`",
-                inline=False
+class QuizView(discord.ui.View):
+    """答题界面视图"""
+    def __init__(self, cog: VerifyCommands, session_id: str):
+        super().__init__(timeout=300)  # 5分钟超时
+        self.cog = cog
+        self.session_id = session_id
+    
+    async def create_question_embed(self) -> discord.Embed:
+        """创建题目显示的embed"""
+        session = self.cog._get_quiz_session(self.session_id)
+        if not session:
+            embed = discord.Embed(
+                title="❌ 会话已过期",
+                description="此答题界面已过期，请重新开始答题。",
+                color=discord.Color.red()
             )
+            return embed
+        
+        questions = session["questions"]
+        current_idx = session["current_question"]
+        language = session["language"]
+        answers = session["answers"]
+        
+        if current_idx >= len(questions):
+            current_idx = len(questions) - 1
+        
+        current_question = questions[current_idx]
+        question_type = current_question.get("type", "single_choice")
+        
+        # 构建标题
+        title = f"🎯 答题验证 ({current_idx + 1}/{len(questions)})" if language == "zh_cn" else f"🎯 Quiz Verification ({current_idx + 1}/{len(questions)})"
+        
+        embed = discord.Embed(title=title, color=discord.Color.blue())
+        
+        # 获取题目内容
+        question_data = current_question.get(language, {})
+        if isinstance(question_data, dict):
+            question_text = question_data.get("question", "题目加载失败")
+            choices = question_data.get("choices", [])
         else:
-            embed.add_field(
-                name="📝 How to Answer",
-                value="Use command: `/answer <answer1> <answer2> <answer3> <answer4> <answer5>`",
-                inline=False
+            question_text = question_data if question_data else "题目加载失败"
+            choices = []
+        
+        # 显示题目
+        embed.add_field(name="📝 题目", value=question_text, inline=False)
+        
+        # 显示选项（仅限选择题）
+        if question_type in ["single_choice", "multiple_choice"] and choices:
+            choices_text = "\n".join(choices)
+            embed.add_field(name="📋 选项", value=choices_text, inline=False)
+        
+        # 显示当前答案
+        current_answer = answers[current_idx]
+        if current_answer is not None:
+            answer_text = f"当前答案：{current_answer}" if language == "zh_cn" else f"Current answer: {current_answer}"
+            embed.add_field(name="✅ 已选择", value=answer_text, inline=False)
+        
+        # 显示进度
+        progress = f"进度：{current_idx + 1}/{len(questions)}" if language == "zh_cn" else f"Progress: {current_idx + 1}/{len(questions)}"
+        embed.set_footer(text=progress)
+        
+        return embed
+    
+    async def update_view_without_interaction(self):
+        """更新视图（不需要interaction）"""
+        session = self.cog._get_quiz_session(self.session_id)
+        if not session:
+            return
+        
+        # 清除现有按钮
+        self.clear_items()
+        
+        questions = session["questions"]
+        current_idx = session["current_question"]
+        language = session["language"]
+        
+        if current_idx >= len(questions):
+            current_idx = len(questions) - 1
+        
+        current_question = questions[current_idx]
+        question_type = current_question.get("type", "single_choice")
+        
+        # 添加题目类型相关的按钮
+        if question_type == "single_choice":
+            question_data = current_question.get(language, {})
+            choices = question_data.get("choices", [])
+            for choice in choices:
+                # 提取选项标识符（A, B, C, D等）
+                choice_id = choice.split('.')[0].strip()
+                button = discord.ui.Button(
+                    label=choice_id,
+                    custom_id=f"choice_{choice_id}",
+                    style=discord.ButtonStyle.success if session["answers"][current_idx] == choice_id else discord.ButtonStyle.secondary
+                )
+                button.callback = self._create_choice_callback(choice_id)
+                self.add_item(button)
+        
+        elif question_type == "multiple_choice":
+            question_data = current_question.get(language, {})
+            choices = question_data.get("choices", [])
+            current_answer = session["answers"][current_idx] or ""
+            for choice in choices:
+                # 提取选项标识符（A, B, C, D等）
+                choice_id = choice.split('.')[0].strip()
+                is_selected = choice_id in current_answer
+                button = discord.ui.Button(
+                    label=choice_id,
+                    custom_id=f"multichoice_{choice_id}",
+                    style=discord.ButtonStyle.success if is_selected else discord.ButtonStyle.secondary
+                )
+                button.callback = self._create_multichoice_callback(choice_id)
+                self.add_item(button)
+        
+        elif question_type == "fill_in_blank":
+            button = discord.ui.Button(
+                label="填入答案" if language == "zh_cn" else "Fill Answer",
+                custom_id="fill_blank",
+                style=discord.ButtonStyle.primary
             )
+            button.callback = self._fill_blank_callback
+            self.add_item(button)
+        
+        # 添加导航按钮
+        if current_idx > 0:
+            prev_button = discord.ui.Button(
+                label="⬅️ 上一题" if language == "zh_cn" else "⬅️ Previous",
+                custom_id="prev_question",
+                style=discord.ButtonStyle.secondary,
+                row=1
+            )
+            prev_button.callback = self._prev_question_callback
+            self.add_item(prev_button)
+        
+        if current_idx < len(questions) - 1:
+            next_button = discord.ui.Button(
+                label="下一题 ➡️" if language == "zh_cn" else "Next ➡️",
+                custom_id="next_question",
+                style=discord.ButtonStyle.secondary,
+                row=1
+            )
+            next_button.callback = self._next_question_callback
+            self.add_item(next_button)
+        else:
+            # 最后一题，显示提交按钮
+            submit_button = discord.ui.Button(
+                label="✅ 提交答案" if language == "zh_cn" else "✅ Submit",
+                custom_id="submit_quiz",
+                style=discord.ButtonStyle.success,
+                row=1
+            )
+            submit_button.callback = self._submit_callback
+            self.add_item(submit_button)
+    
+    async def update_view(self, interaction: discord.Interaction):
+        """更新视图"""
+        session = self.cog._get_quiz_session(self.session_id)
+        if not session:
+            # 会话已过期
+            embed = discord.Embed(
+                title="❌ 此界面已过期",
+                description="答题会话已过期或被新的答题覆盖，请重新开始答题。",
+                color=discord.Color.red()
+            )
+            self.clear_items()
+            await interaction.response.edit_message(embed=embed, view=self)
+            return
+        
+        await self.update_view_without_interaction()
+    
+    def _create_choice_callback(self, choice_id: str):
+        async def callback(interaction: discord.Interaction):
+            session = self.cog._get_quiz_session(self.session_id)
+            if not session:
+                await interaction.response.send_message("❌ 答题会话已过期", ephemeral=True)
+                return
+            
+            # 检查用户权限
+            if interaction.user.id != session["user_id"]:
+                await interaction.response.send_message("❌ 这不是您的答题界面", ephemeral=True)
+                return
+            
+            current_idx = session["current_question"]
+            session["answers"][current_idx] = choice_id
+            self.cog._update_quiz_session(self.session_id, answers=session["answers"])
+            
+            await self.update_view(interaction)
+            embed = await self.create_question_embed()
+            await interaction.response.edit_message(embed=embed, view=self)
+        
+        return callback
+    
+    def _create_multichoice_callback(self, choice_id: str):
+        async def callback(interaction: discord.Interaction):
+            session = self.cog._get_quiz_session(self.session_id)
+            if not session:
+                await interaction.response.send_message("❌ 答题会话已过期", ephemeral=True)
+                return
+            
+            # 检查用户权限
+            if interaction.user.id != session["user_id"]:
+                await interaction.response.send_message("❌ 这不是您的答题界面", ephemeral=True)
+                return
+            
+            current_idx = session["current_question"]
+            current_answer = session["answers"][current_idx] or ""
+            
+            if choice_id in current_answer:
+                # 取消选择
+                current_answer = current_answer.replace(choice_id, "")
+            else:
+                # 添加选择
+                current_answer += choice_id
+            
+            # 按字母顺序排序
+            current_answer = "".join(sorted(set(current_answer)))
+            session["answers"][current_idx] = current_answer
+            self.cog._update_quiz_session(self.session_id, answers=session["answers"])
+            
+            await self.update_view(interaction)
+            embed = await self.create_question_embed()
+            await interaction.response.edit_message(embed=embed, view=self)
+        
+        return callback
+    
+    async def _fill_blank_callback(self, interaction: discord.Interaction):
+        session = self.cog._get_quiz_session(self.session_id)
+        if not session:
+            await interaction.response.send_message("❌ 答题会话已过期", ephemeral=True)
+            return
+        
+        # 检查用户权限
+        if interaction.user.id != session["user_id"]:
+            await interaction.response.send_message("❌ 这不是您的答题界面", ephemeral=True)
+            return
+        
+        # 显示输入模态框
+        modal = FillBlankModal(self, self.session_id)
+        await interaction.response.send_modal(modal)
+    
+    async def _prev_question_callback(self, interaction: discord.Interaction):
+        session = self.cog._get_quiz_session(self.session_id)
+        if not session:
+            await interaction.response.send_message("❌ 答题会话已过期", ephemeral=True)
+            return
+        
+        # 检查用户权限
+        if interaction.user.id != session["user_id"]:
+            await interaction.response.send_message("❌ 这不是您的答题界面", ephemeral=True)
+            return
+        
+        current_idx = session["current_question"]
+        if current_idx > 0:
+            new_idx = current_idx - 1
+            self.cog._update_quiz_session(self.session_id, current_question=new_idx)
+            
+            await self.update_view(interaction)
+            embed = await self.create_question_embed()
+            await interaction.response.edit_message(embed=embed, view=self)
+        else:
+            await interaction.response.defer()
+    
+    async def _next_question_callback(self, interaction: discord.Interaction):
+        session = self.cog._get_quiz_session(self.session_id)
+        if not session:
+            await interaction.response.send_message("❌ 答题会话已过期", ephemeral=True)
+            return
+        
+        # 检查用户权限
+        if interaction.user.id != session["user_id"]:
+            await interaction.response.send_message("❌ 这不是您的答题界面", ephemeral=True)
+            return
+        
+        current_idx = session["current_question"]
+        questions = session["questions"]
+        if current_idx < len(questions) - 1:
+            new_idx = current_idx + 1
+            self.cog._update_quiz_session(self.session_id, current_question=new_idx)
+            
+            await self.update_view(interaction)
+            embed = await self.create_question_embed()
+            await interaction.response.edit_message(embed=embed, view=self)
+        else:
+            await interaction.response.defer()
+    
+    async def _submit_callback(self, interaction: discord.Interaction):
+        session = self.cog._get_quiz_session(self.session_id)
+        if not session:
+            await interaction.response.send_message("❌ 答题会话已过期", ephemeral=True)
+            return
+        
+        # 检查用户权限
+        if interaction.user.id != session["user_id"]:
+            await interaction.response.send_message("❌ 这不是您的答题界面", ephemeral=True)
+            return
+        
+        await self.cog._process_quiz_submission(self.session_id, interaction)
+    
+    async def on_timeout(self):
+        """超时处理"""
+        self.cog._clear_quiz_session(self.session_id)
 
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+class FillBlankModal(discord.ui.Modal):
+    """填空题输入模态框"""
+    def __init__(self, quiz_view: QuizView, session_id: str):
+        super().__init__(title="填写答案" if quiz_view.cog._get_quiz_session(session_id).get("language") == "zh_cn" else "Fill Answer")
+        self.quiz_view = quiz_view
+        self.session_id = session_id
+        
+        session = quiz_view.cog._get_quiz_session(session_id)
+        language = session.get("language", "zh_cn") if session else "zh_cn"
+        
+        self.answer_input = discord.ui.TextInput(
+            label="请输入答案" if language == "zh_cn" else "Please enter your answer",
+            placeholder="输入您的答案..." if language == "zh_cn" else "Enter your answer...",
+            required=True,
+            max_length=100
+        )
+        self.add_item(self.answer_input)
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        session = self.quiz_view.cog._get_quiz_session(self.session_id)
+        if not session:
+            await interaction.response.send_message("❌ 答题会话已过期", ephemeral=True)
+            return
+        
+        # 检查用户权限
+        if interaction.user.id != session["user_id"]:
+            await interaction.response.send_message("❌ 这不是您的答题界面", ephemeral=True)
+            return
+        
+        current_idx = session["current_question"]
+        answer = self.answer_input.value.strip()
+        session["answers"][current_idx] = answer
+        self.quiz_view.cog._update_quiz_session(self.session_id, answers=session["answers"])
+        
+        await self.quiz_view.update_view(interaction)
+        embed = await self.quiz_view.create_question_embed()
+        await interaction.response.edit_message(embed=embed, view=self.quiz_view)
 
 
 class VerifyButtonView(discord.ui.View):
