@@ -4,6 +4,7 @@ import pathlib
 import discord
 from discord.ext import commands
 from discord import app_commands
+from src.utils import dm
 from src.utils.confirm_view import confirm_view
 from src.thread_manage.thread_clear import clear_thread_members
 from src.thread_manage.auto_clear import AutoClearManager
@@ -482,11 +483,17 @@ class ThreadSelfManage(commands.Cog):
         # 验证是否是子区id
         try:
             thread_id_int = int(thread_id)
-        except ValueError:
+        except ValueError as e:
             await interaction.response.send_message("请提供有效的子区ID", ephemeral=True)
             return
         
-        channel = interaction.guild.get_channel(thread_id_int)
+        # 尝试获取子区，包括已归档的子区
+        try:
+            channel = await interaction.guild.fetch_channel(thread_id_int)
+        except (discord.NotFound, discord.HTTPException):
+            # 如果fetch_channel失败，尝试get_channel_or_thread
+            channel = interaction.guild.get_channel_or_thread(thread_id_int)
+
         if not isinstance(channel, discord.Thread):
             await interaction.response.send_message("请提供有效的子区ID", ephemeral=True)
             return
@@ -790,23 +797,22 @@ class ThreadSelfManage(commands.Cog):
             else:
                 warn_text = f"您在子区 {channel.name} 已被禁言，请联系子区所有者。"
             try:
-                await user.send(warn_text)
+                # await user.send(warn_text)
+                # 使用通知bot发送
+                await dm.send_dm(channel.guild, user, warn_text)
             except:
                 pass
             # 记录违规并全服禁言
             vcount = self._increment_violations(guild.id, channel.id, user.id)
             secs = 0
-            if vcount == 3:
+            if vcount >= 3:
                 secs, label = 10*60, '10分钟'
-            elif vcount == 4:
-                secs, label = 60*60, '1小时'
-            elif vcount >= 5:
-                secs, label = 24*3600, '1天'
             if secs > 0:
                 try:
                     await user.timeout(timedelta(seconds=secs), reason=f"子区禁言违规({vcount}次)")
                     try:
-                        await user.send(f"因多次违规，您已被全服禁言 {label}")
+                        # await user.send(f"因多次违规，您已被全服禁言 {label}")
+                        await dm.send_dm(channel.guild, user, f"因多次在被禁言的子区内发言，您已被全服禁言 {label}")
                     except:
                         pass
                 except:
@@ -862,15 +868,7 @@ class ThreadSelfManage(commands.Cog):
     @self_manage.command(name="解除禁言", description="在本子区解除禁言成员")
     @app_commands.describe(member="要解除禁言的成员")
     async def unmute(self, interaction: discord.Interaction, member: discord.Member):
-        # 禁言功能暂时关闭 - 但保持鉴权逻辑一致性
-        embed = discord.Embed(
-            title="子区禁言已停用",
-            description="子区禁言已停用，如需帮助，可开启慢速模式并@管理组。",
-            color=discord.Color.red()
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-        return
-        '''
+
         channel = interaction.channel
         if not isinstance(channel, discord.Thread):
             await interaction.response.send_message("此指令仅在子区内有效", ephemeral=True)
@@ -890,7 +888,7 @@ class ThreadSelfManage(commands.Cog):
             await interaction.response.send_message(f"✅ 已解除 {member.mention} 的子区禁言", ephemeral=True)
         else:
             await interaction.response.send_message("该成员未被禁言", ephemeral=True)
-        '''
+        
 
     @self_manage.command(name="自动清理", description="开启或关闭子区的自动清理功能")
     @app_commands.describe(action="选择操作")
