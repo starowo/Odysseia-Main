@@ -276,6 +276,7 @@ class VerifyCommands(commands.Cog):
         try:
             buffer_role_id = self.config.get("buffer_role_id")
             verified_role_id = self.config.get("verified_role_id")
+            upper_buffer_role_id = self.config.get("upper_buffer_role_id")
             
             if not buffer_role_id or not verified_role_id:
                 return
@@ -285,6 +286,7 @@ class VerifyCommands(commands.Cog):
                 
             buffer_role = guild.get_role(int(buffer_role_id))
             verified_role = guild.get_role(int(verified_role_id))
+            upper_buffer_role = guild.get_role(int(upper_buffer_role_id))
             
             if not buffer_role or not verified_role:
                 return
@@ -320,9 +322,13 @@ class VerifyCommands(commands.Cog):
                     if sync_cog:
                         await sync_cog.sync_add_role(guild, member, verified_role, "自动升级：缓冲区5天期满")
                         await sync_cog.sync_remove_role(guild, member, buffer_role, "自动升级：缓冲区5天期满")
+                        if upper_buffer_role is not None and upper_buffer_role not in member.roles:
+                            await sync_cog.sync_add_role(guild, member, upper_buffer_role, "自动升级：缓冲区5天期满")
                     else:
                         await member.add_roles(verified_role, reason="自动升级：缓冲区5天期满")
                         await member.remove_roles(buffer_role, reason="自动升级：缓冲区5天期满")
+                        if upper_buffer_role is not None and upper_buffer_role not in member.roles:
+                            await member.add_roles(upper_buffer_role, reason="自动升级：缓冲区5天期满")
                     
                     if self.logger:
                         self.logger.info(f"自动升级成功: {member} (ID: {member.id}) 在服务器 {guild.name}")
