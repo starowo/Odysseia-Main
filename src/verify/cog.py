@@ -568,26 +568,6 @@ class VerifyCommands(commands.Cog):
                 self.logger.error(f"手动升级检查失败: {e}")
             await interaction.followup.send(f"❌ {error_msg}", ephemeral=True)
 
-    @app_commands.command(name="答题", description="回答验证题目（中文）")
-    @app_commands.describe(
-        ans1="第1题答案", ans2="第2题答案", ans3="第3题答案", ans4="第4题答案", ans5="第5题答案"
-    )
-    @app_commands.rename(ans1="答案1", ans2="答案2", ans3="答案3", ans4="答案4", ans5="答案5")
-    async def answer_zh(self, interaction: discord.Interaction, 
-                        ans1: str, ans2: str, ans3: str, ans4: str, ans5: str):
-        answers = [ans1, ans2, ans3, ans4, ans5]
-        await self._process_answers(interaction, answers, "zh_cn")
-
-    @app_commands.command(name="answer", description="Answer verification questions (English)")
-    @app_commands.describe(
-        answer1="Answer to question 1", answer2="Answer to question 2", 
-        answer3="Answer to question 3", answer4="Answer to question 4", answer5="Answer to question 5"
-    )
-    async def answer_en(self, interaction: discord.Interaction,
-                       answer1: str, answer2: str, answer3: str, answer4: str, answer5: str):
-        answers = [answer1, answer2, answer3, answer4, answer5]
-        await self._process_answers(interaction, answers, "en_us")
-
     async def _process_answers(self, interaction: discord.Interaction, answers: List[str], language: str):
         """处理答题逻辑"""
         guild = interaction.guild
