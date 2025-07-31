@@ -114,6 +114,7 @@ class OdysseiaBot(commands.Bot):
 
         if 'dm_bot_token' in CONFIG and CONFIG['dm_bot_token'] != CONFIG['token']:
             await dm.init_dm_bot(CONFIG['dm_bot_token'])
+
         else:
             dm.dm_bot = self
 
