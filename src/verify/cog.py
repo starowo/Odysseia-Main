@@ -10,6 +10,7 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 
+from src.utils import dm
 from src.utils.confirm_view import confirm_view
 
 
@@ -592,6 +593,7 @@ class VerifyCommands(commands.Cog):
         # 检查是否已有身份组
         buffer_role_id = self.config.get("buffer_role_id")
         verified_role_id = self.config.get("verified_role_id")
+        upper_buffer_role_id = self.config.get("upper_buffer_role_id")
         
         if buffer_role_id and buffer_role_id != "请填入缓冲区身份组ID":
             buffer_role = guild.get_role(int(buffer_role_id))
@@ -624,6 +626,13 @@ class VerifyCommands(commands.Cog):
 
         # 判定结果
         is_success = correct_count == 5
+        
+        # 检查是否曾经通过答题
+        data = self._get_user_data(guild.id, user.id)
+        if data and data.get("last_success") is not None:
+            has_passed = True
+        else:
+            has_passed = False
 
         # 保存记录
         self._save_user_attempt(guild.id, user.id, is_success)
@@ -636,15 +645,30 @@ class VerifyCommands(commands.Cog):
             try:
                 buffer_mode = self.config.get("buffer_mode", True)
                 if buffer_mode and buffer_role_id and buffer_role_id != "请填入缓冲区身份组ID":
-                    role = guild.get_role(int(buffer_role_id))
-                    if role:
-                        # 检查是否启用同步模块
-                        sync_cog = self.bot.get_cog("ServerSyncCommands")
-                        if sync_cog:
-                            await sync_cog.sync_add_role(guild, user, role, "答题验证通过")
-                        else:
-                            await user.add_roles(role, reason="答题验证通过")
-                        success_msg += "\n✅ 已添加缓冲区身份组\n服务器当前处于缓冲准入模式，您可浏览资源区，但无法在服务器内发言\n您将在缓冲区等待5天，之后会自动转移到可正常发言的身份组。\n如果想要提前离开缓冲区，并获取答疑区发言权限，可以前往https://discord.com/channels/1134557553011998840/1400260572070547666 进行进阶答题" if language == "zh_cn" else "\n✅ Buffer role added\nThe server is currently in buffer access mode, you can browse the resource area, but you can only speak in the slow-speed restricted answer channel.\nThe server will transfer buffer status users to the normal speaking identity group at the appropriate time.\nIf you want to leave the buffer zone early, and get the support channel speaking permission, you can go to https://discord.com/channels/1134557553011998840/1400260572070547666 to take the advanced quiz"
+                    if has_passed and upper_buffer_role_id:
+                        upper_buffer_role = guild.get_role(int(upper_buffer_role_id))
+                        if upper_buffer_role:
+                            # 检查是否启用同步模块
+                            sync_cog = self.bot.get_cog("ServerSyncCommands")
+                            if sync_cog:
+                                await sync_cog.sync_add_role(guild, user, upper_buffer_role, "答题验证通过")
+                            else:
+                                await user.add_roles(upper_buffer_role, reason="答题验证通过")
+                            success_msg += "\n✅ 已添加缓冲区身份组\n服务器当前处于缓冲准入模式，您可浏览资源区，但无法在答疑频道外发言\n您将在缓冲区等待3天，之后会自动转移到可正常发言的身份组。" if language == "zh_cn" else "\n✅ Buffer role added\nThe server is currently in buffer access mode, you can browse the resource area, but you can only speak in the slow-speed restricted answer channel.\nThe server will transfer buffer status users to the normal speaking identity group at the appropriate time.\nIf you want to leave the buffer zone early, and get the support channel speaking permission, you can go to https://discord.com/channels/1134557553011998840/1400260572070547666 to take the advanced quiz"
+                            # 对接另一个bot
+                            record_bot = guild.get_member(1397932786400366592)
+                            if record_bot:
+                                await dm.send_dm(guild, record_bot, "{\"pass\": "+user.id+"}")
+                    else:
+                        role = guild.get_role(int(buffer_role_id))
+                        if role:
+                            # 检查是否启用同步模块
+                            sync_cog = self.bot.get_cog("ServerSyncCommands")
+                            if sync_cog:
+                                await sync_cog.sync_add_role(guild, user, role, "答题验证通过")
+                            else:
+                                await user.add_roles(role, reason="答题验证通过")
+                            success_msg += "\n✅ 已添加缓冲区身份组\n服务器当前处于缓冲准入模式，您可浏览资源区，但无法在服务器内发言\n您将在缓冲区等待5天，之后会自动转移到可正常发言的身份组。\n如果想要提前离开缓冲区，并获取答疑区发言权限，可以前往https://discord.com/channels/1134557553011998840/1400260572070547666 进行进阶答题" if language == "zh_cn" else "\n✅ Buffer role added\nThe server is currently in buffer access mode, you can browse the resource area, but you can only speak in the slow-speed restricted answer channel.\nThe server will transfer buffer status users to the normal speaking identity group at the appropriate time.\nIf you want to leave the buffer zone early, and get the support channel speaking permission, you can go to https://discord.com/channels/1134557553011998840/1400260572070547666 to take the advanced quiz"
                 else:
                     role = guild.get_role(int(verified_role_id))
                     if role:
