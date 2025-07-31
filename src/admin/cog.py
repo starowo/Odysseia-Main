@@ -1569,12 +1569,13 @@ class AdminCommands(commands.Cog):
         # 使用服务器特定配置而不是全局配置
         role_id = self.config.get("verified_role_id", 0)
         buffer_role_id = self.config.get("buffer_role_id", 0)
+        upper_buffer_role_id = self.config.get("upper_buffer_role_id", 0)
         whitelist = self.config.get("quiz_punish_whitelist", [])
         
         role = guild.get_role(int(role_id)) if role_id else None
         buffer_role = guild.get_role(int(buffer_role_id)) if buffer_role_id else None
-        
-        if role is None and buffer_role is None:
+        upper_buffer_role = guild.get_role(int(upper_buffer_role_id)) if upper_buffer_role_id else None
+        if role is None and buffer_role is None and upper_buffer_role is None:
             await interaction.followup.send("❌ 未找到已验证/缓冲区身份组", ephemeral=True)
             return
             
@@ -1588,6 +1589,9 @@ class AdminCommands(commands.Cog):
             if buffer_role and buffer_role in member.roles:
                 has_role = True
                 roles_to_remove.append(buffer_role)
+            if upper_buffer_role and upper_buffer_role in member.roles:
+                has_role = True
+                roles_to_remove.append(upper_buffer_role)
                 
             if has_role:
                 for r in member.roles:
@@ -1604,8 +1608,10 @@ class AdminCommands(commands.Cog):
                     await sync_cog.sync_remove_role(interaction.guild, member, role, f"答题处罚 by {interaction.user}")
                     if buffer_role:
                         await sync_cog.sync_remove_role(interaction.guild, member, buffer_role, f"答题处罚 by {interaction.user}")
+                    if upper_buffer_role:
+                        await sync_cog.sync_remove_role(interaction.guild, member, upper_buffer_role, f"答题处罚 by {interaction.user}")
                 else:
-                    await member.remove_roles(role, buffer_role, reason=f"答题处罚 by {interaction.user}")
+                    await member.remove_roles(role, buffer_role, upper_buffer_role, reason=f"答题处罚 by {interaction.user}")
 
                 # 私聊通知
                 try:    
@@ -1615,6 +1621,12 @@ class AdminCommands(commands.Cog):
                     pass
                 except Exception as e:
                     self.logger.error(f"答题处罚私聊通知失败: {e}")
+
+                # 对接另一个bot
+                # 暂时硬编码，后续需要修改
+                record_bot = member.guild.get_member(1397932786400366592)
+                if record_bot:
+                    await dm.send_dm(member.guild, record_bot, "{\"punish\": "+member.id+"}")
                     
                 await interaction.followup.send(f"✅ 已移除 {member.display_name} 的身份组并要求重新阅读规则", ephemeral=True)
                 
