@@ -658,7 +658,7 @@ class VerifyCommands(commands.Cog):
                             # 对接另一个bot
                             record_bot = guild.get_member(1397932786400366592)
                             if record_bot:
-                                await dm.send_dm(guild, record_bot, "{\"pass\": "+user.id+"}")
+                                await dm.send_dm(guild, record_bot, "{\"pass\": "+str(user.id)+"}")
                     else:
                         role = guild.get_role(int(buffer_role_id))
                         if role:

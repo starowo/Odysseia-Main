@@ -1629,7 +1629,7 @@ class AdminCommands(commands.Cog):
                 # 暂时硬编码，后续需要修改
                 record_bot = member.guild.get_member(1397932786400366592)
                 if record_bot:
-                    await dm.send_dm(member.guild, record_bot, "{\"punish\": "+member.id+"}")
+                    await dm.send_dm(member.guild, record_bot, "{\"punish\": "+str(member.id)+"}")
                     
                 await interaction.followup.send(f"✅ 已移除 {member.display_name} 的身份组并要求重新阅读规则", ephemeral=True)
                 
