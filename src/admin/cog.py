@@ -528,6 +528,9 @@ class AdminCommands(commands.Cog):
         affected = 0
 
         for member in members:
+            # 如果已有目标身份组，则跳过
+            if target_role in member.roles:
+                continue
             try:
                 # 检查是否启用同步模块
                 sync_cog = self.bot.get_cog("ServerSyncCommands")
@@ -542,7 +545,7 @@ class AdminCommands(commands.Cog):
                 affected += 1
                 if affected % 10 == 0:
                     await interaction.edit_original_response(content=f"已转移 {affected} 名成员")
-                if affected >= limit:
+                if affected >= limit and limit > 0:
                     break
             except discord.Forbidden:
                 continue
