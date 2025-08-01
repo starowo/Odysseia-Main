@@ -295,25 +295,7 @@ class VerifyCommands(commands.Cog):
             # 获取拥有缓冲区身份组的成员
             eligible_members = []
             current_time = datetime.datetime.now(datetime.timezone.utc)
-            upgrade_threshold = datetime.timedelta(days=5)  # 5天后自动升级
-            
-            for member in buffer_role.members:
-                if verified_role in member.roles:
-                    continue  # 已经有verified角色，跳过
-                    
-                # 检查用户的最后成功答题时间
-                user_data = self._get_user_data(guild.id, member.id)
-                last_success = user_data.get("last_success")
-                
-                if last_success:
-                    try:
-                        success_time = datetime.datetime.fromisoformat(last_success)
-                        if current_time - success_time >= upgrade_threshold:
-                            eligible_members.append((member, success_time))
-                    except Exception as e:
-                        if self.logger:
-                            self.logger.warning(f"解析用户 {member.id} 成功时间失败: {e}")
-                        continue
+
 
             upgrade_threshold = datetime.timedelta(days=3)
             for member in upper_buffer_role.members:
@@ -333,7 +315,25 @@ class VerifyCommands(commands.Cog):
                         if self.logger:
                             self.logger.warning(f"解析用户 {member.id} 成功时间失败: {e}")
                         continue
+            upgrade_threshold = datetime.timedelta(days=5)  # 5天后自动升级
             
+            for member in buffer_role.members:
+                if verified_role in member.roles or upper_buffer_role in member.roles:
+                    continue  # 已经有verified角色，跳过
+                    
+                # 检查用户的最后成功答题时间
+                user_data = self._get_user_data(guild.id, member.id)
+                last_success = user_data.get("last_success")
+                
+                if last_success:
+                    try:
+                        success_time = datetime.datetime.fromisoformat(last_success)
+                        if current_time - success_time >= upgrade_threshold:
+                            eligible_members.append((member, success_time))
+                    except Exception as e:
+                        if self.logger:
+                            self.logger.warning(f"解析用户 {member.id} 成功时间失败: {e}")
+                        continue
             # 升级符合条件的成员
             for member, success_time in eligible_members:
                 try:
@@ -343,12 +343,12 @@ class VerifyCommands(commands.Cog):
                         await sync_cog.sync_add_role(guild, member, verified_role, "自动升级：缓冲区期满")
                         await sync_cog.sync_remove_role(guild, member, buffer_role, "自动升级：缓冲区期满")
                         if upper_buffer_role is not None and upper_buffer_role not in member.roles:
-                            await sync_cog.sync_add_role(guild, member, upper_buffer_role, "自动升级：缓冲区期满")
+                            await sync_cog.sync_remove_role(guild, member, upper_buffer_role, "自动升级：缓冲区期满")
                     else:
                         await member.add_roles(verified_role, reason="自动升级：缓冲区期满")
                         await member.remove_roles(buffer_role, reason="自动升级：缓冲区期满")
                         if upper_buffer_role is not None and upper_buffer_role not in member.roles:
-                            await member.add_roles(upper_buffer_role, reason="自动升级：缓冲区期满")
+                            await member.remove_roles(upper_buffer_role, reason="自动升级：缓冲区期满")
                     
                     if self.logger:
                         self.logger.info(f"自动升级成功: {member} (ID: {member.id}) 在服务器 {guild.name}")
