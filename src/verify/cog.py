@@ -314,6 +314,25 @@ class VerifyCommands(commands.Cog):
                         if self.logger:
                             self.logger.warning(f"解析用户 {member.id} 成功时间失败: {e}")
                         continue
+
+            upgrade_threshold = datetime.timedelta(days=3)
+            for member in upper_buffer_role.members:
+                if verified_role in member.roles:
+                    continue  # 已经有verified角色，跳过
+
+                # 检查用户的最后成功答题时间
+                user_data = self._get_user_data(guild.id, member.id)
+                last_success = user_data.get("last_success")
+                
+                if last_success:
+                    try:
+                        success_time = datetime.datetime.fromisoformat(last_success)
+                        if current_time - success_time >= upgrade_threshold:
+                            eligible_members.append((member, success_time))
+                    except Exception as e:
+                        if self.logger:
+                            self.logger.warning(f"解析用户 {member.id} 成功时间失败: {e}")
+                        continue
             
             # 升级符合条件的成员
             for member, success_time in eligible_members:
@@ -321,15 +340,15 @@ class VerifyCommands(commands.Cog):
                     # 检查是否启用同步模块
                     sync_cog = self.bot.get_cog("ServerSyncCommands")
                     if sync_cog:
-                        await sync_cog.sync_add_role(guild, member, verified_role, "自动升级：缓冲区5天期满")
-                        await sync_cog.sync_remove_role(guild, member, buffer_role, "自动升级：缓冲区5天期满")
+                        await sync_cog.sync_add_role(guild, member, verified_role, "自动升级：缓冲区期满")
+                        await sync_cog.sync_remove_role(guild, member, buffer_role, "自动升级：缓冲区期满")
                         if upper_buffer_role is not None and upper_buffer_role not in member.roles:
-                            await sync_cog.sync_add_role(guild, member, upper_buffer_role, "自动升级：缓冲区5天期满")
+                            await sync_cog.sync_add_role(guild, member, upper_buffer_role, "自动升级：缓冲区期满")
                     else:
-                        await member.add_roles(verified_role, reason="自动升级：缓冲区5天期满")
-                        await member.remove_roles(buffer_role, reason="自动升级：缓冲区5天期满")
+                        await member.add_roles(verified_role, reason="自动升级：缓冲区期满")
+                        await member.remove_roles(buffer_role, reason="自动升级：缓冲区期满")
                         if upper_buffer_role is not None and upper_buffer_role not in member.roles:
-                            await member.add_roles(upper_buffer_role, reason="自动升级：缓冲区5天期满")
+                            await member.add_roles(upper_buffer_role, reason="自动升级：缓冲区期满")
                     
                     if self.logger:
                         self.logger.info(f"自动升级成功: {member} (ID: {member.id}) 在服务器 {guild.name}")
@@ -655,10 +674,6 @@ class VerifyCommands(commands.Cog):
                             else:
                                 await user.add_roles(upper_buffer_role, reason="答题验证通过")
                             success_msg += "\n✅ 已添加缓冲区身份组\n服务器当前处于缓冲准入模式，您可浏览资源区，但无法在答疑频道外发言\n您将在缓冲区等待3天，之后会自动转移到可正常发言的身份组。" if language == "zh_cn" else "\n✅ Buffer role added\nThe server is currently in buffer access mode, you can browse the resource area, but you can only speak in the slow-speed restricted answer channel.\nThe server will transfer buffer status users to the normal speaking identity group at the appropriate time.\nIf you want to leave the buffer zone early, and get the support channel speaking permission, you can go to https://discord.com/channels/1134557553011998840/1400260572070547666 to take the advanced quiz"
-                            # 对接另一个bot
-                            record_bot = guild.get_member(1397932786400366592)
-                            if record_bot:
-                                await dm.send_dm(guild, record_bot, "{\"pass\": "+str(user.id)+"}")
                     else:
                         role = guild.get_role(int(buffer_role_id))
                         if role:
