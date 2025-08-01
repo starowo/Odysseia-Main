@@ -1624,12 +1624,6 @@ class AdminCommands(commands.Cog):
                     pass
                 except Exception as e:
                     self.logger.error(f"答题处罚私聊通知失败: {e}")
-
-                # 对接另一个bot
-                # 暂时硬编码，后续需要修改
-                record_bot = member.guild.get_member(1397932786400366592)
-                if record_bot:
-                    await dm.send_dm(member.guild, record_bot, "{\"punish\": "+str(member.id)+"}")
                     
                 await interaction.followup.send(f"✅ 已移除 {member.display_name} 的身份组并要求重新阅读规则", ephemeral=True)
                 
