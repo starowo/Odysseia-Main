@@ -1564,7 +1564,7 @@ class AdminCommands(commands.Cog):
     @app_commands.command(name="答题处罚", description="移除身份组送往答题区")
     @app_commands.describe(member="要处罚的成员", reason="原因（可选）")
     @app_commands.rename(member="成员", reason="原因")
-    async def quiz_punish(self, interaction, member: "discord.Member", reason: str = None):
+    async def quiz_punish(self, interaction: discord.Interaction, member: "discord.Member", reason: str = None):
             
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
@@ -1629,6 +1629,10 @@ class AdminCommands(commands.Cog):
                 
                 # 当前频道公示
                 await interaction.channel.send(embed=discord.Embed(title="🔴 答题处罚", description=f"{member.mention} 因 {reason} 被 {interaction.user.mention} 移送答题区。请注意遵守社区规则。"))
+
+                # bot对接
+                # 暂时硬编码，后续改成
+                await interaction.guild.get_thread(1401035278533136386).send(content='{"punish": '+str(member.id)+'}')
             else:
                 await interaction.followup.send("成员不在已验证/缓冲区身份组", ephemeral=True)
         except discord.Forbidden:
