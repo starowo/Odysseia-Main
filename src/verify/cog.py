@@ -340,16 +340,16 @@ class VerifyCommands(commands.Cog):
                     if sync_cog:
                         if verified_role is not None and verified_role not in member.roles:
                             await sync_cog.sync_add_role(guild, member, verified_role, "自动升级：缓冲区期满")
-                        if buffer_role is not None and buffer_role not in member.roles:
+                        if buffer_role is not None and buffer_role in member.roles:
                             await sync_cog.sync_remove_role(guild, member, buffer_role, "自动升级：缓冲区期满")
-                        if upper_buffer_role is not None and upper_buffer_role not in member.roles:
+                        if upper_buffer_role is not None and upper_buffer_role in member.roles:
                             await sync_cog.sync_remove_role(guild, member, upper_buffer_role, "自动升级：缓冲区期满")
                     else:
                         if verified_role is not None and verified_role not in member.roles:
                             await member.add_roles(verified_role, reason="自动升级：缓冲区期满")
-                        if buffer_role is not None and buffer_role not in member.roles:
+                        if buffer_role is not None and buffer_role in member.roles:
                             await member.remove_roles(buffer_role, reason="自动升级：缓冲区期满")
-                        if upper_buffer_role is not None and upper_buffer_role not in member.roles:
+                        if upper_buffer_role is not None and upper_buffer_role in member.roles:
                             await member.remove_roles(upper_buffer_role, reason="自动升级：缓冲区期满")
                     
                     if self.logger:
@@ -810,7 +810,7 @@ class VerifyCommands(commands.Cog):
                             else:
                                 await user.add_roles(upper_buffer_role, reason="答题验证通过")
                             success_msg += "\n✅ 已添加缓冲区身份组\n服务器当前处于缓冲准入模式，您可浏览资源区，但无法在答疑频道外发言\n您将在缓冲区等待3天，之后会自动转移到可正常发言的身份组。" if language == "zh_cn" else "\n✅ Buffer role added\nThe server is currently in buffer access mode, you can browse the resource area, but you can only speak in the slow-speed restricted answer channel.\nThe server will transfer buffer status users to the normal speaking identity group at the appropriate time.\nIf you want to leave the buffer zone early, and get the support channel speaking permission, you can go to https://discord.com/channels/1134557553011998840/1400260572070547666 to take the advanced quiz"
-                            
+
                     else:
                         role = guild.get_role(int(buffer_role_id))
                         if role:
