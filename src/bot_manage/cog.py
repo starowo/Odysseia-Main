@@ -56,9 +56,7 @@ class BotManageCommands(commands.Cog):
         """列出所有可用模块及其状态"""
         embed = discord.Embed(title="可用模块", color=discord.Color.blue())
         
-        # 导入cog_manager来获取实际的cog实例
-        from main import cog_manager
-        
+        cog_manager = self.bot.cog_manager
         for cog_name, cog_config in self.config.get('cogs', {}).items():
             # 检查模块是否在cog_manager中存在
             if cog_name in cog_manager.cog_map:
@@ -83,7 +81,7 @@ class BotManageCommands(commands.Cog):
     @is_bot_manager()
     async def enable_module(self, interaction: discord.Interaction, module_name: str):
         """启用指定模块"""
-        from main import cog_manager
+        cog_manager = self.bot.cog_manager
         
         # 检查模块是否存在于配置中
         if module_name not in self.config.get('cogs', {}):
@@ -115,7 +113,7 @@ class BotManageCommands(commands.Cog):
     @is_bot_manager()
     async def disable_module(self, interaction: discord.Interaction, module_name: str):
         """禁用指定模块"""
-        from main import cog_manager
+        cog_manager = self.bot.cog_manager
         
         # 检查模块是否存在于配置中
         if module_name not in self.config.get('cogs', {}):
@@ -143,11 +141,11 @@ class BotManageCommands(commands.Cog):
         
         await interaction.response.send_message(message, ephemeral=True)
 
-    @command_bot_manage.command(name="重载模块", description="重载指定模块")
+    @command_bot_manage.command(name="重载模块", description="重载指定模块（不更新代码）")
     @is_bot_manager()
     async def reload_module(self, interaction: discord.Interaction, module_name: str):
-        """重载指定模块"""
-        from main import cog_manager
+        """重载指定模块（简单重载，不更新代码）"""
+        cog_manager = self.bot.cog_manager
         
         # 检查模块是否存在于配置中
         if module_name not in self.config.get('cogs', {}):
@@ -161,16 +159,53 @@ class BotManageCommands(commands.Cog):
         
         cog = cog_manager.cog_map[module_name]
         
+        cog_name = cog_manager.cog_class_names[module_name]
         # 如果模块未加载，则先加载
-        if module_name not in self.bot.cogs:
+        if cog_name not in self.bot.cogs:
             await interaction.response.send_message(f"⚠️ 模块 `{module_name}` 未启用，正在尝试加载...", ephemeral=True)
             success, message = await cog_manager.load_cog(cog)
-            await interaction.response.send_message(message, ephemeral=True)
+            await interaction.followup.send(message, ephemeral=True)
             return
         
-        # 重载模块
+        # 简单重载模块（卸载后重新加载同一实例）
+        try:
+            await cog_manager.unload_cog(cog)
+            success, message = await cog_manager.load_cog(cog)
+            await interaction.response.send_message(f"🔄 {message}", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ 重载模块失败: {e}", ephemeral=True)
+
+    @command_bot_manage.command(name="热重载模块", description="热重载指定模块（更新最新代码）")
+    @is_bot_manager()
+    async def hot_reload_module(self, interaction: discord.Interaction, module_name: str):
+        """热重载指定模块（重新导入Python文件，加载最新代码）"""
+        cog_manager = self.bot.cog_manager
+        
+        # 检查模块是否存在于配置中
+        if module_name not in self.config.get('cogs', {}):
+            await interaction.response.send_message(f"❌ 模块 `{module_name}` 不存在于配置中", ephemeral=True)
+            return
+        
+        # 检查模块是否在cog_map中
+        if module_name not in cog_manager.cog_map:
+            await interaction.response.send_message(f"❌ 模块 `{module_name}` 不在cog_map中", ephemeral=True)
+            return
+        
+        # 先发送正在处理的消息
+        await interaction.response.defer(ephemeral=True)
+        
+        cog = cog_manager.cog_map[module_name]
+        cog_name = cog_manager.cog_class_names[module_name] # 获取模块名
+
+        # 如果模块未加载，则先加载
+        if cog_name not in self.bot.cogs:
+            success, message = await cog_manager.load_cog(cog)
+            await interaction.followup.send(f"⚠️ 模块 `{cog_name}` 未启用，已尝试加载: {message}", ephemeral=True)
+            return
+        
+        # 热重载模块
         success, message = await cog_manager.reload_cog(cog)
-        await interaction.response.send_message(message, ephemeral=True)
+        await interaction.followup.send(message, ephemeral=True)
 
     @command_bot_manage.command(name="ping", description="测试机器人响应时间")
     async def ping_slash(self, interaction: discord.Interaction):

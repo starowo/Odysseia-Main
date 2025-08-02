@@ -74,6 +74,7 @@ if CONFIG.get('logging', {}).get('enabled', False):
 
 class OdysseiaBot(commands.Bot):
     logger: logging.Logger
+    cog_manager: CogManager
 
     def __init__(self, **kwargs):
         intents = discord.Intents.default()
@@ -146,6 +147,7 @@ else:
 bot.logger = logger
 
 cog_manager = CogManager(bot, CONFIG)
+
 
 @bot.event
 async def on_command_error(ctx, error):
