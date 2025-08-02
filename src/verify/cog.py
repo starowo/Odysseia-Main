@@ -299,8 +299,6 @@ class VerifyCommands(commands.Cog):
 
             upgrade_threshold = datetime.timedelta(days=3)
             for member in upper_buffer_role.members:
-                if verified_role in member.roles:
-                    continue  # 已经有verified角色，跳过
 
                 # 检查用户的最后成功答题时间
                 user_data = self._get_user_data(guild.id, member.id)
@@ -318,7 +316,7 @@ class VerifyCommands(commands.Cog):
             upgrade_threshold = datetime.timedelta(days=5)  # 5天后自动升级
             
             for member in buffer_role.members:
-                if verified_role in member.roles or upper_buffer_role in member.roles:
+                if upper_buffer_role in member.roles:
                     continue  # 已经有verified角色，跳过
                     
                 # 检查用户的最后成功答题时间
@@ -340,13 +338,17 @@ class VerifyCommands(commands.Cog):
                     # 检查是否启用同步模块
                     sync_cog = self.bot.get_cog("ServerSyncCommands")
                     if sync_cog:
-                        await sync_cog.sync_add_role(guild, member, verified_role, "自动升级：缓冲区期满")
-                        await sync_cog.sync_remove_role(guild, member, buffer_role, "自动升级：缓冲区期满")
+                        if verified_role is not None and verified_role not in member.roles:
+                            await sync_cog.sync_add_role(guild, member, verified_role, "自动升级：缓冲区期满")
+                        if buffer_role is not None and buffer_role not in member.roles:
+                            await sync_cog.sync_remove_role(guild, member, buffer_role, "自动升级：缓冲区期满")
                         if upper_buffer_role is not None and upper_buffer_role not in member.roles:
                             await sync_cog.sync_remove_role(guild, member, upper_buffer_role, "自动升级：缓冲区期满")
                     else:
-                        await member.add_roles(verified_role, reason="自动升级：缓冲区期满")
-                        await member.remove_roles(buffer_role, reason="自动升级：缓冲区期满")
+                        if verified_role is not None and verified_role not in member.roles:
+                            await member.add_roles(verified_role, reason="自动升级：缓冲区期满")
+                        if buffer_role is not None and buffer_role not in member.roles:
+                            await member.remove_roles(buffer_role, reason="自动升级：缓冲区期满")
                         if upper_buffer_role is not None and upper_buffer_role not in member.roles:
                             await member.remove_roles(upper_buffer_role, reason="自动升级：缓冲区期满")
                     
