@@ -872,7 +872,6 @@ class VerifyCommands(commands.Cog):
     async def start_quiz(self, interaction: discord.Interaction, language: str):
         """开始答题流程"""
         
-        self.logger.info(f"开sadsad始答题: {interaction.user.id}")
         guild = interaction.guild
         user = interaction.user
 
