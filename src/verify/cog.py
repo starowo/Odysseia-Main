@@ -313,6 +313,9 @@ class VerifyCommands(commands.Cog):
                         if self.logger:
                             self.logger.warning(f"解析用户 {member.id} 成功时间失败: {e}")
                         continue
+                else:
+                    # 在此bot上线前就通过答题的成员，直接升级
+                    eligible_members.append((member, current_time))
             upgrade_threshold = datetime.timedelta(days=5)  # 5天后自动升级
             
             for member in buffer_role.members:
@@ -332,6 +335,9 @@ class VerifyCommands(commands.Cog):
                         if self.logger:
                             self.logger.warning(f"解析用户 {member.id} 成功时间失败: {e}")
                         continue
+                else:
+                    # 在此bot上线前就通过答题的成员，直接升级
+                    eligible_members.append((member, current_time))
             # 升级符合条件的成员
             for member, success_time in eligible_members:
                 try:
