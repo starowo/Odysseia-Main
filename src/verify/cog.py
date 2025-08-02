@@ -320,7 +320,7 @@ class VerifyCommands(commands.Cog):
             
             for member in buffer_role.members:
                 if upper_buffer_role in member.roles:
-                    continue  # 已经有verified角色，跳过
+                    continue # 刚才已经检查过，跳过
                     
                 # 检查用户的最后成功答题时间
                 user_data = self._get_user_data(guild.id, member.id)
@@ -401,9 +401,13 @@ class VerifyCommands(commands.Cog):
         # 注册答题视图（在重启后重新加载会话）
         # 注意：重启后会话会丢失，这是预期的行为
         # 启动自动升级任务
-        asyncio.create_task(self._auto_upgrade_task())
+        self.auto_upgrade_task = asyncio.create_task(self._auto_upgrade_task())
         if self.logger:
             self.logger.info("自动升级任务已启动")
+
+    async def on_disable(self):
+        self.active_quiz_sessions.clear()
+        self.auto_upgrade_task.cancel()
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):

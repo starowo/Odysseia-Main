@@ -91,7 +91,8 @@ class CogManager:
     async def unload_cog(self, cog):
         """卸载指定的Cog"""
         try:
-
+            if hasattr(cog, 'on_disable'):
+                await cog.on_disable()
             await self.bot.remove_cog(cog.qualified_name)
             
             self.loaded_cogs.discard(cog)
