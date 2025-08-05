@@ -2,6 +2,7 @@ import asyncio
 import json
 import pathlib
 import discord
+from discord.abc import Snowflake
 from discord.ext import commands
 from discord import app_commands
 from src.utils import dm
@@ -830,7 +831,7 @@ class ThreadSelfManage(commands.Cog):
             try:
                 channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
                 message = await channel.fetch_message(message_id)
-                await message.remove_reaction(payload.emoji, user_id)
+                await message.remove_reaction(payload.emoji, Snowflake(user_id))
             except Exception as e:
                 self.logger.error(f"移除反应失败: {e}")
 
