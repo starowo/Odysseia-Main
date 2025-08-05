@@ -818,7 +818,22 @@ class ThreadSelfManage(commands.Cog):
                 except:
                     pass
             return
-            
+
+    # 禁止被禁言的用户添加反应        
+    @commands.Cog.listener()
+    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
+        channel_id = payload.channel_id
+        guild_id = payload.guild_id
+        user_id = payload.user_id
+        if self._is_thread_muted(guild_id, channel_id, user_id):
+            message_id = payload.message_id
+            try:
+                channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
+                message = await channel.fetch_message(message_id)
+                await message.remove_reaction(payload.emoji, user_id)
+            except:
+                pass
+
 
     @self_manage.command(name="禁言", description="在本子区禁言成员")
     @app_commands.describe(member="要禁言的成员", duration="时长(如10m,1h,1d，可选)", reason="原因(可选)")
@@ -856,6 +871,18 @@ class ThreadSelfManage(commands.Cog):
             muted_until = until.isoformat()
         else:
             muted_until = -1 # 永久禁言
+        # 子区内公示
+        embed = discord.Embed(
+            title="🔒 子区禁言",
+            description=f"👤 {member.mention} 已被禁言",
+            color=discord.Color.red(),
+            timestamp=datetime.now()
+        )
+        embed.add_field(name="原因", value=reason if reason else "无", inline=True)
+        embed.add_field(name="时长", value=duration if duration else "永久", inline=True)
+        embed.add_field(name="执行者", value=interaction.user.mention, inline=True)
+        await channel.send(embed=embed)
+
         rec = self._get_mute_record(channel.guild.id, channel.id, member.id)
         rec['muted_until'] = muted_until
         self._save_mute_record(channel.guild.id, channel.id, member.id, rec)
@@ -885,6 +912,14 @@ class ThreadSelfManage(commands.Cog):
             key = (channel.guild.id, channel.id, member.id)
             self._mute_cache.pop(key, None)
             self._save_mute_record(channel.guild.id, channel.id, member.id, None)
+            # 子区内公示
+            embed = discord.Embed(
+                title="🔒 子区禁言",
+                description=f"👤 {member.mention} 已被解除禁言",
+                color=discord.Color.green(),
+                timestamp=datetime.now()
+            )
+            await channel.send(embed=embed)
             await interaction.response.send_message(f"✅ 已解除 {member.mention} 的子区禁言", ephemeral=True)
         else:
             await interaction.response.send_message("该成员未被禁言", ephemeral=True)
