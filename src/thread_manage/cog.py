@@ -831,7 +831,8 @@ class ThreadSelfManage(commands.Cog):
             try:
                 channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
                 message = await channel.fetch_message(message_id)
-                await message.remove_reaction(payload.emoji, Snowflake(user_id))
+                user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
+                await message.remove_reaction(payload.emoji, user)
             except Exception as e:
                 self.logger.error(f"移除反应失败: {e}")
 
