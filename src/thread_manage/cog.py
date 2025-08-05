@@ -831,8 +831,8 @@ class ThreadSelfManage(commands.Cog):
                 channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
                 message = await channel.fetch_message(message_id)
                 await message.remove_reaction(payload.emoji, user_id)
-            except:
-                pass
+            except Exception as e:
+                self.logger.error(f"移除反应失败: {e}")
 
 
     @self_manage.command(name="禁言", description="在本子区禁言成员")
