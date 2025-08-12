@@ -312,14 +312,46 @@ class ThreadSelfManage(commands.Cog):
 
         # 如果反应为空，则删除消息的所有反应
         if not reaction:
+            # 获取反应数量，若太多则二次确认
+            reaction_count = 0
+            for single_reaction in message.reactions:
+                reaction_count += single_reaction.count
+            if reaction_count > 20:
+                # 二次确认
+                confirmed = await confirm_view(
+                    interaction,
+                    title="删除消息反应",
+                    description=f"确定要删除消息的 {reaction_count} 个反应吗？",
+                    colour=discord.Colour.red(),
+                )
+                if not confirmed:
+                    return
+
             await message.clear_reactions()
             await interaction.edit_original_response(content="已删除消息的所有反应")
             return
         
         # 删除指定反应
         try:
-            await message.clear_reaction(reaction)
+            # 获取反应对象
+            reaction_obj = discord.utils.get(message.reactions, emoji=reaction)
+            # 获取反应数量，若太多则二次确认
+            reaction_count = reaction_obj.count
+            if reaction_count > 20:
+                # 二次确认
+                confirmed = await confirm_view(
+                    interaction,
+                    title="删除消息反应",
+                    description=f"确定要删除消息的 {reaction_count} 个反应吗？",
+                    colour=discord.Colour.red(),
+                )
+                if not confirmed:
+                    return
+
+            await message.clear_reaction(reaction_obj)
             await interaction.edit_original_response(content=f"已删除消息的 {reaction} 反应")
+            return
+
         except discord.HTTPException:
             await interaction.edit_original_response(content="删除反应失败，请确认反应是否存在")
 
