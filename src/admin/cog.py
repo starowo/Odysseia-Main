@@ -1758,6 +1758,7 @@ class AdminCommands(commands.Cog):
         })
         with open(f"data/punish/quiz/{member.id}.json", "w") as f:
             json.dump(punish_record, f)
+        return punish_record
 
     async def _get_quiz_punish(self, member: discord.Member):
         """从data/punish/quiz/id.json获取处罚记录"""
@@ -1831,7 +1832,7 @@ class AdminCommands(commands.Cog):
                                         reference = reason_message.reference
                                         if reference:
                                             try:
-                                                reason_message_channel = await self.bot.fetch_channel(reference.channel_id)
+                                                reason_message_channel = await self.bot.get_channel(reference.channel_id)
                                                 reason_message = await reason_message_channel.fetch_message(reference.message_id)
                                             except Exception as e:
                                                 continue
@@ -1878,7 +1879,7 @@ class AdminCommands(commands.Cog):
                 except Exception as e:
                     embed = discord.Embed(title="答题处罚记录初始化", description="初始化失败")
                     embed.add_field(name="错误信息", value=f"{e}")
-                    await record_message.edit(embed=embed)
+                    await record_channel.send(embed=embed)
                     break
             embed = discord.Embed(title="答题处罚记录初始化", description="初始化完成")
             embed.add_field(name="已回溯消息", value=f"{fetched_count}")
@@ -1955,7 +1956,7 @@ class AdminCommands(commands.Cog):
                 
                 # 当前频道公示
                 embed=discord.Embed(title="🔴 答题处罚", description=f"{member.mention} 因 {reason} 被 {interaction.user.mention} 移送答题区。请注意遵守社区规则。")
-                punish_record = self._save_quiz_punish(member, reason, interaction.user.id)
+                punish_record = await self._save_quiz_punish(member, reason, interaction.user.id)
                 if punish_record:
                     newline = '\n'
                     punish_list_text = newline.join([f'{p["punish_time"]} {p["reason"]}' for p in punish_record['punish_list']])
