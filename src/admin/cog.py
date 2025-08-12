@@ -1831,7 +1831,6 @@ class AdminCommands(commands.Cog):
                                         if reason_message.embeds:
                                             reason = extract_reason(reason_message.embeds[0].description)
                                             break
-                                        break
                                     else:
                                         continue
                                 else:
@@ -1855,16 +1854,21 @@ class AdminCommands(commands.Cog):
                             })
                             _save_record(id, record)
                             record_count += 1
-                    embed.description = f"已回溯消息: {fetched_count}\n已记录处罚: {record_count}"
+                    embed = discord.Embed(title="答题处罚记录初始化", description="正在回溯记录所有手动记录的处罚...")
+                    embed.add_field(name="已回溯消息", value=f"{fetched_count}")
+                    embed.add_field(name="已记录处罚", value=f"{record_count}")
                     await message.edit(embed=embed)
                     last_message = fetched[-1]
                     last_fetched = fetched
                 
-                except discord.HTTPException as e:
-                    embed.description = f"初始化失败: {e}"
+                except Exception as e:
+                    embed = discord.Embed(title="答题处罚记录初始化", description="初始化失败")
+                    embed.add_field(name="错误信息", value=f"{e}")
                     await message.edit(embed=embed)
                     break
-            embed.description = f"初始化完成，共回溯消息: {fetched_count}\n已记录处罚: {record_count}"
+            embed = discord.Embed(title="答题处罚记录初始化", description="初始化完成")
+            embed.add_field(name="已回溯消息", value=f"{fetched_count}")
+            embed.add_field(name="已记录处罚", value=f"{record_count}")
             await message.edit(embed=embed)
 
     # ---- 答题处罚 ----
