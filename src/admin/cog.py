@@ -551,6 +551,44 @@ class AdminCommands(commands.Cog):
                 continue
         await interaction.edit_original_response(content=f"✅ 已对 {affected} 名成员完成身份组转移")
 
+    @admin.command(name="发送私聊", description="发送私聊")
+    @app_commands.describe(
+        member="要发送私聊的成员",
+        message="要发送的消息",
+        img="附图（可选）"
+    )
+    @app_commands.rename(member="成员", message="消息", img="附图")
+    @is_admin()
+    @guild_only()
+    async def send_private_message(
+        self,
+        interaction,  # type: discord.Interaction
+        member: "discord.Member",
+        message: str,
+        img: discord.Attachment = None,
+    ):
+        guild = interaction.guild
+        member = interaction.guild.get_member(member.id)
+        if not member:
+            await interaction.response.send_message("❌ 成员不存在", ephemeral=True)    
+            return
+        try:
+            embed = discord.Embed(
+                title="来自管理组的私聊消息",
+                description=message,
+                color=discord.Color.blue()
+            )
+            if img:
+                embed.set_image(url=img.url)
+            await dm.send_dm(member, embed=embed)
+            await interaction.response.send_message("✅ 私聊发送成功", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.response.send_message("❌ 无权限对该成员发送私聊", ephemeral=True)
+            return
+        except Exception as e:
+            await interaction.response.send_message(f"❌ 发送私聊失败: {e}", ephemeral=True)
+            return
+
     # ---- 禁言 ----
     @admin.command(name="禁言", description="将成员禁言（最长28天）并公示")
     @app_commands.describe(
