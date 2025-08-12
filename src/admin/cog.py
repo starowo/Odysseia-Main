@@ -492,6 +492,7 @@ class AdminCommands(commands.Cog):
         # 临时保存备份文本
         with open(".backup.txt", "w") as f:
             f.write(backup_text)
+            f.close()
         backup_file = discord.File(".backup.txt")
 
         moderation_log_channel_id = self.config.get("moderation_log_channel_id", 0)
@@ -1817,4 +1818,26 @@ class AdminCommands(commands.Cog):
                 await interaction.followup.send("成员不在已验证/缓冲区身份组", ephemeral=True)
         except discord.Forbidden:
             await interaction.followup.send("❌ 无权限移除身份组", ephemeral=True)
-            
+
+    # ---- 发送公益站地址 ----
+    @app_commands.command(name="发送公益站地址", description="发送公益站地址")
+    @app_commands.describe(
+        member="要发送的成员",
+    )
+    @app_commands.rename(member="成员")
+    async def send_charity_site_address(self, interaction: discord.Interaction, member: "discord.Member"):
+        site = self.config.get("charity_site_address", "")
+        if not site:
+            await interaction.followup.send("❌ 未配置公益站地址", ephemeral=True)
+            return
+
+        preset_message = f"# 公益站审核通知\n✅ 恭喜你通过类脑DeepThink公益站审核\n站点地址：{site}\n请勿在任何地方传播此站点！"
+        await dm.send_dm(interaction.guild, member, message=preset_message)
+
+        # 记录日志
+        moderation_log_channel_id = self.config.get("moderation_log_channel_id", 0)
+        moderation_log_channel = interaction.guild.get_channel_or_thread(int(moderation_log_channel_id))
+        if moderation_log_channel:
+            await moderation_log_channel.send(embed=discord.Embed(title="🔴 公益站地址", description=f"审核员 {interaction.user.mention} 发送了公益站地址到 {member.mention}。"))
+
+        await interaction.followup.send(f"✅ 已发送公益站地址到 {member.mention}", ephemeral=True)
