@@ -491,7 +491,7 @@ class AdminCommands(commands.Cog):
 
         moderation_log_channel_id = self.config.get("moderation_log_channel_id", 0)
         if moderation_log_channel_id:
-            await interaction.guild.get(int(moderation_log_channel_id)).send(
+            await interaction.guild.get_channel(int(moderation_log_channel_id)).send(
                 embed=discord.Embed(title="🔴 批量删除消息", description=f"管理员 {interaction.user.mention} 在 {channel.mention} 批量删除了 {deleted} 条消息。"),
                 files=[backup_file]
             )
