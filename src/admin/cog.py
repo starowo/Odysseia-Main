@@ -1948,9 +1948,8 @@ class AdminCommands(commands.Cog):
                     await member.remove_roles(role, buffer_role, upper_buffer_role, reason=f"答题处罚 by {interaction.user}")
 
                 # 私聊通知
-                try:    
-                    # await member.send(embed=discord.Embed(title="🔴 答题处罚", description=f"您因 {reason} 被移送答题区。请重新阅读规则并遵守。"))
-                    await dm.send_dm(member.guild, member, embed=discord.Embed(title="🔴 答题处罚", description=f"您因 {reason} 被移送答题区。请重新阅读规则并遵守。"))
+                try:
+                    await dm.send_dm(member.guild, member, embed=discord.Embed(title="🔴 答题处罚", description=f"您因 {reason} 被要求重新答题。请重新阅读规则并注意遵守。"))
                 except discord.Forbidden:
                     pass
                 except Exception as e:
@@ -1959,7 +1958,7 @@ class AdminCommands(commands.Cog):
                 await interaction.followup.send(f"✅ 已移除 {member.display_name} 的身份组并要求重新阅读规则", ephemeral=True)
                 
                 # 当前频道公示
-                embed=discord.Embed(title="🔴 答题处罚", description=f"{member.mention} 因 {reason} 被 {interaction.user.mention} 移送答题区。请注意遵守社区规则。")
+                embed=discord.Embed(title="🔴 答题处罚", description=f"{member.mention} 因 {reason} 被 {interaction.user.mention} 要求重新答题。请注意遵守社区规则。")
                 punish_record = await self._save_quiz_punish(member, reason, interaction.user.id)
                 if punish_record:
                     newline = '\n'
@@ -1971,7 +1970,7 @@ class AdminCommands(commands.Cog):
                 if quiz_punish_log_channel_id:
                     quiz_punish_log_channel = interaction.guild.get_channel_or_thread(int(quiz_punish_log_channel_id))
                     if quiz_punish_log_channel:
-                        embed=discord.Embed(title="🔴 答题处罚", description=f"{member.mention} 因 {reason} 被 {interaction.user.mention} 移送答题区。")
+                        embed=discord.Embed(title="🔴 答题处罚", description=f"{member.mention} 因 {reason} 被 {interaction.user.mention} 要求重新答题。")
                         if punish_record:
                             newline = '\n'
                             punish_list_text = newline.join([f'{p["punish_time"]} {p["reason"]}' for p in punish_record['punish_list']])
