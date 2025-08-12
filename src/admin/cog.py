@@ -1,6 +1,7 @@
 import asyncio
+import os
 from discord.ext import commands
-from discord import app_commands
+from discord import Attachment, app_commands, file
 import discord
 import json
 import uuid
@@ -61,6 +62,10 @@ class ThreadDeleteApprovalView(discord.ui.View):
             try:
                 name = self.thread.name
                 await self.thread.delete(reason=f"管理员共识删除 by {interaction.user}")
+                # 记录删除日志
+                moderation_log_channel_id = self.config.get("moderation_log_channel_id", 0)
+                if moderation_log_channel_id:
+                    await interaction.guild.fetch_channel(int(moderation_log_channel_id)).send(embed=discord.Embed(title="🔴 子区删除", description=f"【{name}】已被管理员共识删除。"))
                 if self.message:
                     await self.message.edit(content=f"✅ 线程【{name}】已被删除", view=None)
             except Exception as e:
@@ -427,11 +432,12 @@ class AdminCommands(commands.Cog):
         # 分批删除消息
         while True:
             fetched: List[discord.Message] = []
+            backup_text = ""
             async for message in channel.history(limit=100, after=current_after, before=end_message_obj.created_at + datetime.timedelta(seconds=1)):
                 # 确保消息在时间范围内
                 if start_message_obj.created_at <= message.created_at <= end_message_obj.created_at:
                     fetched.append(message)
-                    
+                    backup_text += f"{message.author.name}({message.author.id}): {message.content}\n"
             if len(fetched) == 0:
                 break
                 
@@ -477,6 +483,22 @@ class AdminCommands(commands.Cog):
             else:
                 break
                 
+        # 记录删除日志
+        # 临时保存备份文本
+        with open(".backup.txt", "w") as f:
+            f.write(backup_text)
+        backup_file = discord.File(".backup.txt")
+
+        moderation_log_channel_id = self.config.get("moderation_log_channel_id", 0)
+        if moderation_log_channel_id:
+            await interaction.guild.fetch_channel(int(moderation_log_channel_id)).send(
+                embed=discord.Embed(title="🔴 批量删除消息", description=f"管理员 {interaction.user.mention} 在 {channel.mention} 批量删除了 {deleted} 条消息。"),
+                files=[backup_file]
+            )
+        # 删除临时文件
+        os.remove(".backup.txt")
+        backup_file.close()
+
         await interaction.followup.send(f"✅ 已删除 {deleted} 条消息", ephemeral=True)
 
     # ---- 批量转移身份组 ----
@@ -587,6 +609,18 @@ class AdminCommands(commands.Cog):
             if img:
                 embed.set_image(url=img.url)
             await dm.send_dm(guild=guild, user=member, embed=embed)
+            # 记录私聊日志
+            moderation_log_channel_id = self.config.get("moderation_log_channel_id", 0)
+            if moderation_log_channel_id:
+                embed = discord.Embed(
+                    title="🔴 私聊消息",
+                    description=f"管理员 {interaction.user.mention} 向 {member.mention} 发送了私聊消息。",
+                    color=discord.Color.blue()
+                )
+                embed.add_field(name="消息内容", value=message)
+                if img:
+                    embed.set_image(url=img.url)
+                await interaction.guild.fetch_channel(int(moderation_log_channel_id)).send(embed=embed)
             await interaction.response.send_message("✅ 私聊发送成功", ephemeral=True)
         except discord.Forbidden:
             await interaction.response.send_message("❌ 无权限对该成员发送私聊", ephemeral=True)
@@ -715,10 +749,12 @@ class AdminCommands(commands.Cog):
         elif warn > 0:
             await interaction.followup.send(embed=discord.Embed(title="⚠️ 警告处罚", description=f"{member.mention} 因 {reason} 被警告 {warn} 天。请注意遵守社区规则。"), ephemeral=False)
 
-        # 公示频道
+        # 公示频道 + 记录日志
         channel_id = self.config.get("punish_announce_channel_id", 0)
         announce_channel = guild.get_channel(int(channel_id))
-        if announce_channel:
+        moderation_log_channel_id = self.config.get("moderation_log_channel_id", 0)
+        moderation_log_channel = guild.fetch_channel(int(moderation_log_channel_id))
+        if announce_channel or moderation_log_channel:
             embed = discord.Embed(title="🔇 禁言处罚" if duration.total_seconds() > 0 else "⚠️ 警告处罚", color=discord.Color.orange())
             if duration.total_seconds() > 0:
                 embed.add_field(name="时长", value=mute_time_str)
@@ -731,7 +767,10 @@ class AdminCommands(commands.Cog):
             if img:
                 embed.set_image(url=img.url)
             embed.set_footer(text=f"处罚ID: {record_id}")
-            await announce_channel.send(embed=embed)
+            if announce_channel:
+                await announce_channel.send(embed=embed)
+            if moderation_log_channel:
+                await moderation_log_channel.send(embed=embed)
 
     # ---- 踢出 ----
     @admin.command(name="踢出", description="踢出成员并公示")
@@ -798,7 +837,9 @@ class AdminCommands(commands.Cog):
         # 公示频道
         channel_id = self.config.get("punish_announce_channel_id", 0)
         announce_channel = guild.get_channel(int(channel_id))
-        if announce_channel:
+        moderation_log_channel_id = self.config.get("moderation_log_channel_id", 0)
+        moderation_log_channel = guild.fetch_channel(int(moderation_log_channel_id))
+        if announce_channel or moderation_log_channel:
             embed = discord.Embed(title="👋 移出服务器", color=discord.Color.orange())
             embed.add_field(name="成员", value=f"{member.mention} ({member.id})")
             embed.add_field(name="管理员", value=interaction.user.mention)
@@ -807,7 +848,10 @@ class AdminCommands(commands.Cog):
             if img:
                 embed.set_image(url=img.url)
             embed.set_footer(text=f"处罚ID: {record_id}")
-            await announce_channel.send(embed=embed)
+            if announce_channel:
+                await announce_channel.send(embed=embed)
+            if moderation_log_channel:
+                await moderation_log_channel.send(embed=embed)
 
     # ---- 永封 ----
     @admin.command(name="永封", description="永久封禁成员并公示")
@@ -934,7 +978,9 @@ class AdminCommands(commands.Cog):
         # 公示频道
         channel_id = self.config.get("punish_announce_channel_id", 0)
         announce_channel = guild.get_channel(int(channel_id))
-        if announce_channel:
+        moderation_log_channel_id = self.config.get("moderation_log_channel_id", 0)
+        moderation_log_channel = guild.fetch_channel(int(moderation_log_channel_id))
+        if announce_channel or moderation_log_channel:
             embed = discord.Embed(title="⛔ 永久封禁", color=discord.Color.red())
             embed.add_field(name="成员", value=f"{target_user_name} ({target_user_id})")
             embed.add_field(name="管理员", value=interaction.user.mention)
@@ -944,7 +990,10 @@ class AdminCommands(commands.Cog):
             if img:
                 embed.set_image(url=img.url)
             embed.set_footer(text=f"处罚ID: {record_id}")
-            await announce_channel.send(embed=embed)
+            if announce_channel:
+                await announce_channel.send(embed=embed)
+            if moderation_log_channel:
+                await moderation_log_channel.send(embed=embed)
 
     # ---- 永封审查 ----
     @admin.command(name="永封审查", description="启动永封审查流程")
@@ -1094,7 +1143,9 @@ class AdminCommands(commands.Cog):
         # 5. 公示
         announce_channel_id = self.config.get("punish_announce_channel_id", 0)
         announce_channel = guild.get_channel(int(announce_channel_id))
-        if announce_channel and isinstance(announce_channel, discord.abc.Messageable):
+        moderation_log_channel_id = self.config.get("moderation_log_channel_id", 0)
+        moderation_log_channel = guild.fetch_channel(int(moderation_log_channel_id))
+        if announce_channel or moderation_log_channel:
             embed = discord.Embed(title="⚖️ 永封审查启动", color=discord.Color.dark_orange())
             embed.add_field(name="成员", value=f"{member.mention} ({member.id})")
             embed.add_field(name="发起人", value=interaction.user.mention)
@@ -1109,7 +1160,10 @@ class AdminCommands(commands.Cog):
                 else:
                     embed.add_field(name="附件", value=f"[{attachment.filename}]({attachment.url})", inline=False)
             embed.set_footer(text=f"审查ID: {record_id}")
-            await announce_channel.send(embed=embed)
+            if announce_channel:
+                await announce_channel.send(embed=embed)
+            if moderation_log_channel:
+                await moderation_log_channel.send(embed=embed)
 
         # 6. 发送给管理员的消息
         success_message = f"✅ 已启动对 {member.mention} 的永封审查。审查ID: `{record_id}`"
@@ -1191,13 +1245,18 @@ class AdminCommands(commands.Cog):
             # 公示
             channel_id = self.config.get("punish_announce_channel_id", 0)
             announce_channel = guild.get_channel(int(channel_id))
-            if announce_channel:
+            moderation_log_channel_id = self.config.get("moderation_log_channel_id", 0)
+            moderation_log_channel = guild.fetch_channel(int(moderation_log_channel_id))
+            if announce_channel or moderation_log_channel:
                 embed = discord.Embed(title="🔓 撤销处罚", color=discord.Color.green())
                 embed.add_field(name="处罚ID", value=punish_id)
                 embed.add_field(name="成员", value=user_mention)
                 embed.add_field(name="原因", value=reason or "未提供", inline=False)
                 try:
-                    await announce_channel.send(embed=embed)
+                    if announce_channel:
+                        await announce_channel.send(embed=embed)
+                    if moderation_log_channel:
+                        await moderation_log_channel.send(embed=embed)
                 except Exception as e:
                     if self.logger:
                         self.logger.warning(f"发送撤销处罚公示失败: {e}")
@@ -1354,6 +1413,29 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send("❌ 未提供任何修改参数", ephemeral=True)
             return
         try:
+            # 记录日志
+            moderation_log_channel_id = self.config.get("moderation_log_channel_id", 0)
+            moderation_log_channel = interaction.guild.fetch_channel(int(moderation_log_channel_id))
+            if moderation_log_channel:
+                embed = discord.Embed(
+                    title="🔴 频道管理",
+                    description=f"管理员 {interaction.user.mention} 在 {channel.mention} 进行了频道管理。",
+                    color=discord.Color.blue()
+                )
+                embed.add_field(name="频道", value=f"{channel.mention}")
+                if params['name'] != channel.name:
+                    embed.add_field(name="频道名", value=f"原名: {channel.name}\n新名: {params['name']}")
+                if params['slowmode_delay'] != channel.slowmode_delay:
+                    embed.add_field(name="慢速模式", value=f"原慢速模式: {channel.slowmode_delay}\n新慢速模式: {params['slowmode_delay']}")
+                if params['nsfw'] != channel.nsfw:
+                    embed.add_field(name="NSFW", value=f"原NSFW: {channel.nsfw}\n新NSFW: {params['nsfw']}")
+                if params['auto_archive_duration'] != channel.auto_archive_duration:
+                    embed.add_field(name="自动归档", value=f"{params['auto_archive_duration']}")
+
+                embed.set_author(name=interaction.user.name, icon_url=interaction.user.display_avatar.url)
+                
+                await moderation_log_channel.send(embed=embed)
+                
             await channel.edit(**params, reason=f"频道管理 by {interaction.user}")
             await interaction.followup.send("✅ 频道已更新", ephemeral=True)
         except discord.Forbidden:
@@ -1470,6 +1552,21 @@ class AdminCommands(commands.Cog):
         )
         
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+        # 记录日志
+        moderation_log_channel_id = self.config.get("moderation_log_channel_id", 0)
+        moderation_log_channel = interaction.guild.fetch_channel(int(moderation_log_channel_id))
+        if moderation_log_channel:
+            embed = discord.Embed(
+                title="一键删帖",
+                description=description,
+                colour=discord.Color.green() if deleted else discord.Color.orange()
+            )
+            embed.add_field(name="删除者", value=f"{interaction.user.mention}")
+            embed.add_field(name="删除对象", value=f"{member_id}")
+            embed.add_field(name="删除数量", value=f"{len(deleted)}")
+            embed.set_author(name=interaction.user.name, icon_url=interaction.user.display_avatar.url)
+            await moderation_log_channel.send(embed=embed)
         
         if self.logger:
             self.logger.info(f"一键删帖完成: 用户{member_id}，共删除{len(deleted)}个帖子，操作者: {interaction.user.id}")
@@ -1496,6 +1593,13 @@ class AdminCommands(commands.Cog):
             return
         try:
             await thread.edit(locked=False, archived=False, reason=f"解锁 by {interaction.user}")
+
+            # 记录日志
+            moderation_log_channel_id = self.config.get("moderation_log_channel_id", 0)
+            moderation_log_channel = interaction.guild.fetch_channel(int(moderation_log_channel_id))
+            if moderation_log_channel:
+                await moderation_log_channel.send(embed=discord.Embed(title="🔴 子区管理", description=f"管理员 {interaction.user.mention} 在 {thread.mention} 解锁了子区。"))
+
             await interaction.followup.send("✅ 已解锁线程", ephemeral=True)
         except Exception as e:
             await interaction.followup.send(f"❌ 解锁失败: {e}", ephemeral=True)
@@ -1520,6 +1624,13 @@ class AdminCommands(commands.Cog):
             return
         try:
             await thread.edit(archived=True, reason=f"归档 by {interaction.user}")
+
+            # 记录日志
+            moderation_log_channel_id = self.config.get("moderation_log_channel_id", 0)
+            moderation_log_channel = interaction.guild.fetch_channel(int(moderation_log_channel_id))
+            if moderation_log_channel:
+                await moderation_log_channel.send(embed=discord.Embed(title="🔴 子区管理", description=f"管理员 {interaction.user.mention} 在 {thread.mention} 归档了子区。"))
+
             await interaction.followup.send("✅ 已归档线程", ephemeral=True)
         except Exception as e:
             await interaction.followup.send(f"❌ 归档失败: {e}", ephemeral=True)
@@ -1541,6 +1652,13 @@ class AdminCommands(commands.Cog):
             return
         try:
             await thread.pin(reason=f"管理员置顶 by {interaction.user}")
+
+            # 记录日志
+            moderation_log_channel_id = self.config.get("moderation_log_channel_id", 0)
+            moderation_log_channel = interaction.guild.fetch_channel(int(moderation_log_channel_id))
+            if moderation_log_channel:
+                await moderation_log_channel.send(embed=discord.Embed(title="🔴 子区管理", description=f"管理员 {interaction.user.mention} 在 {thread.mention} 置顶了子区。"))
+
             await interaction.followup.send("✅ 已置顶线程", ephemeral=True)
         except Exception as e:
             await interaction.followup.send(f"❌ 置顶失败: {e}", ephemeral=True)
@@ -1560,6 +1678,13 @@ class AdminCommands(commands.Cog):
             return
         try:
             await thread.unpin(reason=f"管理员取消置顶 by {interaction.user}")
+
+            # 记录日志
+            moderation_log_channel_id = self.config.get("moderation_log_channel_id", 0)
+            moderation_log_channel = interaction.guild.fetch_channel(int(moderation_log_channel_id))
+            if moderation_log_channel:
+                await moderation_log_channel.send(embed=discord.Embed(title="🔴 子区管理", description=f"管理员 {interaction.user.mention} 在 {thread.mention} 取消了置顶。"))
+
             await interaction.followup.send("✅ 已取消置顶", ephemeral=True)
         except Exception as e:
             await interaction.followup.send(f"❌ 取消置顶失败: {e}", ephemeral=True)
@@ -1618,6 +1743,7 @@ class AdminCommands(commands.Cog):
         buffer_role_id = self.config.get("buffer_role_id", 0)
         upper_buffer_role_id = self.config.get("upper_buffer_role_id", 0)
         whitelist = self.config.get("quiz_punish_whitelist", [])
+        quiz_punish_log_channel_id = self.config.get("quiz_punish_log_channel_id", 0)
         
         role = guild.get_role(int(role_id)) if role_id else None
         buffer_role = guild.get_role(int(buffer_role_id)) if buffer_role_id else None
@@ -1674,10 +1800,16 @@ class AdminCommands(commands.Cog):
                 # 当前频道公示
                 await interaction.channel.send(embed=discord.Embed(title="🔴 答题处罚", description=f"{member.mention} 因 {reason} 被 {interaction.user.mention} 移送答题区。请注意遵守社区规则。"))
 
+                # 记录处罚日志
+                if quiz_punish_log_channel_id:
+                    await interaction.guild.fetch_channel(int(quiz_punish_log_channel_id)).send(embed=discord.Embed(title="🔴 答题处罚", description=f"{member.mention} 因 {reason} 被 {interaction.user.mention} 移送答题区。"))
+
                 # bot对接
-                # 暂时硬编码，后续改成
-                await interaction.guild.get_thread(1401035278533136386).send(content='{"punish": '+str(member.id)+'}')
+                bot_integration_channel_id = self.config.get("bot_integration_channel_id", 0)
+                if bot_integration_channel_id:
+                    await interaction.guild.fetch_channel(int(bot_integration_channel_id)).send(content='{"punish": '+str(member.id)+'}')
             else:
                 await interaction.followup.send("成员不在已验证/缓冲区身份组", ephemeral=True)
         except discord.Forbidden:
             await interaction.followup.send("❌ 无权限移除身份组", ephemeral=True)
+            
