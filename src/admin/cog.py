@@ -1743,7 +1743,7 @@ class AdminCommands(commands.Cog):
     # ---- 答题处罚工具函数 ----
     async def _save_quiz_punish(self, member: discord.Member, reason: str, punisher_id: int):
         """保存处罚记录到data/punish/quiz/id.json"""
-        punish_record = self._get_quiz_punish(member)
+        punish_record = await self._get_quiz_punish(member)
         if punish_record is None:
             punish_record = {
                 "id": member.id,
