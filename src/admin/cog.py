@@ -1828,6 +1828,11 @@ class AdminCommands(commands.Cog):
                                 if i - j - 1 < 0:
                                     if last_fetched:
                                         reason_message = last_fetched[i - j - 1]
+                                        reference = reason_message.reference
+                                        if reference:
+                                            reason_message_channel = await self.bot.fetch_channel(reference.channel_id)
+                                            if reason_message_channel:
+                                                reason_message = await reason_message_channel.fetch_message(reference.message_id)
                                         if reason_message.embeds:
                                             reason = extract_reason(reason_message.embeds[0].description)
                                             break
@@ -1835,6 +1840,11 @@ class AdminCommands(commands.Cog):
                                         continue
                                 else:
                                     reason_message = fetched[i - j - 1]
+                                    reference = reason_message.reference
+                                    if reference:
+                                        reason_message_channel = await self.bot.fetch_channel(reference.channel_id)
+                                        if reason_message_channel:
+                                            reason_message = await reason_message_channel.fetch_message(reference.message_id)
                                     if reason_message.embeds:
                                         reason = extract_reason(reason_message.embeds[0].description)
                                         break
