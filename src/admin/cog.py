@@ -586,7 +586,7 @@ class AdminCommands(commands.Cog):
             )
             if img:
                 embed.set_image(url=img.url)
-            await dm.send_dm(member, embed=embed)
+            await dm.send_dm(guild=guild, user=member, embed=embed)
             await interaction.response.send_message("✅ 私聊发送成功", ephemeral=True)
         except discord.Forbidden:
             await interaction.response.send_message("❌ 无权限对该成员发送私聊", ephemeral=True)
