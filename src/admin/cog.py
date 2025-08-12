@@ -1752,7 +1752,8 @@ class AdminCommands(commands.Cog):
             }
         punish_record["punish_count"] += 1
         punish_record["punish_list"].append({
-            "punish_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            # 北京时间
+            "punish_time": datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S"),
             "reason": reason,
             "punisher_id": punisher_id,
         })
