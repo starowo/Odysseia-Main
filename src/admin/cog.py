@@ -1830,9 +1830,11 @@ class AdminCommands(commands.Cog):
                                         reason_message = last_fetched[i - j - 1]
                                         reference = reason_message.reference
                                         if reference:
-                                            reason_message_channel = await self.bot.fetch_channel(reference.channel_id)
-                                            if reason_message_channel:
+                                            try:
+                                                reason_message_channel = await self.bot.fetch_channel(reference.channel_id)
                                                 reason_message = await reason_message_channel.fetch_message(reference.message_id)
+                                            except Exception as e:
+                                                continue
                                         if reason_message.embeds:
                                             reason = extract_reason(reason_message.embeds[0].description)
                                             break
@@ -1842,9 +1844,11 @@ class AdminCommands(commands.Cog):
                                     reason_message = fetched[i - j - 1]
                                     reference = reason_message.reference
                                     if reference:
-                                        reason_message_channel = await self.bot.fetch_channel(reference.channel_id)
-                                        if reason_message_channel:
+                                        try:
+                                            reason_message_channel = await self.bot.fetch_channel(reference.channel_id)
                                             reason_message = await reason_message_channel.fetch_message(reference.message_id)
+                                        except Exception as e:
+                                            continue
                                     if reason_message.embeds:
                                         reason = extract_reason(reason_message.embeds[0].description)
                                         break
