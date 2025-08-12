@@ -205,6 +205,7 @@ class BotManageCommands(commands.Cog):
         
         # 热重载模块
         success, message = await cog_manager.reload_cog(cog)
+        await self.bot.tree.sync()
         await interaction.followup.send(message, ephemeral=True)
 
     @command_bot_manage.command(name="ping", description="测试机器人响应时间")

@@ -101,13 +101,19 @@ class AdminCommands(commands.Cog):
         if self.logger:
             self.logger.info("管理命令已加载")
         # 启动警告自动移除任务
-        asyncio.create_task(self._auto_remove_warn())
+        self.auto_remove_warn_task = asyncio.create_task(self._auto_remove_warn())
         if self.logger:
             self.logger.info("警告自动移除任务已启动")
         # 启动永封审查自动处理任务
-        asyncio.create_task(self._auto_ban_checker())
+        self.auto_ban_checker_task = asyncio.create_task(self._auto_ban_checker())
         if self.logger:
             self.logger.info("永封审查自动处理任务已启动")
+
+    async def on_disable(self):
+        if self.auto_remove_warn_task:
+            self.auto_remove_warn_task.cancel()
+        if self.auto_ban_checker_task:
+            self.auto_ban_checker_task.cancel()
     
     async def _auto_remove_warn(self):
         while True:
