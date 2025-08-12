@@ -92,7 +92,7 @@ class ThreadDeleteApprovalView(discord.ui.View):
 
 class AdminCommands(commands.Cog):
     def __init__(self, bot):
-        self.bot = bot
+        self.bot: discord.Client = bot
         self.logger = bot.logger
         self.name = "管理命令"
         # 初始化配置缓存
@@ -113,12 +113,17 @@ class AdminCommands(commands.Cog):
         self.auto_ban_checker_task = asyncio.create_task(self._auto_ban_checker())
         if self.logger:
             self.logger.info("永封审查自动处理任务已启动")
+        
+        # 初始化答题处罚记录
+        self.quiz_punish_init_task = asyncio.create_task(self._quiz_punish_init())
 
     async def on_disable(self):
-        if self.auto_remove_warn_task:
+        if self.auto_remove_warn_task and not self.auto_remove_warn_task.done():
             self.auto_remove_warn_task.cancel()
-        if self.auto_ban_checker_task:
+        if self.auto_ban_checker_task and not self.auto_ban_checker_task.done():
             self.auto_ban_checker_task.cancel()
+        if self.quiz_punish_init_task and not self.quiz_punish_init_task.done():
+            self.quiz_punish_init_task.cancel()
     
     async def _auto_remove_warn(self):
         while True:
@@ -1735,6 +1740,133 @@ class AdminCommands(commands.Cog):
                 f"线程删除请求已发起: {thread.name} (ID: {thread.id}) by {interaction.user.display_name}({interaction.user.id})"
             )
 
+    # ---- 答题处罚工具函数 ----
+    async def _save_quiz_punish(self, member: discord.Member, reason: str, punisher_id: int):
+        """保存处罚记录到data/punish/quiz/id.json"""
+        punish_record = self._get_quiz_punish(member)
+        if punish_record is None:
+            punish_record = {
+                "id": member.id,
+                "punish_count": 0,
+                "punish_list": []
+            }
+        punish_record["punish_count"] += 1
+        punish_record["punish_list"].append({
+            "punish_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "reason": reason,
+            "punisher_id": punisher_id,
+        })
+        with open(f"data/punish/quiz/{member.id}.json", "w") as f:
+            json.dump(punish_record, f)
+
+    async def _get_quiz_punish(self, member: discord.Member):
+        """从data/punish/quiz/id.json获取处罚记录"""
+        file_path = f"data/punish/quiz/{member.id}.json"
+        if os.path.exists(file_path):
+            with open(file_path, "r") as f:
+                return json.load(f)
+        return None
+
+    async def _quiz_punish_init(self):
+        """初始化答题处罚记录"""
+        # 检测data/punish/quiz目录是否存在
+        if os.path.exists("data/punish/quiz"):
+           return
+        # 不存在，开始回溯记录所有手动记录的处罚
+        def _get_record(id: int):
+            """从data/punish/quiz/id.json获取处罚记录"""
+            file_path = f"data/punish/quiz/{id}.json"
+            if os.path.exists(file_path):
+                with open(file_path, "r") as f:
+                    return json.load(f)
+            return None
+        def _save_record(id: int, record: dict):
+            """保存处罚记录到data/punish/quiz/id.json"""
+            with open(f"data/punish/quiz/{id}.json", "w") as f:
+                json.dump(record, f)
+
+        def extract_reason(message: str):
+            """从消息中提取处罚原因"""
+            # 格式1：因 {reason} 被
+            # 格式2：理由：{reason}
+            # 尝试从格式1和格式2中提取原因
+            reason = ""
+            if "因" in message:
+                reason = message.split("因")[1].split("被")[0].strip()
+            elif "理由：" in message:
+                reason = message.split("理由：")[1].strip()
+            return reason
+
+        os.makedirs("data/punish/quiz", exist_ok=True)
+        record_channel = self.bot.get_channel(int(self.config.get("quiz_punish_log_channel_id", 0)))
+        if record_channel:
+            # 创建实时更新的embed进度
+            embed = discord.Embed(title="答题处罚记录初始化", description="正在回溯记录所有手动记录的处罚...")
+            embed.add_field(name="已回溯消息", value="0")
+            embed.add_field(name="已记录处罚", value="0")
+            message = await record_channel.send(embed=embed)
+            last_message = None
+            last_fetched = None
+            fetched_count = 0
+            record_count = 0
+            # 从第一条消息开始遍历
+            while True:
+                try:
+                    fetched: List[discord.Message] = [
+                        m async for m in record_channel.history(limit=100, after=last_message, oldest_first=True)
+                    ]
+                    if not fetched:
+                        break
+                    fetched_count += len(fetched)
+                    for i, message in enumerate(fetched):
+                        # 判断是否为纯数字消息
+                        if message.content.isdigit():
+                            id = int(message.content)
+                            reason = ""
+                            # 回溯前4条消息寻找embed，若前方消息不足4条则向last_fetched回溯
+                            for j in range(4):
+                                if i - j - 1 < 0:
+                                    if last_fetched:
+                                        reason_message = last_fetched[i - j - 1]
+                                        if reason_message.embeds:
+                                            reason = extract_reason(reason_message.embeds[0].description)
+                                            break
+                                        break
+                                    else:
+                                        continue
+                                else:
+                                    reason_message = fetched[i - j - 1]
+                                    if reason_message.embeds:
+                                        reason = extract_reason(reason_message.embeds[0].description)
+                                        break
+                            reason = reason if reason else "未记录"
+                            record = _get_record(id)
+                            if record is None:
+                                record = {
+                                    "id": id,
+                                    "punish_count": 0,
+                                    "punish_list": []
+                                }
+                            record["punish_count"] += 1
+                            record["punish_list"].append({
+                                "punish_time": message.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+                                "reason": reason,
+                                "punisher_id": message.author.id,
+                            })
+                            _save_record(id, record)
+                            record_count += 1
+                    embed.description = f"已回溯消息: {fetched_count}\n已记录处罚: {record_count}"
+                    await message.edit(embed=embed)
+                    last_message = fetched[-1]
+                    last_fetched = fetched
+                
+                except discord.HTTPException as e:
+                    embed.description = f"初始化失败: {e}"
+                    await message.edit(embed=embed)
+                    break
+            embed.description = f"初始化完成，共回溯消息: {fetched_count}\n已记录处罚: {record_count}"
+            await message.edit(embed=embed)
+
     # ---- 答题处罚 ----
     @app_commands.command(name="答题处罚", description="移除身份组送往答题区")
     @app_commands.describe(member="要处罚的成员", reason="原因（可选）")
@@ -1804,11 +1936,21 @@ class AdminCommands(commands.Cog):
                 await interaction.followup.send(f"✅ 已移除 {member.display_name} 的身份组并要求重新阅读规则", ephemeral=True)
                 
                 # 当前频道公示
-                await interaction.channel.send(embed=discord.Embed(title="🔴 答题处罚", description=f"{member.mention} 因 {reason} 被 {interaction.user.mention} 移送答题区。请注意遵守社区规则。"))
+                embed=discord.Embed(title="🔴 答题处罚", description=f"{member.mention} 因 {reason} 被 {interaction.user.mention} 移送答题区。请注意遵守社区规则。")
+                punish_record = self._save_quiz_punish(member, reason, interaction.user.id)
+                if punish_record:
+                    embed.add_field(name="处罚记录", value=f"共 {punish_record['punish_count']} 次处罚\n{'\n'.join([f'{p["punish_time"]} {p["reason"]}' for p in punish_record['punish_list']])}")
+                await interaction.channel.send(embed=embed)
 
                 # 记录处罚日志
                 if quiz_punish_log_channel_id:
-                    await interaction.guild.get_channel_or_thread(int(quiz_punish_log_channel_id)).send(embed=discord.Embed(title="🔴 答题处罚", description=f"{member.mention} 因 {reason} 被 {interaction.user.mention} 移送答题区。"))
+                    quiz_punish_log_channel = interaction.guild.get_channel_or_thread(int(quiz_punish_log_channel_id))
+                    if quiz_punish_log_channel:
+                        embed=discord.Embed(title="🔴 答题处罚", description=f"{member.mention} 因 {reason} 被 {interaction.user.mention} 移送答题区。")
+                        if punish_record:
+                            embed.add_field(name="处罚记录", value=f"共 {punish_record['punish_count']} 次处罚\n{'\n'.join([f'{p["punish_time"]} {p["reason"]}' for p in punish_record['punish_list']])}")
+                        await quiz_punish_log_channel.send(embed=embed)
+                        await quiz_punish_log_channel.send(content=f"用户名: {member.name}\n用户ID: {member.id}")
 
                 # bot对接
                 bot_integration_channel_id = self.config.get("bot_integration_channel_id", 0)
