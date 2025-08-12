@@ -1804,7 +1804,7 @@ class AdminCommands(commands.Cog):
             embed = discord.Embed(title="答题处罚记录初始化", description="正在回溯记录所有手动记录的处罚...")
             embed.add_field(name="已回溯消息", value="0")
             embed.add_field(name="已记录处罚", value="0")
-            message = await record_channel.send(embed=embed)
+            record_message = await record_channel.send(embed=embed)
             last_message = None
             last_fetched = None
             fetched_count = 0
@@ -1857,19 +1857,19 @@ class AdminCommands(commands.Cog):
                     embed = discord.Embed(title="答题处罚记录初始化", description="正在回溯记录所有手动记录的处罚...")
                     embed.add_field(name="已回溯消息", value=f"{fetched_count}")
                     embed.add_field(name="已记录处罚", value=f"{record_count}")
-                    await message.edit(embed=embed)
+                    await record_message.edit(embed=embed)
                     last_message = fetched[-1]
                     last_fetched = fetched
                 
                 except Exception as e:
                     embed = discord.Embed(title="答题处罚记录初始化", description="初始化失败")
                     embed.add_field(name="错误信息", value=f"{e}")
-                    await message.edit(embed=embed)
+                    await record_message.edit(embed=embed)
                     break
             embed = discord.Embed(title="答题处罚记录初始化", description="初始化完成")
             embed.add_field(name="已回溯消息", value=f"{fetched_count}")
             embed.add_field(name="已记录处罚", value=f"{record_count}")
-            await message.edit(embed=embed)
+            await record_message.edit(embed=embed)
 
     # ---- 答题处罚 ----
     @app_commands.command(name="答题处罚", description="移除身份组送往答题区")
