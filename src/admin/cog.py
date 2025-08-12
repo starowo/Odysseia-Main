@@ -1791,6 +1791,8 @@ class AdminCommands(commands.Cog):
             # 格式1：因 {reason} 被
             # 格式2：理由：{reason}
             # 尝试从格式1和格式2中提取原因
+            if not message:
+                return ""
             reason = ""
             if "因" in message:
                 reason = message.split("因")[1].split("被")[0].strip()
@@ -1813,6 +1815,7 @@ class AdminCommands(commands.Cog):
             # 从第一条消息开始遍历
             while True:
                 try:
+                    
                     fetched: List[discord.Message] = [
                         m async for m in record_channel.history(limit=100, after=last_message, oldest_first=True)
                     ]
