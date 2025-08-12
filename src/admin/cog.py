@@ -1939,7 +1939,9 @@ class AdminCommands(commands.Cog):
                 embed=discord.Embed(title="🔴 答题处罚", description=f"{member.mention} 因 {reason} 被 {interaction.user.mention} 移送答题区。请注意遵守社区规则。")
                 punish_record = self._save_quiz_punish(member, reason, interaction.user.id)
                 if punish_record:
-                    embed.add_field(name="处罚记录", value=f"共 {punish_record['punish_count']} 次处罚\n{'\n'.join([f'{p["punish_time"]} {p["reason"]}' for p in punish_record['punish_list']])}")
+                    newline = '\n'
+                    punish_list_text = newline.join([f'{p["punish_time"]} {p["reason"]}' for p in punish_record['punish_list']])
+                    embed.add_field(name="处罚记录", value=f"共 {punish_record['punish_count']} 次处罚\n{punish_list_text}")
                 await interaction.channel.send(embed=embed)
 
                 # 记录处罚日志
@@ -1948,7 +1950,9 @@ class AdminCommands(commands.Cog):
                     if quiz_punish_log_channel:
                         embed=discord.Embed(title="🔴 答题处罚", description=f"{member.mention} 因 {reason} 被 {interaction.user.mention} 移送答题区。")
                         if punish_record:
-                            embed.add_field(name="处罚记录", value=f"共 {punish_record['punish_count']} 次处罚\n{'\n'.join([f'{p["punish_time"]} {p["reason"]}' for p in punish_record['punish_list']])}")
+                            newline = '\n'
+                            punish_list_text = newline.join([f'{p["punish_time"]} {p["reason"]}' for p in punish_record['punish_list']])
+                            embed.add_field(name="处罚记录", value=f"共 {punish_record['punish_count']} 次处罚\n{punish_list_text}")
                         await quiz_punish_log_channel.send(embed=embed)
                         await quiz_punish_log_channel.send(content=f"用户名: {member.name}\n用户ID: {member.id}")
 
