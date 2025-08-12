@@ -1826,6 +1826,7 @@ class AdminCommands(commands.Cog):
     )
     @app_commands.rename(member="成员")
     async def send_charity_site_address(self, interaction: discord.Interaction, member: "discord.Member"):
+        await interaction.response.defer(ephemeral=True)
         site = self.config.get("charity_site_address", "")
         if not site:
             await interaction.followup.send("❌ 未配置公益站地址", ephemeral=True)
