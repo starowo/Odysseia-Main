@@ -1987,6 +1987,164 @@ class AdminCommands(commands.Cog):
         except discord.Forbidden:
             await interaction.followup.send("❌ 无权限移除身份组", ephemeral=True)
 
+    # ---- 答疑组禁言 ----
+    @app_commands.command(name="答疑组禁言", description="答疑组专用禁言")
+    @app_commands.describe(
+        member="要禁言的成员",
+        time="禁言时长（5m, 12h, 1d）",
+        reason="原因（可选）",
+        img="图片（可选）",
+        warn="警告天数"
+    )
+    @app_commands.rename(member="成员", time="时长", reason="原因", img="图片", warn="警告天数")
+    @is_admin()
+    @guild_only()
+    async def qa_mute(
+        self,
+        interaction,  # type: discord.Interaction
+        member: "discord.Member",
+        time: str,
+        reason: str = None,
+        img: discord.Attachment = None,
+        warn: int = 0,
+    ):
+        guild = interaction.guild
+        # 检查是否为答疑组
+        if not guild.get_role(int(self.config.get("qa_role_id", 0))):
+            await interaction.response.send_message("❌ 当前服务器未设置答疑组", ephemeral=True)
+            return
+        qa_role = guild.get_role(int(self.config.get("qa_role_id", 0)))
+        if not qa_role:
+            await interaction.response.send_message("❌ 答疑组角色不存在", ephemeral=True)
+            return
+        if not qa_role in interaction.user.roles:
+            await interaction.response.send_message("❌ 您不是答疑组成员", ephemeral=True)
+            return
+        # 将字符串时间转换为数字时长
+        mute_time, mute_time_str = self._parse_time(time)
+        if mute_time == -1:
+            await interaction.response.send_message("❌ 未知时间", ephemeral=True)
+            return
+        duration = datetime.timedelta(seconds=mute_time)
+        
+        await interaction.response.defer(ephemeral=True)
+        if duration.total_seconds() <= 0 and warn <= 0:
+            await interaction.followup.send("❌ 时长和警告天数不能同时为0", ephemeral=True)
+            return
+        if duration.total_seconds() > 24 * 60 * 60:
+            await interaction.followup.send("❌ 禁言时长不能超过24小时", ephemeral=True)
+            return
+        if warn > 14:
+            await interaction.followup.send("❌ 警告天数不能超过14天", ephemeral=True)
+            return
+        try:
+            if duration.total_seconds() > 0:
+                await member.timeout(duration, reason=reason or "答疑组禁言")
+            warned_role_id = self.config.get("warned_role_id", 0)
+            warned_role = guild.get_role(int(warned_role_id))
+            if warned_role and warn > 0:
+                await member.add_roles(warned_role, reason=f"答疑组禁言附加警告 {warn} 天")
+        except discord.Forbidden:
+            await interaction.followup.send("❌ 无权限对该成员执行禁言", ephemeral=True)
+            return
+        # 保存记录 & 公示
+        record_id = self._save_punish_record(guild.id, {
+            "type": "mute",
+            "user_id": member.id,
+            "moderator_id": interaction.user.id,
+            "reason": reason,
+            "warn": warn,
+            "duration": duration.total_seconds(),
+        })
+
+        # 检查是否启用处罚同步
+        sync_cog = self.bot.get_cog("ServerSyncCommands")
+        if sync_cog:
+            await sync_cog.sync_punishment(
+                guild=guild,
+                punishment_type="mute",
+                member=member,
+                moderator=interaction.user,
+                reason=reason,
+                duration=int(duration.total_seconds()) if duration.total_seconds() > 0 else None,
+                warn_days=warn,
+                punishment_id=record_id,
+                img=img
+            )
+
+        if warn > 0:
+            self._save_warn_record(guild.id, {
+                "type": "warn",
+                "user_id": member.id,
+                "moderator_id": interaction.user.id,
+                "reason": reason,
+                "until": (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=warn)).isoformat(),
+            })
+
+        # 同步处罚到其他服务器
+        sync_cog = self.bot.get_cog("ServerSyncCommands")
+        if sync_cog:
+            await sync_cog.sync_punishment(
+                guild=guild,
+                punishment_type="mute",
+                member=member,
+                moderator=interaction.user,
+                reason=reason,
+                duration=duration.total_seconds() if duration.total_seconds() > 0 else None,
+                warn_days=warn,
+                punishment_id=record_id,
+                img=img
+            )
+
+        await interaction.followup.send(f"✅ 已禁言 {member.mention} ({mute_time_str})。处罚ID: `{record_id}`", ephemeral=True)
+
+        # 私聊通知
+        if duration.total_seconds() > 0:
+            try:
+                # await member.send(embed=discord.Embed(title="🔇 禁言处罚", description=f"您因 {reason} 被禁言 {mute_time_str}。请注意遵守社区规则。"))
+                await dm.send_dm(member.guild, member, embed=discord.Embed(title="🔇 禁言处罚", description=f"您因 {reason} 被禁言 {mute_time_str}。请注意遵守社区规则。"))
+            except discord.Forbidden:
+                pass
+            except Exception as e:
+                self.logger.error(f"禁言处罚私聊通知失败: {e}")
+        elif warn > 0:
+            try:
+                # await member.send(embed=discord.Embed(title="⚠️ 警告处罚", description=f"您因 {reason} 被警告 {warn} 天。请注意遵守社区规则。"))
+                await dm.send_dm(member.guild, member, embed=discord.Embed(title="⚠️ 警告处罚", description=f"您因 {reason} 被警告 {warn} 天。请注意遵守社区规则。"))
+            except discord.Forbidden:
+                pass
+            except Exception as e:
+                self.logger.error(f"警告处罚私聊通知失败: {e}")
+
+        # 当前频道公示
+        if duration.total_seconds() > 0:
+            await interaction.followup.send(embed=discord.Embed(title="🔇 禁言处罚", description=f"{member.mention} 因 {reason} 被禁言 {mute_time_str}。请注意遵守社区规则。"), ephemeral=False)
+        elif warn > 0:
+            await interaction.followup.send(embed=discord.Embed(title="⚠️ 警告处罚", description=f"{member.mention} 因 {reason} 被警告 {warn} 天。请注意遵守社区规则。"), ephemeral=False)
+
+        # 公示频道 + 记录日志
+        channel_id = self.config.get("punish_announce_channel_id", 0)
+        announce_channel = guild.get_channel(int(channel_id))
+        quiz_punish_log_channel_id = self.config.get("quiz_punish_log_channel_id", 0)
+        quiz_punish_log_channel = guild.get_channel_or_thread(int(quiz_punish_log_channel_id))
+        if announce_channel or quiz_punish_log_channel:
+            embed = discord.Embed(title="🔇 禁言处罚" if duration.total_seconds() > 0 else "⚠️ 警告处罚", color=discord.Color.orange())
+            if duration.total_seconds() > 0:
+                embed.add_field(name="时长", value=mute_time_str)
+            embed.add_field(name="成员", value=member.mention)
+            embed.add_field(name="答疑组成员", value=interaction.user.mention)
+            embed.set_thumbnail(url=member.display_avatar.url)
+            embed.add_field(name="原因", value=reason or "未提供", inline=False)
+            if warn > 0:
+                embed.add_field(name="警告", value=f"{warn}天", inline=False)
+            if img:
+                embed.set_image(url=img.url)
+            embed.set_footer(text=f"处罚ID: {record_id}")
+            if announce_channel:
+                await announce_channel.send(embed=embed)
+            if quiz_punish_log_channel:
+                await quiz_punish_log_channel.send(embed=embed)
+
     # ---- 发送公益站地址 ----
     @app_commands.command(name="发送公益站地址", description="发送公益站地址")
     @app_commands.describe(
