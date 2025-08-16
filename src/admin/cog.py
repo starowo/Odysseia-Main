@@ -1997,7 +1997,6 @@ class AdminCommands(commands.Cog):
         warn="警告天数"
     )
     @app_commands.rename(member="成员", time="时长", reason="原因", img="图片", warn="警告天数")
-    @is_admin()
     @guild_only()
     async def qa_mute(
         self,
