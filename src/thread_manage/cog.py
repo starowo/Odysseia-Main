@@ -722,6 +722,142 @@ class ThreadSelfManage(commands.Cog):
             except discord.HTTPException as e:
                 await interaction.response.send_message(f"❌ 取消标注失败: {str(e)}", ephemeral=True)
 
+    # ---- 编辑标签 ----
+    @self_manage.command(name="编辑标签", description="编辑子区标签")
+    @app_commands.describe(action="操作类型", tag="标签")
+    @app_commands.rename(action="操作", tag="标签")
+    @app_commands.choices(action=[
+        app_commands.Choice(name="添加", value="add"),
+        app_commands.Choice(name="删除", value="remove"),
+    ])
+    async def edit_tag(self, interaction: discord.Interaction, action: app_commands.Choice[str], tag: str):
+        # 验证是否在子区内
+        channel = interaction.channel
+        if not isinstance(channel, discord.Thread):
+            await interaction.response.send_message("此指令仅在子区内有效", ephemeral=True)
+            return
+        
+        # 验证是否是子区所有者或管理员
+        if not await self.can_manage_thread(interaction, channel):
+            await interaction.response.send_message("不能在他人子区内使用此指令", ephemeral=True)
+            return
+        
+        # 验证父频道是否为论坛频道
+        parent = channel.parent
+        if not isinstance(parent, discord.ForumChannel):
+            await interaction.response.send_message("此功能仅在论坛频道的子区内有效", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        # 获取当前子区的应用标签
+        current_tags = list(channel.applied_tags)
+        
+        if action.value == "add":
+            # 查找要添加的标签
+            target_tag = None
+            for available_tag in parent.available_tags:
+                if available_tag.name.lower() == tag.lower():
+                    target_tag = available_tag
+                    break
+            
+            if not target_tag:
+                await interaction.followup.send(f"❌ 标签 **{tag}** 在当前论坛频道中不存在", ephemeral=True)
+                return
+            
+            # 检查标签是否已经存在
+            if target_tag in current_tags:
+                await interaction.followup.send(f"❌ 标签 **{tag}** 已经存在于当前子区", ephemeral=True)
+                return
+            
+            # 检查标签数量限制（Discord限制为5个）
+            if len(current_tags) >= 5:
+                await interaction.followup.send("❌ 子区最多只能有5个标签", ephemeral=True)
+                return
+            
+            # 添加标签
+            new_tags = current_tags + [target_tag]
+            try:
+                await channel.edit(applied_tags=new_tags)
+                
+                # 成功消息
+                await interaction.followup.send(f"✅ 已添加标签：**{target_tag.name}**", ephemeral=True)
+                
+            except discord.HTTPException as e:
+                await interaction.followup.send(f"❌ 添加标签失败: {str(e)}", ephemeral=True)
+        
+        elif action.value == "remove":
+            # 查找要移除的标签
+            target_tag = None
+            for applied_tag in current_tags:
+                if applied_tag.name.lower() == tag.lower():
+                    target_tag = applied_tag
+                    break
+            
+            if not target_tag:
+                await interaction.followup.send(f"❌ 当前子区没有标签 **{tag}**", ephemeral=True)
+                return
+            
+            # 移除标签
+            new_tags = [t for t in current_tags if t != target_tag]
+            try:
+                await channel.edit(applied_tags=new_tags)
+                
+                # 成功消息
+                await interaction.followup.send(f"✅ 已移除标签：**{target_tag.name}**", ephemeral=True)
+                
+            except discord.HTTPException as e:
+                await interaction.followup.send(f"❌ 移除标签失败: {str(e)}", ephemeral=True)
+
+    async def tag_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        """为标签参数提供自动补全"""
+        channel = interaction.channel
+        if not isinstance(channel, discord.Thread):
+            return []
+        
+        parent = channel.parent
+        if not isinstance(parent, discord.ForumChannel):
+            return []
+        
+        # 获取命令参数中的action
+        action = None
+        for option in interaction.data.get('options', []):
+            if option['name'] == '操作':
+                action = option['value']
+                break
+        
+        choices = []
+        if action == "add":
+            # 添加模式：显示还未应用的标签
+            current_tag_names = {tag.name for tag in channel.applied_tags}
+            available_tags = [
+                tag for tag in parent.available_tags 
+                if tag.name not in current_tag_names and current.lower() in tag.name.lower()
+            ]
+            choices = [
+                app_commands.Choice(name=tag.name, value=tag.name) 
+                for tag in available_tags[:25]  # Discord限制25个选项
+            ]
+        elif action == "remove":
+            # 移除模式：显示已应用的标签
+            applied_tags = [
+                tag for tag in channel.applied_tags 
+                if current.lower() in tag.name.lower()
+            ]
+            choices = [
+                app_commands.Choice(name=tag.name, value=tag.name) 
+                for tag in applied_tags[:25]
+            ]
+        
+        return choices
+
+    # 为tag参数添加自动补全
+    edit_tag.autocomplete('tag')(tag_autocomplete)
+
     def _get_mute_record(self, guild_id: int, thread_id: int, user_id: int) -> dict:
         key = (guild_id, thread_id, user_id)
         # 从内存缓存获取或初始化
