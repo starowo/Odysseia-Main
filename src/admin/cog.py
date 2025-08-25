@@ -1434,13 +1434,13 @@ class AdminCommands(commands.Cog):
                     color=discord.Color.blue()
                 )
                 embed.add_field(name="频道", value=f"{channel.mention}")
-                if params['name'] != channel.name:
+                if 'name' in params and params['name'] != channel.name:
                     embed.add_field(name="频道名", value=f"原名: {channel.name}\n新名: {params['name']}")
-                if params['slowmode_delay'] != channel.slowmode_delay:
+                if 'slowmode_delay' in params and params['slowmode_delay'] != channel.slowmode_delay:
                     embed.add_field(name="慢速模式", value=f"原慢速模式: {channel.slowmode_delay}\n新慢速模式: {params['slowmode_delay']}")
-                if params['nsfw'] != channel.nsfw:
+                if 'nsfw' in params and params['nsfw'] != channel.nsfw:
                     embed.add_field(name="NSFW", value=f"原NSFW: {channel.nsfw}\n新NSFW: {params['nsfw']}")
-                if params['auto_archive_duration'] != channel.auto_archive_duration:
+                if 'auto_archive_duration' in params and params['auto_archive_duration'] != channel.auto_archive_duration:
                     embed.add_field(name="自动归档", value=f"{params['auto_archive_duration']}")
 
                 embed.set_author(name=interaction.user.name, icon_url=interaction.user.display_avatar.url)
