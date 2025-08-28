@@ -2167,3 +2167,14 @@ class AdminCommands(commands.Cog):
             await moderation_log_channel.send(embed=discord.Embed(title="🔴 公益站地址", description=f"审核员 {interaction.user.mention} 发送了公益站地址到 {member.mention}。"))
 
         await interaction.followup.send(f"✅ 已发送公益站地址到 {member.mention}", ephemeral=True)
+
+    @app_commands.command(name="解散服务器", description="解散服务器")
+    async def disband_server(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        # Fake Command, but log the attempt to moderation log channel
+        moderation_log_channel_id = self.config.get("moderation_log_channel_id", 0)
+        moderation_log_channel = interaction.guild.get_channel_or_thread(int(moderation_log_channel_id))
+        if moderation_log_channel:
+            await moderation_log_channel.send(embed=discord.Embed(title="🔴 解散服务器", description=f"用户 {interaction.user.mention} 尝试解散服务器。"))
+        await interaction.followup.send("❌ 权限不足", ephemeral=True)
+        return
