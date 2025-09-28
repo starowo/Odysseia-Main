@@ -11,7 +11,7 @@ from typing import List, Tuple, Optional
 
 from src.utils import dm
 from src.utils.confirm_view import confirm_view
-from src.utils.auth import is_admin, is_senior_admin, check_admin_permission, is_admin_member, guild_only
+from src.utils.auth import is_admin, is_senior_admins, check_admin_permission, is_admin_member, guild_only
 
 # ---- 持久视图：删除子区审批 ----
 class ThreadDeleteApprovalView(discord.ui.View):
@@ -90,15 +90,43 @@ class ThreadDeleteApprovalView(discord.ui.View):
 
         self.stop()
 
+class quiz_member:
+    member_id:int
+    at : datetime.datetime
+    def __init__(self,buffer_id:int,buffer_at: datetime.datetime):
+        self.member_id = buffer_id
+        self.at = buffer_at
+
+class quiz_queue: #辅助类，答题处罚队列锁
+    def __init__(self): #队列初始化
+            self.items = []
+            self._new_item_event = asyncio.Event()
+    def queue_into(self,item): #入队方法
+            self.items.append(item)
+            self._new_item_event.set()
+    async def wait_for_item(self):
+        while not self.items:
+            await self._new_item_event.wait()
+            self._new_item_event.clear()
+
 class AdminCommands(commands.Cog):
     def __init__(self, bot):
         self.bot: discord.Client = bot
         self.logger = bot.logger
         self.name = "管理命令"
+        self._queue = quiz_queue() # *New 初始化队列
         # 初始化配置缓存
         self._config_cache = {}
         self._config_cache_mtime = None
-    
+
+    async def cog_load(self):
+        self.background_task = self.bot.loop.create_task(self.quiz_queue_event()) # *New 开始后台任务记录队列
+        self.logger.info("答题处罚队列任务启动成功")
+
+    def cog_unload(self):
+        if self.background_task:
+            self.background_task.cancel()
+
     admin = app_commands.Group(name="管理", description="管理员专用命令")
     
     @commands.Cog.listener()
@@ -272,8 +300,7 @@ class AdminCommands(commands.Cog):
         except Exception as e:
             if self.logger:
                 self.logger.error(f"加载配置文件失败: {e}")
-            return {}
-    
+            return {}  
     
     # ---- 工具函数：将字符串时间转换为数字时长 ----
     def _parse_time(self, time_str: str) -> tuple[int, str]:
@@ -337,7 +364,7 @@ class AdminCommands(commands.Cog):
             return None, path
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f), path
-
+    
     # ---- 添加/移除身份组 ----
     @admin.command(name="身份组", description="添加/移除身份组")
     @app_commands.describe(
@@ -1889,7 +1916,45 @@ class AdminCommands(commands.Cog):
             embed.add_field(name="已回溯消息", value=f"{fetched_count}")
             embed.add_field(name="已记录处罚", value=f"{record_count}")
             await record_message.edit(embed=embed)
+            
+    async def quiz_queue_event(self): # 处理出队后台任务
+        await self.bot.wait_until_ready()
+        while not self.bot.is_closed():
+            try:
+                await self._queue.wait_for_item()
+                #北京时间
+                now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8)))
+                items_to_remove = []
+                for item in self._queue.items:
+                    expiry_time = item.at + datetime.timedelta(seconds=60)
+                    if now >= expiry_time:
+                        items_to_remove.append(item)
+                if items_to_remove:
+                    for item in items_to_remove:
+                        self.logger.debug(f"成员ID为{item.member_id}的处罚冷却(60s)已完成")
+                        self._queue.items.remove(item)
+                if self._queue.items:
+                    next_item = min(self._queue.items,key=lambda x: x.at)
+                    next_expiry = next_item.at + datetime.timedelta(seconds=60)
+                    sleep_duration = (next_expiry - now ).total_seconds()
+                    await asyncio.sleep(max(0.1,sleep_duration))
 
+            except asyncio.CancelledError:
+                self.logger.info(f"任务接收到取消请求，关闭后台任务\n{asyncio.CancelledError}")
+                break
+            except Exception as e:
+                self.logger.error(f"quiz_queue Error:{e}")
+
+    def _get_lock_remaining_seconds(self,member_id:int)-> float|None: # 检查是否在队列中，防止重复处罚造成的异常记录，如果在队列则返回剩余的时间
+        now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))) #北京时间
+        for item in self._queue.items:
+            if item.member_id == member_id:
+                elapsed_time = now - item.at
+                total_cooldown = datetime.timedelta(seconds=60)
+                remaining_time = total_cooldown - elapsed_time
+                return max(0, remaining_time.total_seconds())
+        return None
+    
     # ---- 答题处罚 ----
     @app_commands.command(name="答题处罚", description="移除身份组送往答题区")
     @app_commands.describe(member="要处罚的成员", reason="原因（可选）")
@@ -1933,6 +1998,12 @@ class AdminCommands(commands.Cog):
                     if r.id in whitelist:
                         await interaction.followup.send("❌ 无法处罚此用户", ephemeral=True)
                         return
+
+                remaining_seconds = self._get_lock_remaining_seconds(member.id)
+                if remaining_seconds is not None:
+                    remaining_int = round(remaining_seconds)
+                    await interaction.followup.send(f"❌ 操作失败：成员 {member.mention} 当前已处于处罚冷却中，请勿重复操作。\n若要修改处罚，请在{remaining_int}秒之后执行命令", ephemeral=True)
+                    return
                        
                 await member.remove_roles(*roles_to_remove, reason=f"答题处罚 by {interaction.user}")
 
@@ -1946,7 +2017,9 @@ class AdminCommands(commands.Cog):
                         await sync_cog.sync_remove_role(interaction.guild, member, upper_buffer_role, f"答题处罚 by {interaction.user}")
                 else:
                     await member.remove_roles(role, buffer_role, upper_buffer_role, reason=f"答题处罚 by {interaction.user}")
-
+                #处罚完成后入队，使用北京时间
+                lock_item = quiz_member(buffer_id = member.id,buffer_at = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))))
+                self._queue.queue_into(lock_item)
                 # 私聊通知
                 try:
                     await dm.send_dm(member.guild, member, embed=discord.Embed(title="🔴 答题处罚", description=f"您因 {reason} 被要求重新答题。请重新阅读规则并注意遵守。"))
@@ -2036,6 +2109,11 @@ class AdminCommands(commands.Cog):
         if warn > 14:
             await interaction.followup.send("❌ 警告天数不能超过14天", ephemeral=True)
             return
+        remaining_seconds = self._get_lock_remaining_seconds(member.id)
+        if remaining_seconds is not None:
+            remaining_int = round(remaining_seconds)
+            await interaction.followup.send(f"❌ 操作失败：成员 {member.mention} 当前已处于处罚冷却中，请勿重复操作。\n若要修改处罚，请在{remaining_int}之后执行命令", ephemeral=True)
+            return
         try:
             if duration.total_seconds() > 0:
                 await member.timeout(duration, reason=reason or "答疑组禁言")
@@ -2043,6 +2121,9 @@ class AdminCommands(commands.Cog):
             warned_role = guild.get_role(int(warned_role_id))
             if warned_role and warn > 0:
                 await member.add_roles(warned_role, reason=f"答疑组禁言附加警告 {warn} 天")
+            #处罚完成后入队，使用北京时间
+            lock_item = quiz_member(buffer_id = member.id,buffer_at = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))))
+            self._queue.queue_into(lock_item)
         except discord.Forbidden:
             await interaction.followup.send("❌ 无权限对该成员执行禁言", ephemeral=True)
             return
