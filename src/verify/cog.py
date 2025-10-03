@@ -810,7 +810,8 @@ class VerifyCommands(commands.Cog):
                 verified_role_id = self.config.get("verified_role_id")
                 
                 if buffer_mode and buffer_role_id and buffer_role_id != "请填入缓冲区身份组ID":
-                    if has_passed and upper_buffer_role_id:
+                    # temporary disable upper buffer role
+                    if has_passed and upper_buffer_role_id and False:
                         upper_buffer_role = guild.get_role(int(upper_buffer_role_id))
                         if upper_buffer_role:
                             # 检查是否启用同步模块
@@ -851,7 +852,7 @@ class VerifyCommands(commands.Cog):
             failed_attempts = self._get_recent_failed_attempts(guild_id, user_id)
             max_attempts = self.config.get("max_attempts_per_period", 3)
             
-            fail_msg = f"❌ 答题失败（{correct_count}/{len(questions)}）" if language == "zh_cn" else f"❌ Quiz failed ({correct_count}/{len(questions)})"
+            fail_msg = f"❌ 答题失败（{correct_count}正确/{len(questions)}题）" if language == "zh_cn" else f"❌ Quiz failed ({correct_count} correct /{len(questions)} questions)"
             
             if failed_attempts >= max_attempts:
                 # 达到最大失败次数，设置冷却时间
