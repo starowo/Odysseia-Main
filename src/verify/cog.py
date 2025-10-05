@@ -676,7 +676,7 @@ class VerifyCommands(commands.Cog):
             try:
                 buffer_mode = self.config.get("buffer_mode", True)
                 if buffer_mode and buffer_role_id and buffer_role_id != "请填入缓冲区身份组ID":
-                    if has_passed and upper_buffer_role_id:
+                    if has_passed and upper_buffer_role_id and False:
                         upper_buffer_role = guild.get_role(int(upper_buffer_role_id))
                         if upper_buffer_role:
                             # 检查是否启用同步模块
@@ -1133,10 +1133,12 @@ class QuizView(discord.ui.View):
                 await interaction.response.send_message("❌ 答题会话已过期", ephemeral=True)
                 return
             
+            """
             # 检查用户权限
             if interaction.user.id != session["user_id"]:
                 await interaction.response.send_message("❌ 这不是您的答题界面", ephemeral=True)
                 return
+                """
             
             current_idx = session["current_question"]
             session["answers"][current_idx] = choice_id
