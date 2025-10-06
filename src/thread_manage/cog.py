@@ -397,6 +397,23 @@ class ThreadSelfManage(commands.Cog):
                 content=f"❌ 删除失败: {str(e)}", embed=None, view=None
             )
 
+    @app_commands.allowed_contexts(guilds=True, dms=False)
+    @app_commands.context_menu(name="删除消息")
+    async def delete_message_context_menu(self, interaction: discord.Interaction, message: discord.Message):
+        channel = interaction.channel
+        if not isinstance(channel, discord.Thread):
+            await interaction.response.send_message("此指令仅在子区内有效", ephemeral=True)
+            return
+        
+        if not await self.can_manage_thread(interaction, channel):
+            await interaction.response.send_message("不能在他人子区内使用此指令", ephemeral=True)
+            return
+        
+        await interaction.response.defer(ephemeral=True)
+        
+        await message.delete()
+        await interaction.edit_original_response(content="✅ 消息已删除", embed=None, view=None)
+
     # ---- 删除整个子区 ----
     @self_manage.command(name="删帖", description="删除整个子区")
     async def delete_thread(self, interaction: discord.Interaction):
@@ -721,6 +738,27 @@ class ThreadSelfManage(commands.Cog):
                 await interaction.response.send_message("✅ 已取消标注", ephemeral=True)
             except discord.HTTPException as e:
                 await interaction.response.send_message(f"❌ 取消标注失败: {str(e)}", ephemeral=True)
+
+    @app_commands.allowed_contexts(guilds=True, dms=False)
+    @app_commands.context_menu(name="标注/取消标注")
+    async def pin_operations_context_menu(self, interaction: discord.Interaction, message: discord.Message):
+        channel = interaction.channel
+        if not isinstance(channel, discord.Thread):
+            await interaction.response.send_message("此指令仅在子区内有效", ephemeral=True)
+            return
+        
+        if not await self.can_manage_thread(interaction, channel):
+            await interaction.response.send_message("不能在他人子区内使用此指令", ephemeral=True)
+            return
+        
+        await interaction.response.defer(ephemeral=True)
+        
+        if message.pinned:
+            await message.unpin(reason=f"由 {interaction.user} 取消标注")
+            await interaction.response.send_message("✅ 已取消标注", ephemeral=True)
+        else:
+            await message.pin(reason=f"由 {interaction.user} 标注")
+            await interaction.response.send_message("✅ 已标注", ephemeral=True)
 
     # ---- 编辑标签 ----
     @self_manage.command(name="编辑标签", description="编辑子区标签")
@@ -1184,3 +1222,4 @@ class ThreadSelfManage(commands.Cog):
                 )
             
             await interaction.response.send_message(embed=embed, ephemeral=True)
+
