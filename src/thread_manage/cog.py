@@ -106,6 +106,11 @@ class ThreadSelfManage(commands.Cog):
             disabled_count = len(self.auto_clear_manager.disabled_threads)
             self.logger.info(f"自动清理管理器已初始化，共 {disabled_count} 个子区被禁用自动清理")
 
+        self.ctx_delete_message = app_commands.ContextMenu(name="删除消息", callback=self.delete_message_context_menu)
+        self.bot.tree.add_command(self.ctx_delete_message)
+        self.ctx_pin_operations = app_commands.ContextMenu(name="标注/取消标注", callback=self.pin_operations_context_menu)
+        self.bot.tree.add_command(self.ctx_pin_operations)
+
     @self_manage.command(name="清理子区", description="清理子区内不活跃成员")
     @app_commands.describe(threshold="阈值(默认900，最低800)")
     @app_commands.rename(threshold="阈值")
@@ -397,8 +402,6 @@ class ThreadSelfManage(commands.Cog):
                 content=f"❌ 删除失败: {str(e)}", embed=None, view=None
             )
 
-    @app_commands.allowed_contexts(guilds=True, dms=False)
-    @app_commands.context_menu(name="删除消息")
     async def delete_message_context_menu(self, interaction: discord.Interaction, message: discord.Message):
         channel = interaction.channel
         if not isinstance(channel, discord.Thread):
@@ -739,8 +742,6 @@ class ThreadSelfManage(commands.Cog):
             except discord.HTTPException as e:
                 await interaction.response.send_message(f"❌ 取消标注失败: {str(e)}", ephemeral=True)
 
-    @app_commands.allowed_contexts(guilds=True, dms=False)
-    @app_commands.context_menu(name="标注/取消标注")
     async def pin_operations_context_menu(self, interaction: discord.Interaction, message: discord.Message):
         channel = interaction.channel
         if not isinstance(channel, discord.Thread):
