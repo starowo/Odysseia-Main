@@ -60,6 +60,36 @@ class LicenseCog(commands.Cog):
 
     # --- 私有辅助方法 ---
 
+    async def _publish_and_pin_license(self, thread: discord.Thread, embeds: List[discord.Embed]):
+        """
+        发送授权协议并尝试将其标注到帖子中。
+        这是一个集成了发送和标注功能的核心辅助函数。
+
+        Args:
+            thread: 目标帖子频道。
+            embeds: 要发送的协议Embed列表。
+        """
+        try:
+            # 1. 发送消息
+            license_message = await thread.send(embeds=embeds)
+
+            # 2. 尝试标注（Pin）刚刚发送的消息
+            await license_message.pin(reason=f"{SIGNATURE_HELPER}: 自动标注发布的协议。")
+
+            if self.logger:
+                self.logger.info(f"成功发布并标注了协议在帖子 #{thread.id} 中。")
+
+        except discord.Forbidden:
+            if self.logger:
+                self.logger.warning(
+                    f"无法在帖子 #{thread.id} 中标注协议消息。 "
+                    f"请检查机器人是否拥有 '管理消息' 权限。"
+                )
+            # 即使标注失败，消息也已经成功发出了，所以我们在此处静默处理，仅记录日志。
+        except discord.HTTPException as e:
+            if self.logger:
+                self.logger.error(f"在发布或标注协议时发生网络错误: {e}")
+
     async def _handle_auto_post(self, thread: discord.Thread, config: LicenseConfig):
         """
         通过创建 View 实例和发送一个“占位符”消息，来完全复用已有的流程。
@@ -78,7 +108,7 @@ class LicenseCog(commands.Cog):
             async def do_post_auto(interaction: discord.Interaction, final_embeds: List[discord.Embed]):
                 """确认=发帖并关闭面板"""
                 await interaction.edit_original_response(content="✅ 协议已发布。", embed=None, view=None)
-                await thread.send(embeds=final_embeds)
+                await self._publish_and_pin_license(thread, final_embeds)
 
             async def do_cancel_auto(interaction: discord.Interaction):
                 """取消=返回到标准的主交互面板"""
@@ -108,7 +138,8 @@ class LicenseCog(commands.Cog):
             await thread.send(content=preview_content, embeds=preview_embeds, view=confirm_view)
         else:
             # === 直接发布 ===
-            await thread.send(embeds=build_license_embeds(config, thread.owner, self.commercial_use_allowed))
+            final_embeds = build_license_embeds(config, thread.owner, self.commercial_use_allowed)
+            await self._publish_and_pin_license(thread, final_embeds)
 
     async def _find_existing_license_message(self, thread: discord.Thread) -> discord.Message | None:
         """
