@@ -22,6 +22,7 @@ class ThreadSelfManage(commands.Cog):
         # 内存缓存：键为 (guild_id, thread_id, user_id)
         self._mute_cache: dict[tuple[int,int,int], dict] = {}
         # 禁言记录将在 on_ready 时加载到内存缓存
+
         # 初始化配置缓存
         self._config_cache = {}
         self._config_cache_mtime = None
@@ -288,6 +289,27 @@ class ThreadSelfManage(commands.Cog):
         finally:
             # 标记手动清理结束
             self.auto_clear_manager.mark_manual_clearing(channel.id, False)
+
+    # ---- 子区@全体 ----
+    @self_manage.command(name="全体通知", description="@所有在本贴内的成员")
+    @app_commands.describe(message="要通知的消息")
+    @app_commands.rename(message="消息")
+    async def announce_all(self, interaction: discord.Interaction, message: str):
+        # 验证是否在子区内
+        channel = interaction.channel
+        if not isinstance(channel, discord.Thread):
+            await interaction.response.send_message("此指令仅在子区内有效", ephemeral=True)
+            return
+        
+        # 验证是否是子区所有者或管理员
+        if not await self.can_manage_thread(interaction, channel):
+            await interaction.response.send_message("不能在他人子区内使用此指令", ephemeral=True)
+            return
+        
+        await interaction.response.defer(ephemeral=True)
+        
+        await channel.send(f"@everyone \n{message}\n> -# 这是一条由贴主发送的子区内通知\n> -# 如果不想再收到此类通知，取消关注本贴即可")
+        await interaction.edit_original_response(content="已通知所有在本贴内的成员")
 
     # ---- 删除消息反应 ----
     @self_manage.command(name="删除消息反应", description="删除指定消息的反应")
