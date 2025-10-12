@@ -112,6 +112,10 @@ class ThreadSelfManage(commands.Cog):
         self.ctx_pin_operations = app_commands.ContextMenu(name="标注/取消标注", callback=self.pin_operations_context_menu)
         self.bot.tree.add_command(self.ctx_pin_operations)
 
+    async def on_disable(self):
+        self.bot.tree.remove_command(self.delete_message_context_menu)
+        self.bot.tree.remove_command(self.pin_operations_context_menu)
+
     @self_manage.command(name="清理子区", description="清理子区内不活跃成员")
     @app_commands.describe(threshold="阈值(默认900，最低800)")
     @app_commands.rename(threshold="阈值")
