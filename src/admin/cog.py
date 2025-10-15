@@ -2030,8 +2030,8 @@ class AdminCommands(commands.Cog):
         if duration.total_seconds() <= 0 and warn <= 0:
             await interaction.followup.send("❌ 时长和警告天数不能同时为0", ephemeral=True)
             return
-        if duration.total_seconds() > 24 * 60 * 60:
-            await interaction.followup.send("❌ 禁言时长不能超过24小时", ephemeral=True)
+        if duration.total_seconds() > 7 * 24 * 60 * 60:
+            await interaction.followup.send("❌ 禁言时长不能超过7天", ephemeral=True)
             return
         if warn > 30:
             await interaction.followup.send("❌ 警告天数不能超过30天", ephemeral=True)
