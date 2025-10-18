@@ -260,8 +260,8 @@ class BannerCommands(commands.Cog):
             await interaction.response.send_message("❌ 此命令只能在服务器中使用", ephemeral=True)
             return
 
-        if 间隔时间 < 60:
-            await interaction.response.send_message("❌ 间隔时间不能少于60秒", ephemeral=True)
+        if 间隔时间 < 20:
+            await interaction.response.send_message("❌ 间隔时间不能少于20秒", ephemeral=True)
             return
 
         if self.db.set_interval(interaction.guild.id, 间隔时间):
@@ -321,8 +321,8 @@ class BannerCommands(commands.Cog):
                     now = discord.utils.utcnow()
                     time_until_end = (event.end_time - now).total_seconds()
                     
-                    # 如果event即将结束（小于70秒），更新到下一个条目
-                    if time_until_end < 70:
+                    # 如果event即将结束（小于20秒），更新到下一个条目
+                    if time_until_end < 20:
                         await self._rotate_to_next_item(guild)
                 
                 except Exception as e:
@@ -379,10 +379,15 @@ class BannerCommands(commands.Cog):
             # 如果已有event，尝试编辑；否则创建新的
             if config.event_id:
                 try:
-                    del event_kwargs['entity_type']
-                    del event_kwargs['start_time']
+                    update_kwargs = {
+                        'name': event_kwargs['name'],
+                        'description': event_kwargs['description'],
+                        'end_time': event_kwargs['end_time'],
+                        'location': event_kwargs['location'],
+                        'privacy_level': event_kwargs['privacy_level']
+                    }
                     event = await guild.fetch_scheduled_event(config.event_id)
-                    await event.edit(**event_kwargs)
+                    await event.edit(**update_kwargs)
                     if self.logger:
                         self.logger.info(f"[轮换通知] 更新了服务器 {guild.name} 的event: {current_item.title}")
                 except Exception as e:
