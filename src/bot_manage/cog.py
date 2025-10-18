@@ -212,3 +212,12 @@ class BotManageCommands(commands.Cog):
     async def ping_slash(self, interaction: discord.Interaction):
         """测试机器人响应时间 (应用命令)"""
         await interaction.response.send_message(f'延迟: {round(self.bot.latency * 1000)}ms', ephemeral=True) 
+
+    @command_bot_manage.command(name="同步命令", description="同步所有命令到Discord")
+    @is_bot_manager()
+    async def sync_commands(self, interaction: discord.Interaction):
+        """同步所有命令到Discord"""
+        synced = await self.bot.tree.sync()
+        synced_guild = await self.bot.tree.sync(guild=interaction.guild)
+        await interaction.response.send_message(f"✅ 已同步 {len(synced)} 个全局命令\n已同步 {len(synced_guild)} 个服务器命令", ephemeral=True)
+        await interaction.response.send_message("✅ 已同步所有命令到Discord", ephemeral=True)
