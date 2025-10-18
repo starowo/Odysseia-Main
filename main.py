@@ -100,19 +100,6 @@ class OdysseiaBot(commands.Bot):
             await cog_manager.load_cog(bot_manage_cog)
             logger.info("已加载管理命令模块")
 
-        if guild:
-            logger.info(f"同步命令到主服务器: {guild.name} ({guild.id})")
-            synced = await self.tree.sync()
-            synced_guild = await self.tree.sync(guild=guild)
-            logger.info(f"已同步 {len(synced)} 个全局命令")
-            logger.info(f"已同步 {len(synced_guild)} 个命令到主服务器")
-            for command in synced:
-                logger.info(f"已同步全局命令: {command.name}")
-            for command in synced_guild:
-                logger.info(f"已同步服务器命令: {command.name}")
-        else:
-            logger.warning("未找到主服务器配置，跳过命令同步")
-
         if 'dm_bot_token' in CONFIG and CONFIG['dm_bot_token'] != CONFIG['token']:
             await dm.init_dm_bot(CONFIG['dm_bot_token'])
 
