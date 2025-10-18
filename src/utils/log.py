@@ -78,7 +78,7 @@ class SingleEmbedLogHandler(logging.Handler):
 
     async def _ensure_message(self):
         guild = self.bot.get_guild(self.guild_id)
-        channel = guild.get_channel(self.channel_id) if guild else None
+        channel = guild.get_channel_or_thread(self.channel_id) if guild else None
         if channel is None:
             raise RuntimeError("无法找到日志频道，请检查配置 guild_id / channel_id")
 
