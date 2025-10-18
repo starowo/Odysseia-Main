@@ -290,7 +290,7 @@ class BannerCommands(commands.Cog):
             days = seconds // 86400
             return f"{days}天"
 
-    @tasks.loop(seconds=60)  # 每分钟检查一次
+    @tasks.loop(seconds=20)  # 每20s检查一次
     async def rotation_task(self):
         """后台轮换任务"""
         try:
@@ -383,7 +383,9 @@ class BannerCommands(commands.Cog):
                     await event.edit(**event_kwargs)
                     if self.logger:
                         self.logger.info(f"[轮换通知] 更新了服务器 {guild.name} 的event: {current_item.title}")
-                except:
+                except Exception as e:
+                    if self.logger:
+                        self.logger.error(f"[轮换通知] 更新event时出错: {e}")
                     # Event不存在，创建新的
                     event = await guild.create_scheduled_event(**event_kwargs)
                     self.db.set_event_id(guild.id, event.id)
