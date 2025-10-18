@@ -380,6 +380,7 @@ class BannerCommands(commands.Cog):
             if config.event_id:
                 try:
                     del event_kwargs['entity_type']
+                    del event_kwargs['start_time']
                     event = await guild.fetch_scheduled_event(config.event_id)
                     await event.edit(**event_kwargs)
                     if self.logger:
