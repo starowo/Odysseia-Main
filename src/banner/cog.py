@@ -380,7 +380,6 @@ class BannerCommands(commands.Cog):
             if config.event_id:
                 try:
                     event = await guild.fetch_scheduled_event(config.event_id)
-                    event_kwargs['status'] = EventStatus.active
                     await event.edit(**event_kwargs)
                     if self.logger:
                         self.logger.info(f"[轮换通知] 更新了服务器 {guild.name} 的event: {current_item.title}")
