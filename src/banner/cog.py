@@ -379,6 +379,7 @@ class BannerCommands(commands.Cog):
             # 如果已有event，尝试编辑；否则创建新的
             if config.event_id:
                 try:
+                    del event_kwargs['entity_type']
                     event = await guild.fetch_scheduled_event(config.event_id)
                     await event.edit(**event_kwargs)
                     if self.logger:
