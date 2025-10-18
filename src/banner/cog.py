@@ -26,12 +26,9 @@ class BannerCommands(commands.Cog):
         self.db = BannerDatabase()
         self._config_cache = {}
         self._config_cache_mtime = None
-        
-        # 启动轮换任务
-        self.rotation_task.start()
 
-    def cog_unload(self):
-        """卸载时停止后台任务"""
+    def on_disable(self):
+        """Cog卸载时停止后台任务"""
         self.rotation_task.cancel()
 
     @property
@@ -53,8 +50,9 @@ class BannerCommands(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self):
         """Cog加载完成"""
+        self.rotation_task.start()
         if self.logger:
-            self.logger.info("✅ 轮换通知模块已加载")
+            self.logger.info("✅ 轮换通知模块已加载，后台任务已启动")
 
     banner = app_commands.Group(name="轮换通知", description="轮换通知管理")
 
