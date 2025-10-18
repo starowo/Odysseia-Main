@@ -45,6 +45,14 @@
         "license": {
             "enabled": true,
             "description": "许可证功能"
+        },
+        "todolist": {
+            "enabled": true,
+            "description": "待办事项和提醒功能"
+        },
+        "banner": {
+            "enabled": true,
+            "description": "轮换通知功能"
         }
     },
     

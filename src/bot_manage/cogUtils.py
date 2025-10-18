@@ -12,6 +12,7 @@ import src.event.cog as event
 import src.anonymous_feedback.cog as anonymous_feedback
 import src.sync.cog as sync
 import src.license.cog as license_auto
+import src.banner.cog as banner
 
 # 模块管理
 class CogManager:
@@ -33,7 +34,8 @@ class CogManager:
             "event": "src.event.cog",
             "anonymous_feedback": "src.anonymous_feedback.cog",
             "sync": "src.sync.cog",
-            "license": "src.license.cog"
+            "license": "src.license.cog",
+            "banner": "src.banner.cog"
         }
         
         # Cog类名映射
@@ -46,7 +48,8 @@ class CogManager:
             "event": "EventCommands",
             "anonymous_feedback": "AnonymousFeedbackCog",
             "sync": "ServerSyncCommands",
-            "license": "LicenseCog"
+            "license": "LicenseCog",
+            "banner": "BannerCommands"
         }
         
         # 初始化Cog实例映射
@@ -59,7 +62,8 @@ class CogManager:
             "event": event.EventCommands(bot),
             "anonymous_feedback": anonymous_feedback.AnonymousFeedbackCog(bot),
             "sync": sync.ServerSyncCommands(bot),
-            "license": license_auto.LicenseCog(bot)
+            "license": license_auto.LicenseCog(bot),
+            "banner": banner.BannerCommands(bot)
         }
     
     async def load_all_enabled(self):
