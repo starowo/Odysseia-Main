@@ -390,7 +390,7 @@ class BannerCommands(commands.Cog):
                         'location': event_kwargs['location'],
                         'privacy_level': event_kwargs['privacy_level']
                     }
-                    if event_kwargs['image']:
+                    if 'image' in event_kwargs:
                         update_kwargs['image'] = event_kwargs['image']
                     event = await guild.fetch_scheduled_event(config.event_id)
                     await event.edit(**update_kwargs)
