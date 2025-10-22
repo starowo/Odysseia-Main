@@ -170,3 +170,4 @@ class BannerDatabase:
         config.event_id = event_id
         return self.save_config(config)
 
+
