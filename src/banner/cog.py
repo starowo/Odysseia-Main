@@ -30,6 +30,8 @@ class BannerCommands(commands.Cog):
     def on_disable(self):
         """Cog卸载时停止后台任务"""
         self.rotation_task.cancel()
+        if self.logger:
+            self.logger.info("轮换通知模块已卸载，后台任务已停止")
 
     @property
     def config(self):
@@ -373,7 +375,9 @@ class BannerCommands(commands.Cog):
                             if resp.status == 200:
                                 image_data = await resp.read()
                                 event_kwargs['image'] = image_data
-                except:
+                except Exception as e:
+                    if self.logger:
+                        self.logger.error(f"[轮换通知] 获取封面图时出错: {e}")
                     pass  # 如果获取图片失败，继续创建event但不带图片
             
             # 如果已有event，尝试编辑；否则创建新的
