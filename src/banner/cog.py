@@ -392,6 +392,8 @@ class BannerCommands(commands.Cog):
                     }
                     if 'image' in event_kwargs:
                         update_kwargs['image'] = event_kwargs['image']
+                    else:
+                        update_kwargs.pop('image', None)
                     event = await guild.fetch_scheduled_event(config.event_id)
                     await event.edit(**update_kwargs)
                     if self.logger:
