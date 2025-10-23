@@ -51,6 +51,9 @@
             "description": "轮换通知功能"
         }
     },
+
+    "bot_owner_id": 123456789012345678,
+    "_bot_owner_id_comment": "机器人所有者用户ID，拥有机器人管理权限",
     
     "_global_admins_comment": "管理员用户ID列表，拥有机器人管理权限",
     "admins": [
@@ -93,6 +96,53 @@
     "_channels_comment": "频道配置 - 这些频道需要在Discord服务器中预先创建",
     "punish_announce_channel_id": 123456789012345683,
     "appeal_channel_id": 123456789012345684,
+
+    "_banner_comment": "轮换通知申请系统配置",
+    "banner_application": {
+        "applicant_role_id": 123456789012345686,
+        "review_channel_id": 123456789012345687,
+        "reviewer_role_ids": [
+            123456789012345688,
+            123456789012345689
+        ],
+        "banner_duration_days": 7,
+        "max_active_banners": 30,
+        "max_waitlist": 30,
+        "max_applications_per_user": 1,
+        "audit_channel_id": 123456789012345690,
+        "audit_thread_id": null
+    },
+
+    "server_override": {
+        "123456789012345678": {
+            "admins": [
+                123456789012345678,
+                123456789012345679
+            ],
+            "senior_admins": [
+                123456789012345678
+            ],
+            "warned_role_id": 123456789012345682,
+            "pending_ban_role_id": 123456789012345685,
+            "punish_announce_channel_id": 123456789012345683,
+            "appeal_channel_id": 123456789012345684,
+            "banner_application": {
+                "applicant_role_id": 123456789012345686,
+                "review_channel_id": 123456789012345687,
+                "reviewer_role_ids": [
+                    123456789012345688,
+                    123456789012345689
+                ],
+                "banner_duration_days": 7,
+                "max_active_banners": 30,
+                "max_waitlist": 30,
+                "max_applications_per_user": 1,
+                "audit_channel_id": 123456789012345690,
+                "audit_thread_id": null
+            }
+        }
+    },
+    "server_override_comment": "服务器覆盖配置 - 这些配置会覆盖默认配置",
     
     "_notes": [
         "配置说明：",
@@ -108,6 +158,16 @@
         "10. ID都应该是数字格式，不要用引号包围",
         "11. 频道和身份组需要在Discord服务器中预先创建",
         "12. 修改配置后需要重启机器人才能生效",
-        "13. 如需帮助请查看部署指南.md或运行快速部署.py"
+        "13. banner_application配置轮换通知申请系统：",
+        "    - applicant_role_id: 可申请轮换通知的身份组",
+        "    - review_channel_id: 审核申请的频道",
+        "    - reviewer_role_ids: 可审核申请的身份组列表",
+        "    - banner_duration_days: 通过申请的banner持续天数",
+        "    - max_active_banners: 最大活跃banner数量",
+        "    - max_waitlist: 等待列表最大数量",
+        "    - max_applications_per_user: 每用户最大申请数",
+        "    - audit_channel_id: 审核记录频道ID",
+        "    - audit_thread_id: 审核记录线程ID（可选，如果设置则记录到线程而不是频道）",
+        "14. 如需帮助请查看部署指南.md或运行快速部署.py"
     ]
 } 
