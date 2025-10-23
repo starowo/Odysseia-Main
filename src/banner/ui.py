@@ -125,7 +125,7 @@ class ApplicationButton(ui.View):
         
         # 检查申请身份组权限
         if applicant_role_id:
-            if not any(role.id == applicant_role_id for role in interaction.user.roles):
+            if (not any(role.id == applicant_role_id for role in interaction.user.roles)) and (not interaction.user.guild_permissions.administrator):
                 await interaction.response.send_message("❌ 您没有权限申请轮换通知", ephemeral=True)
                 return
         
@@ -307,10 +307,14 @@ class ReviewView(ui.View):
         # 检查审核权限
         config = get_config_value("banner_application", interaction.guild.id, {})
         reviewer_role_ids = config.get("reviewer_role_ids", [])
+        admin_roles = get_config_value("admins", interaction.guild.id, [])
+        senior_admin_roles = get_config_value("senior_admins", interaction.guild.id, [])
         
+        reviewer_role_ids.extend(admin_roles)
+        reviewer_role_ids.extend(senior_admin_roles)
         if reviewer_role_ids:
             has_permission = any(role.id in reviewer_role_ids for role in interaction.user.roles)
-            if not has_permission:
+            if not has_permission and not interaction.user.guild_permissions.administrator:
                 await interaction.response.send_message("❌ 您没有权限审核申请", ephemeral=True)
                 return
         
