@@ -105,7 +105,7 @@ class ApplicationButton(ui.View):
         self.db = BannerDatabase()
     
     @ui.button(
-        label="申请轮换通知", 
+        label="申请banner", 
         style=discord.ButtonStyle.primary, 
         emoji="📝",
         custom_id="banner_application_button"

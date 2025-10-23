@@ -318,16 +318,12 @@ class BannerCommands(commands.Cog):
         
         # 创建申请按钮视图
         embed = discord.Embed(
-            title="🔄 轮换通知申请",
+            title="🔄 banner申请",
             description="点击下方按钮申请您的轮换通知\n\n"
                        "📋 **申请要求**:\n"
                        f"• 需要具有 <@&{config['applicant_role_id']}> 身份组\n"
                        f"• 每人最多同时拥有 {config.get('max_applications_per_user', 1)} 个申请/轮换通知\n"
-                       f"• 通过的申请将持续 {config.get('banner_duration_days', 7)} 天\n\n"
-                       "⏳ **审核流程**:\n"
-                       "1. 填写申请表单\n"
-                       "2. 等待管理员审核\n"
-                       "3. 通过后自动添加到轮换列表",
+                       f"• 通过的申请将持续 {config.get('banner_duration_days', 7)} 天",
             color=discord.Color.blue()
         )
         embed.set_footer(text="申请系统 | Odysseia Bot")
