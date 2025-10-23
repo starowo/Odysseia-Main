@@ -5,6 +5,8 @@ from functools import wraps
 import discord
 from discord import app_commands
 
+from src.utils.config_helper import get_config_value, get_guild_id_from_member
+
 logger = logging.getLogger('bot')
 
 def _load_config():
@@ -17,15 +19,16 @@ def _load_config():
         return {}
 
 def is_senior_admin_member(member: discord.Member) -> bool:
-    """检查成员是否为高级管理员"""
+    """检查成员是否为高级管理员（支持服务器特定配置）"""
     if not member.guild:
         return False
 
     if member.guild_permissions.administrator:
         return True
     
-    config = _load_config()
-    senior_admin_roles = config.get('senior_admins', [])
+    # 使用服务器特定配置
+    guild_id = get_guild_id_from_member(member)
+    senior_admin_roles = get_config_value('senior_admins', guild_id, [])
     if not senior_admin_roles:
         return False
 
@@ -37,15 +40,16 @@ def is_senior_admin_member(member: discord.Member) -> bool:
     return False
 
 def is_admin_member(member: discord.Member) -> bool:
-    """检查成员是否为管理员"""
+    """检查成员是否为管理员（支持服务器特定配置）"""
     if is_senior_admin_member(member):
         return True
     
     if not member.guild:
         return False
-        
-    config = _load_config()
-    admin_roles = config.get('admins', [])
+    
+    # 使用服务器特定配置
+    guild_id = get_guild_id_from_member(member)
+    admin_roles = get_config_value('admins', guild_id, [])
     if not admin_roles:
         return False
 

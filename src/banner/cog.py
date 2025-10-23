@@ -13,7 +13,9 @@ import pathlib
 import json
 
 from src.banner.database import BannerDatabase, BannerItem
+from src.banner.ui import ApplicationButton, ReviewView, ApplicationModal, RejectModal
 from src.utils.auth import is_admin
+from src.utils.config_helper import get_config_value
 
 
 class BannerCommands(commands.Cog):
@@ -26,6 +28,10 @@ class BannerCommands(commands.Cog):
         self.db = BannerDatabase()
         self._config_cache = {}
         self._config_cache_mtime = None
+        
+        # 添加持久视图
+        self.bot.add_view(ApplicationButton())
+        # ReviewView 和其他Modal会在需要时动态创建，因为它们带有参数
 
     async def on_disable(self):
         """Cog卸载时停止后台任务"""
@@ -278,6 +284,169 @@ class BannerCommands(commands.Cog):
         else:
             await interaction.response.send_message("❌ 设置失败", ephemeral=True)
 
+    @banner.command(name="创建申请按钮", description="在当前频道发送轮换通知申请按钮")
+    async def create_application_button(self, interaction: discord.Interaction):
+        """创建申请按钮"""
+        if not interaction.guild:
+            await interaction.response.send_message("❌ 此命令只能在服务器中使用", ephemeral=True)
+            return
+        
+        # 检查管理员权限
+        if not is_admin(interaction.user, interaction.guild.id):
+            await interaction.response.send_message("❌ 只有管理员可以使用此命令", ephemeral=True)
+            return
+        
+        # 检查配置
+        config = get_config_value("banner_application", interaction.guild.id, {})
+        if not config:
+            await interaction.response.send_message(
+                "❌ 轮换通知申请系统未配置\n请检查配置文件中的 `banner_application` 字段", 
+                ephemeral=True
+            )
+            return
+        
+        required_fields = ["applicant_role_id", "review_channel_id", "reviewer_role_ids"]
+        missing_fields = [field for field in required_fields if not config.get(field)]
+        
+        if missing_fields:
+            await interaction.response.send_message(
+                f"❌ 配置不完整，缺少字段: {', '.join(missing_fields)}", 
+                ephemeral=True
+            )
+            return
+        
+        # 创建申请按钮视图
+        embed = discord.Embed(
+            title="🔄 轮换通知申请",
+            description="点击下方按钮申请您的轮换通知\n\n"
+                       "📋 **申请要求**:\n"
+                       f"• 需要具有 <@&{config['applicant_role_id']}> 身份组\n"
+                       f"• 每人最多同时拥有 {config.get('max_applications_per_user', 1)} 个申请/轮换通知\n"
+                       f"• 通过的申请将持续 {config.get('banner_duration_days', 7)} 天\n\n"
+                       "⏳ **审核流程**:\n"
+                       "1. 填写申请表单\n"
+                       "2. 等待管理员审核\n"
+                       "3. 通过后自动添加到轮换列表",
+            color=discord.Color.blue()
+        )
+        embed.set_footer(text="申请系统 | Odysseia Bot")
+        
+        view = ApplicationButton()
+        await interaction.response.send_message(embed=embed, view=view)
+        
+        if self.logger:
+            self.logger.info(f"[轮换通知] {interaction.user} 创建了申请按钮")
+    
+    @banner.command(name="申请状态", description="查看轮换通知申请状态")
+    async def application_status(self, interaction: discord.Interaction):
+        """查看申请状态"""
+        if not interaction.guild:
+            await interaction.response.send_message("❌ 此命令只能在服务器中使用", ephemeral=True)
+            return
+        
+        applications = self.db.get_all_applications(interaction.guild.id)
+        user_applications = [app for app in applications if app.applicant_id == interaction.user.id]
+        
+        if not user_applications:
+            await interaction.response.send_message("📝 您没有任何申请记录", ephemeral=True)
+            return
+        
+        embed = discord.Embed(
+            title="📋 我的申请状态",
+            color=discord.Color.blue()
+        )
+        
+        status_map = {
+            "pending": "⏳ 待审核",
+            "approved": "✅ 已通过",
+            "rejected": "❌ 已拒绝", 
+            "active": "🔴 活跃中",
+            "waitlisted": "⌛ 等待列表",
+            "expired": "⏰ 已过期"
+        }
+        
+        for app in user_applications:
+            status_text = status_map.get(app.status.value, app.status.value)
+            field_value = f"**状态**: {status_text}\n**标题**: {app.title}\n**位置**: {app.location}"
+            
+            if app.reviewed_at:
+                field_value += f"\n**审核时间**: {app.reviewed_at[:19].replace('T', ' ')}"
+            
+            if app.rejection_reason:
+                field_value += f"\n**拒绝理由**: {app.rejection_reason}"
+            
+            if app.expires_at:
+                field_value += f"\n**到期时间**: {app.expires_at[:19].replace('T', ' ')}"
+            
+            embed.add_field(
+                name=f"申请ID: `{app.id}`",
+                value=field_value,
+                inline=False
+            )
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+    
+    @banner.command(name="管理申请", description="管理轮换通知申请（管理员专用）")
+    async def manage_applications(self, interaction: discord.Interaction):
+        """管理申请"""
+        if not interaction.guild:
+            await interaction.response.send_message("❌ 此命令只能在服务器中使用", ephemeral=True)
+            return
+        
+        # 检查管理员权限
+        if not is_admin(interaction.user, interaction.guild.id):
+            await interaction.response.send_message("❌ 只有管理员可以使用此命令", ephemeral=True)
+            return
+        
+        # 获取所有申请
+        config = self.db.load_config(interaction.guild.id)
+        pending_apps = [app for app in config.applications if app.status.value == "pending"]
+        waitlist_apps = config.waitlist
+        active_apps = [app for app in config.applications if app.status.value == "active"]
+        
+        embed = discord.Embed(
+            title="🛠️ 申请管理面板",
+            color=discord.Color.orange()
+        )
+        
+        embed.add_field(
+            name="⏳ 待审核申请",
+            value=f"{len(pending_apps)} 个" if pending_apps else "无",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="⌛ 等待列表",
+            value=f"{len(waitlist_apps)} 个" if waitlist_apps else "无", 
+            inline=True
+        )
+        
+        embed.add_field(
+            name="🔴 活跃banner",
+            value=f"{len([item for item in config.items if item.application_id])} 个",
+            inline=True
+        )
+        
+        # 显示待审核申请详情
+        if pending_apps:
+            pending_text = ""
+            for app in pending_apps[:5]:  # 最多显示5个
+                pending_text += f"• `{app.id}` - {app.title} (申请者: <@{app.applicant_id}>)\n"
+            if len(pending_apps) > 5:
+                pending_text += f"... 还有 {len(pending_apps) - 5} 个申请"
+            embed.add_field(name="📋 待审核详情", value=pending_text, inline=False)
+        
+        # 显示等待列表详情
+        if waitlist_apps:
+            waitlist_text = ""
+            for app in waitlist_apps[:5]:  # 最多显示5个
+                waitlist_text += f"• `{app.id}` - {app.title} (申请者: <@{app.applicant_id}>)\n"
+            if len(waitlist_apps) > 5:
+                waitlist_text += f"... 还有 {len(waitlist_apps) - 5} 个申请"
+            embed.add_field(name="⌛ 等待列表详情", value=waitlist_text, inline=False)
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
     def _format_interval(self, seconds: int) -> str:
         """格式化时间间隔"""
         if seconds < 60:
@@ -306,6 +475,30 @@ class BannerCommands(commands.Cog):
                         continue
                     
                     config = self.db.load_config(guild_id)
+                    
+                    # 清理过期的申请banner并记录
+                    expired_items = self.db.cleanup_expired_with_details(guild_id)
+                    if expired_items and self.logger:
+                        self.logger.info(f"[轮换通知] 服务器 {guild.name} 清理了 {len(expired_items)} 个过期banner")
+                        
+                        # 为过期的banner记录审核日志
+                        for expired_item in expired_items:
+                            if expired_item.application_id:
+                                try:
+                                    from src.banner.ui import _send_audit_log
+                                    # 获取对应的申请
+                                    application = self.db.get_application(guild_id, expired_item.application_id)
+                                    if application:
+                                        await _send_audit_log(
+                                            guild,
+                                            application,
+                                            "过期",
+                                            guild.me,  # 系统自动操作
+                                            f"Banner已达到{get_config_value('banner_application', guild_id, {}).get('banner_duration_days', 7)}天期限"
+                                        )
+                                except Exception as e:
+                                    if self.logger:
+                                        self.logger.error(f"[轮换通知] 记录过期日志失败: {e}")
                     
                     # 检查是否需要轮换
                     if not config.items or not config.event_id:
