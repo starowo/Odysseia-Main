@@ -7,10 +7,11 @@ import asyncio
 import discord
 from discord import EventStatus, app_commands
 from discord.ext import commands, tasks
-from typing import Optional
+from typing import Optional, Dict, Set
 import datetime
 import pathlib
 import json
+import time
 
 from src.banner.database import BannerDatabase, BannerItem
 from src.banner.ui import ApplicationButton, ReviewView, ApplicationModal, RejectModal
@@ -28,10 +29,19 @@ class BannerCommands(commands.Cog):
         self.db = BannerDatabase()
         self._config_cache = {}
         self._config_cache_mtime = None
+        
+        # 动态调度系统
+        self._guild_schedules: Dict[int, float] = {}  # guild_id -> next_rotation_time
+        self._event_cache: Dict[int, Dict] = {}       # guild_id -> event_info
+        self._active_guilds: Set[int] = set()         # 有活跃轮换的服务器集合
+        self._scheduler_task = None
 
     async def on_disable(self):
         """Cog卸载时停止后台任务"""
-        self.rotation_task.cancel()
+        if self._scheduler_task and not self._scheduler_task.done():
+            self._scheduler_task.cancel()
+        if hasattr(self, 'rotation_task'):
+            self.rotation_task.cancel()
         if self.logger:
             self.logger.info("轮换通知模块已卸载，后台任务已停止")
 
@@ -63,9 +73,10 @@ class BannerCommands(commands.Cog):
             if self.logger:
                 self.logger.error(f"❌ 注册申请按钮视图失败: {e}")
         
-        self.rotation_task.start()
+        # 启动动态调度系统
+        await self._initialize_scheduler()
         if self.logger:
-            self.logger.info("✅ 轮换通知模块已加载，后台任务已启动")
+            self.logger.info("✅ 轮换通知模块已加载，动态调度系统已启动")
 
     banner = app_commands.Group(name="轮换通知", description="轮换通知管理")
 
@@ -121,10 +132,8 @@ class BannerCommands(commands.Cog):
                 ephemeral=True
             )
             
-            # 如果这是第一个条目，自动创建event
-            config = self.db.load_config(interaction.guild.id)
-            if len(config.items) == 1 and not config.event_id:
-                await self._create_or_update_event(interaction.guild)
+            # 触发调度更新
+            self.schedule_guild_update(interaction.guild.id)
             
             if self.logger:
                 self.logger.info(f"[轮换通知] {interaction.user} 添加了条目 {id}")
@@ -149,13 +158,14 @@ class BannerCommands(commands.Cog):
         if self.db.remove_item(interaction.guild.id, id):
             await interaction.response.send_message(f"✅ 已删除轮换通知条目 `{id}`", ephemeral=True)
             
-            # 如果删除后没有条目了，删除event
+            # 检查删除后的状态
             config = self.db.load_config(interaction.guild.id)
-            if len(config.items) == 0 and config.event_id:
+            if len(config.items) == 0:
+                # 没有条目了，删除event
                 await self._delete_event(interaction.guild)
             else:
-                # 更新event显示下一个条目
-                await self._create_or_update_event(interaction.guild)
+                # 触发调度更新
+                self.schedule_guild_update(interaction.guild.id)
             
             if self.logger:
                 self.logger.info(f"[轮换通知] {interaction.user} 删除了条目 {id}")
@@ -213,8 +223,8 @@ class BannerCommands(commands.Cog):
                 ephemeral=True
             )
             
-            # 更新event
-            await self._create_or_update_event(interaction.guild)
+            # 触发调度更新
+            self.schedule_guild_update(interaction.guild.id)
             
             if self.logger:
                 self.logger.info(f"[轮换通知] {interaction.user} 编辑了条目 {id}")
@@ -458,173 +468,294 @@ class BannerCommands(commands.Cog):
             days = seconds // 86400
             return f"{days}天"
 
-    @tasks.loop(seconds=20)  # 每20s检查一次
-    async def rotation_task(self):
-        """后台轮换任务"""
+    # ==================== 动态调度系统 ====================
+    
+    async def _initialize_scheduler(self):
+        """初始化动态调度系统"""
         try:
-            # 遍历所有有配置的服务器
-            for config_file in self.db.data_dir.glob("*.json"):
-                try:
-                    guild_id = int(config_file.stem)
-                    guild = self.bot.get_guild(guild_id)
-                    
-                    if not guild:
-                        continue
-                    
-                    config = self.db.load_config(guild_id)
-                    
-                    # 清理过期的申请banner并记录
-                    expired_items = self.db.cleanup_expired_with_details(guild_id)
-                    if expired_items and self.logger:
-                        self.logger.info(f"[轮换通知] 服务器 {guild.name} 清理了 {len(expired_items)} 个过期banner")
-                        
-                        # 为过期的banner记录审核日志
-                        for expired_item in expired_items:
-                            if expired_item.application_id:
-                                try:
-                                    from src.banner.ui import _send_audit_log
-                                    # 获取对应的申请
-                                    application = self.db.get_application(guild_id, expired_item.application_id)
-                                    if application:
-                                        await _send_audit_log(
-                                            guild,
-                                            application,
-                                            "过期",
-                                            guild.me,  # 系统自动操作
-                                            f"Banner已达到{get_config_value('banner_application', guild_id, {}).get('banner_duration_days', 7)}天期限"
-                                        )
-                                except Exception as e:
-                                    if self.logger:
-                                        self.logger.error(f"[轮换通知] 记录过期日志失败: {e}")
-                    
-                    # 检查是否需要轮换
-                    if not config.items or not config.event_id:
-                        continue
-                    
-                    # 检查event是否存在
-                    try:
-                        event = await guild.fetch_scheduled_event(config.event_id)
-                    except:
-                        # Event不存在，尝试创建新的
-                        await self._create_or_update_event(guild)
-                        continue
-                    
-                    # 计算距离event结束的时间
-                    now = discord.utils.utcnow()
-                    time_until_end = (event.end_time - now).total_seconds()
-                    
-                    # 如果event即将结束（小于20秒），更新到下一个条目
-                    if time_until_end < 20:
-                        await self._rotate_to_next_item(guild)
+            # 扫描所有服务器，初始化调度信息
+            await self._scan_and_schedule_all_guilds()
+            
+            # 启动主调度循环
+            self._scheduler_task = asyncio.create_task(self._scheduler_loop())
+            
+            if self.logger:
+                self.logger.info(f"[调度器] 动态调度系统已初始化，管理 {len(self._active_guilds)} 个活跃服务器")
                 
-                except Exception as e:
-                    if self.logger:
-                        self.logger.error(f"[轮换通知] 处理服务器 {guild_id} 时出错: {e}")
-        
         except Exception as e:
             if self.logger:
-                self.logger.error(f"[轮换通知] 轮换任务出错: {e}")
+                self.logger.error(f"[调度器] 初始化失败: {e}")
 
-    @rotation_task.before_loop
-    async def before_rotation_task(self):
-        """等待bot准备完成"""
-        await self.bot.wait_until_ready()
+    async def _scan_and_schedule_all_guilds(self):
+        """扫描所有服务器并设置调度"""
+        for config_file in self.db.data_dir.glob("*.json"):
+            try:
+                guild_id = int(config_file.stem)
+                guild = self.bot.get_guild(guild_id)
+                
+                if not guild:
+                    continue
+                
+                config = self.db.load_config(guild_id)
+                
+                # 清理过期项目
+                expired_items = self.db.cleanup_expired_with_details(guild_id)
+                if expired_items:
+                    await self._handle_expired_items(guild, expired_items)
+                
+                # 检查是否有活跃的轮换
+                if config.items and len(config.items) > 1:
+                    await self._schedule_guild_rotation(guild_id)
+                else:
+                    # 移除非活跃服务器
+                    self._active_guilds.discard(guild_id)
+                    self._guild_schedules.pop(guild_id, None)
+                    self._event_cache.pop(guild_id, None)
+                    
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(f"[调度器] 扫描服务器 {guild_id} 时出错: {e}")
 
-    async def _create_or_update_event(self, guild: discord.Guild):
-        """创建或更新event"""
+    async def _schedule_guild_rotation(self, guild_id: int):
+        """为服务器安排轮换调度"""
         try:
-            config = self.db.load_config(guild.id)
-            
+            guild = self.bot.get_guild(guild_id)
+            if not guild:
+                return
+                
+            config = self.db.load_config(guild_id)
             if not config.items:
                 return
             
-            # 获取当前要显示的条目
-            current_item = config.items[config.current_index]
+            # 检查或创建event
+            event_info = await self._get_or_create_event(guild, config)
+            if not event_info:
+                return
             
-            # 计算开始时间（从现在开始）
-            start_time = discord.utils.utcnow() + datetime.timedelta(seconds=10)
-            end_time = start_time + datetime.timedelta(seconds=config.interval)
+            # 计算下次轮换时间
+            next_rotation = event_info['end_time'].timestamp()
             
-            # 准备event数据
-            event_kwargs = {
-                'name': current_item.title,
-                'description': current_item.description,
-                'start_time': start_time,
-                'end_time': end_time,
-                'entity_type': discord.EntityType.external,
-                'location': current_item.location,
-                'privacy_level': discord.PrivacyLevel.guild_only
-            }
+            # 更新调度信息
+            self._guild_schedules[guild_id] = next_rotation
+            self._event_cache[guild_id] = event_info
+            self._active_guilds.add(guild_id)
             
-            # 添加封面图
-            if current_item.cover_image:
-                try:
-                    import aiohttp
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(current_item.cover_image) as resp:
-                            if resp.status == 200:
-                                image_data = await resp.read()
-                                event_kwargs['image'] = image_data
-                except Exception as e:
-                    if self.logger:
-                        self.logger.error(f"[轮换通知] 获取封面图时出错: {e}")
-                    pass  # 如果获取图片失败，继续创建event但不带图片
-            
-            # 如果已有event，尝试编辑；否则创建新的
-            if config.event_id:
-                try:
-                    update_kwargs = {
-                        'name': event_kwargs['name'],
-                        'description': event_kwargs['description'],
-                        'end_time': event_kwargs['end_time'],
-                        'location': event_kwargs['location'],
-                        'privacy_level': event_kwargs['privacy_level']
-                    }
-                    if 'image' in event_kwargs:
-                        update_kwargs['image'] = event_kwargs['image']
-                    else:
-                        update_kwargs['image'] = None
-                    event = await guild.fetch_scheduled_event(config.event_id)
-                    await event.edit(**update_kwargs)
-                    if self.logger:
-                        self.logger.info(f"[轮换通知] 更新了服务器 {guild.name} 的event: {current_item.title}")
-                except Exception as e:
-                    if self.logger:
-                        self.logger.error(f"[轮换通知] 更新event时出错: {e}")
-                    # Event不存在，创建新的
-                    event = await guild.create_scheduled_event(**event_kwargs)
-                    self.db.set_event_id(guild.id, event.id)
-                    if self.logger:
-                        self.logger.info(f"[轮换通知] 为服务器 {guild.name} 创建了新event: {current_item.title}")
-            else:
-                # 创建新event
-                event = await guild.create_scheduled_event(**event_kwargs)
-                self.db.set_event_id(guild.id, event.id)
-                if self.logger:
-                    self.logger.info(f"[轮换通知] 为服务器 {guild.name} 创建了event: {current_item.title}")
-        
+            if self.logger:
+                time_until = next_rotation - time.time()
+                discord_end = event_info.get('discord_end_time')
+                discord_buffer = (discord_end.timestamp() - next_rotation) if discord_end else 0
+                self.logger.debug(f"[调度器] 服务器 {guild.name} 下次轮换: {time_until:.0f}秒后 (Discord事件缓冲: {discord_buffer:.0f}秒)")
+                
         except Exception as e:
             if self.logger:
-                self.logger.error(f"[轮换通知] 创建/更新event时出错: {e}")
+                self.logger.error(f"[调度器] 安排服务器 {guild_id} 轮换时出错: {e}")
 
-    async def _rotate_to_next_item(self, guild: discord.Guild):
-        """轮换到下一个条目"""
+    async def _scheduler_loop(self):
+        """主调度循环 - 智能等待和处理"""
+        while True:
+            try:
+                current_time = time.time()
+                next_action_time = None
+                guilds_to_rotate = []
+                
+                # 检查需要轮换的服务器
+                for guild_id in list(self._active_guilds):
+                    scheduled_time = self._guild_schedules.get(guild_id)
+                    
+                    if scheduled_time is None:
+                        continue
+                        
+                    if scheduled_time <= current_time + 10:  # 提前10秒准备
+                        guilds_to_rotate.append(guild_id)
+                    else:
+                        if next_action_time is None or scheduled_time < next_action_time:
+                            next_action_time = scheduled_time
+                
+                # 执行需要轮换的服务器
+                for guild_id in guilds_to_rotate:
+                    await self._execute_guild_rotation(guild_id)
+                
+                # 计算下次检查时间
+                if next_action_time:
+                    sleep_time = min(next_action_time - current_time, 300)  # 最多等待5分钟
+                    sleep_time = max(sleep_time, 10)  # 最少等待10秒
+                else:
+                    sleep_time = 60  # 没有活跃轮换时，每分钟检查一次新的
+                
+                if self.logger and guilds_to_rotate:
+                    self.logger.debug(f"[调度器] 处理了 {len(guilds_to_rotate)} 个轮换，下次检查: {sleep_time:.0f}秒后")
+                
+                # 定期重新扫描以发现新的轮换
+                if current_time % 600 < sleep_time:  # 每10分钟扫描一次
+                    asyncio.create_task(self._scan_and_schedule_all_guilds())
+                
+                await asyncio.sleep(sleep_time)
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(f"[调度器] 调度循环出错: {e}")
+                await asyncio.sleep(30)  # 出错后等待30秒再重试
+
+    async def _execute_guild_rotation(self, guild_id: int):
+        """执行服务器轮换"""
         try:
-            # 获取下一个条目（这会自动更新索引）
-            next_item = self.db.get_next_item(guild.id)
+            guild = self.bot.get_guild(guild_id)
+            if not guild:
+                self._active_guilds.discard(guild_id)
+                return
             
+            # 获取下一个条目
+            next_item = self.db.get_next_item(guild_id)
             if not next_item:
+                # 没有更多条目，移除调度
+                self._active_guilds.discard(guild_id)
+                self._guild_schedules.pop(guild_id, None)
+                self._event_cache.pop(guild_id, None)
                 return
             
             # 更新event
-            await self._create_or_update_event(guild)
+            config = self.db.load_config(guild_id)
+            event_info = await self._get_or_create_event(guild, config, force_update=True)
             
-            if self.logger:
-                self.logger.info(f"[轮换通知] 服务器 {guild.name} 轮换到下一个条目: {next_item.title}")
-        
+            if event_info:
+                # 更新调度信息
+                self._guild_schedules[guild_id] = event_info['end_time'].timestamp()
+                self._event_cache[guild_id] = event_info
+                
+                if self.logger:
+                    self.logger.info(f"[调度器] 服务器 {guild.name} 轮换到: {next_item.title}")
+            else:
+                # 创建失败，移除调度
+                self._active_guilds.discard(guild_id)
+                self._guild_schedules.pop(guild_id, None)
+                self._event_cache.pop(guild_id, None)
+                
         except Exception as e:
             if self.logger:
-                self.logger.error(f"[轮换通知] 轮换条目时出错: {e}")
+                self.logger.error(f"[调度器] 执行服务器 {guild_id} 轮换时出错: {e}")
+
+    async def _get_or_create_event(self, guild: discord.Guild, config, force_update=False):
+        """获取或创建event，返回event信息"""
+        try:
+            current_item = config.items[config.current_index]
+            
+            # 如果强制更新或缓存中没有event信息，重新创建
+            if force_update or guild.id not in self._event_cache:
+                # 尝试获取现有event
+                existing_event = None
+                if config.event_id:
+                    try:
+                        existing_event = await guild.fetch_scheduled_event(config.event_id)
+                    except:
+                        pass  # Event可能已删除
+                
+                # 计算时间（给Discord事件结束时间添加缓冲，避免事件提前消失）
+                start_time = discord.utils.utcnow() + datetime.timedelta(seconds=10)
+                
+                # Discord事件延后结束，给轮换系统留出缓冲时间
+                # 原理：我们的轮换调度在设定时间执行，但Discord事件会延后结束
+                # 这样即使轮换稍有延迟，Discord事件也不会提前消失
+                buffer_time = min(300, max(60, config.interval // 10))  # 60-300秒缓冲，根据间隔动态调整
+                end_time = start_time + datetime.timedelta(seconds=config.interval + buffer_time)
+                
+                # 准备event数据
+                event_kwargs = {
+                    'name': current_item.title,
+                    'description': current_item.description,
+                    'start_time': start_time,
+                    'end_time': end_time,
+                    'entity_type': discord.EntityType.external,
+                    'location': current_item.location,
+                    'privacy_level': discord.PrivacyLevel.guild_only
+                }
+                
+                # 添加封面图
+                if current_item.cover_image:
+                    event_kwargs['image'] = await self._get_image_data(current_item.cover_image)
+                
+                # 创建或更新event
+                try:
+                    if existing_event:
+                        update_kwargs = {k: v for k, v in event_kwargs.items() 
+                                       if k not in ['start_time', 'entity_type']}
+                        await existing_event.edit(**update_kwargs)
+                        event = existing_event
+                    else:
+                        event = await guild.create_scheduled_event(**event_kwargs)
+                        self.db.set_event_id(guild.id, event.id)
+                    
+                    # 返回轮换调度时间（不包含缓冲时间）
+                    rotation_time = start_time + datetime.timedelta(seconds=config.interval)
+                    return {
+                        'event': event,
+                        'end_time': rotation_time,  # 轮换时间，用于调度
+                        'discord_end_time': event_kwargs['end_time'],  # Discord事件实际结束时间
+                        'item': current_item
+                    }
+                    
+                except Exception as e:
+                    if self.logger:
+                        self.logger.error(f"[调度器] 创建/更新event失败 {guild.name}: {e}")
+                    return None
+            
+            else:
+                # 使用缓存的信息
+                return self._event_cache[guild.id]
+                
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"[调度器] 获取event信息时出错 {guild.name}: {e}")
+            return None
+
+    async def _get_image_data(self, image_url: str):
+        """异步获取图片数据"""
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.get(image_url) as resp:
+                    if resp.status == 200:
+                        return await resp.read()
+        except:
+            pass
+        return None
+
+    async def _handle_expired_items(self, guild: discord.Guild, expired_items: list):
+        """处理过期的项目"""
+        try:
+            if self.logger:
+                self.logger.info(f"[调度器] 服务器 {guild.name} 清理了 {len(expired_items)} 个过期banner")
+            
+            # 为过期的banner记录审核日志
+            for expired_item in expired_items:
+                if expired_item.application_id:
+                    try:
+                        from src.banner.ui import _send_audit_log
+                        application = self.db.get_application(guild.id, expired_item.application_id)
+                        if application:
+                            await _send_audit_log(
+                                guild,
+                                application,
+                                "过期",
+                                guild.me,
+                                f"Banner已达到{get_config_value('banner_application', guild.id, {}).get('banner_duration_days', 7)}天期限"
+                            )
+                    except Exception as e:
+                        if self.logger:
+                            self.logger.error(f"[调度器] 记录过期日志失败: {e}")
+                            
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"[调度器] 处理过期项目时出错: {e}")
+
+    def schedule_guild_update(self, guild_id: int):
+        """手动触发服务器调度更新（用于命令调用后）"""
+        if guild_id in self._active_guilds:
+            # 清除缓存，强制重新计算
+            self._event_cache.pop(guild_id, None)
+            asyncio.create_task(self._schedule_guild_rotation(guild_id))
+
 
     async def _delete_event(self, guild: discord.Guild):
         """删除event"""
@@ -644,6 +775,11 @@ class BannerCommands(commands.Cog):
             
             # 清除event ID
             self.db.set_event_id(guild.id, None)
+            
+            # 从调度系统移除
+            self._active_guilds.discard(guild.id)
+            self._guild_schedules.pop(guild.id, None)
+            self._event_cache.pop(guild.id, None)
         
         except Exception as e:
             if self.logger:
