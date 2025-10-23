@@ -28,10 +28,6 @@ class BannerCommands(commands.Cog):
         self.db = BannerDatabase()
         self._config_cache = {}
         self._config_cache_mtime = None
-        
-        # 添加持久视图
-        self.bot.add_view(ApplicationButton())
-        # ReviewView 和其他Modal会在需要时动态创建，因为它们带有参数
 
     async def on_disable(self):
         """Cog卸载时停止后台任务"""
@@ -58,6 +54,15 @@ class BannerCommands(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self):
         """Cog加载完成"""
+        # 添加持久视图（在事件循环运行后）
+        try:
+            self.bot.add_view(ApplicationButton())
+            if self.logger:
+                self.logger.info("✅ 轮换通知申请按钮视图已注册")
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"❌ 注册申请按钮视图失败: {e}")
+        
         self.rotation_task.start()
         if self.logger:
             self.logger.info("✅ 轮换通知模块已加载，后台任务已启动")
