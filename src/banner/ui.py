@@ -248,7 +248,7 @@ class ApplicationModal(ui.Modal):
                 return
             
             # 发送到审核频道
-            review_channel = interaction.guild.get_channel(review_channel_id)
+            review_channel = interaction.guild.get_channel_or_thread(review_channel_id)
             if not review_channel:
                 await interaction.response.send_message("❌ 审核频道无效", ephemeral=True)
                 return
