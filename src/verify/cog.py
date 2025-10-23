@@ -12,6 +12,7 @@ from discord import app_commands
 
 from src.utils import dm
 from src.utils.confirm_view import confirm_view
+from src.utils.config_helper import get_config_value, get_config_for_guild
 
 
 class VerifyCommands(commands.Cog):
@@ -43,6 +44,10 @@ class VerifyCommands(commands.Cog):
             if self.logger:
                 self.logger.error(f"加载配置文件失败: {e}")
             return {}
+    
+    def get_guild_config(self, key: str, guild_id: Optional[int] = None, default=None):
+        """获取服务器特定配置值"""
+        return get_config_value(key, guild_id, default)
     
     def is_admin():
         async def predicate(interaction: discord.Interaction):
@@ -275,9 +280,10 @@ class VerifyCommands(commands.Cog):
     async def _process_auto_upgrade(self, guild: discord.Guild):
         """处理单个服务器的自动升级"""
         try:
-            buffer_role_id = self.config.get("buffer_role_id")
-            verified_role_id = self.config.get("verified_role_id")
-            upper_buffer_role_id = self.config.get("upper_buffer_role_id")
+            # 使用服务器特定配置
+            buffer_role_id = self.get_guild_config("buffer_role_id", guild.id)
+            verified_role_id = self.get_guild_config("verified_role_id", guild.id)
+            upper_buffer_role_id = self.get_guild_config("upper_buffer_role_id", guild.id)
             
             if not buffer_role_id or not verified_role_id:
                 return
@@ -621,10 +627,10 @@ class VerifyCommands(commands.Cog):
             await interaction.response.send_message(f"❌ {timeout_msg}", ephemeral=True)
             return
 
-        # 检查是否已有身份组
-        buffer_role_id = self.config.get("buffer_role_id")
-        verified_role_id = self.config.get("verified_role_id")
-        upper_buffer_role_id = self.config.get("upper_buffer_role_id")
+        # 检查是否已有身份组（使用服务器特定配置）
+        buffer_role_id = self.get_guild_config("buffer_role_id", guild.id)
+        verified_role_id = self.get_guild_config("verified_role_id", guild.id)
+        upper_buffer_role_id = self.get_guild_config("upper_buffer_role_id", guild.id)
         
         if buffer_role_id and buffer_role_id != "请填入缓冲区身份组ID":
             buffer_role = guild.get_role(int(buffer_role_id))
@@ -672,9 +678,9 @@ class VerifyCommands(commands.Cog):
             # 答题成功
             success_msg = f"🎉 恭喜！您已成功通过验证（{correct_count}/5）" if language == "zh_cn" else f"🎉 Congratulations! You have passed the verification ({correct_count}/5)"
             
-            # 添加身份组
+            # 添加身份组（使用服务器特定配置）
             try:
-                buffer_mode = self.config.get("buffer_mode", True)
+                buffer_mode = self.get_guild_config("buffer_mode", guild.id, True)
                 if buffer_mode and buffer_role_id and buffer_role_id != "请填入缓冲区身份组ID":
                     if has_passed and upper_buffer_role_id and False:
                         upper_buffer_role = guild.get_role(int(upper_buffer_role_id))
@@ -802,12 +808,12 @@ class VerifyCommands(commands.Cog):
             # 答题成功
             success_msg = f"🎉 恭喜！您已成功通过验证（{correct_count}/{len(questions)}）" if language == "zh_cn" else f"🎉 Congratulations! You have passed the verification ({correct_count}/{len(questions)})"
             
-            # 添加身份组
+            # 添加身份组（使用服务器特定配置）
             try:
-                buffer_mode = self.config.get("buffer_mode", True)
-                buffer_role_id = self.config.get("buffer_role_id")
-                upper_buffer_role_id = self.config.get("upper_buffer_role_id")
-                verified_role_id = self.config.get("verified_role_id")
+                buffer_mode = self.get_guild_config("buffer_mode", guild.id, True)
+                buffer_role_id = self.get_guild_config("buffer_role_id", guild.id)
+                upper_buffer_role_id = self.get_guild_config("upper_buffer_role_id", guild.id)
+                verified_role_id = self.get_guild_config("verified_role_id", guild.id)
                 
                 if buffer_mode and buffer_role_id and buffer_role_id != "请填入缓冲区身份组ID":
                     # temporary disable upper buffer role
@@ -917,9 +923,9 @@ class VerifyCommands(commands.Cog):
             await interaction.response.send_message(f"❌ {cooldown_msg}", ephemeral=True)
             return
 
-        # 检查是否已有身份组
-        buffer_role_id = self.config.get("buffer_role_id")
-        verified_role_id = self.config.get("verified_role_id")
+        # 检查是否已有身份组（使用服务器特定配置）
+        buffer_role_id = self.get_guild_config("buffer_role_id", guild.id)
+        verified_role_id = self.get_guild_config("verified_role_id", guild.id)
         
         if buffer_role_id and buffer_role_id != "请填入缓冲区身份组ID":
             buffer_role = guild.get_role(int(buffer_role_id))
