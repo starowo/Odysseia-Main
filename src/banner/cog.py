@@ -518,35 +518,15 @@ class BannerCommands(commands.Cog):
                             await self._create_or_update_event(guild)
                             continue
                         
-                        # 计算下次轮换时间
-                        next_guild_rotation = event.start_time + datetime.timedelta(seconds=config.interval)
                         
-                        # 如果已到轮换时间，立即执行轮换
-                        if current_time >= next_guild_rotation:
-                            await self._rotate_to_next_item(guild)
-                            # 重新计算下次轮换时间（因为轮换后event.start_time会更新）
-                            config = self.db.load_config(guild_id)  # 重新加载配置
-                            try:
-                                event = await guild.fetch_scheduled_event(config.event_id)
-                                next_guild_rotation = event.start_time + datetime.timedelta(seconds=config.interval)
-                            except:
-                                continue
-                        
-                        # 记录这个服务器的下次轮换时间
-                        if next_rotation_time is None or next_guild_rotation < next_rotation_time:
-                            next_rotation_time = next_guild_rotation
+                        await self._rotate_to_next_item(guild)
+                
                     
                     except Exception as e:
                         if self.logger:
                             self.logger.error(f"[轮换通知] 处理服务器 {guild_id} 时出错: {e}")
                 
-                # 计算等待时间
-                if next_rotation_time:
-                    wait_seconds = max(10, (next_rotation_time - current_time).total_seconds())
-                    # 限制最大等待时间，避免等待过久
-                    wait_seconds = min(wait_seconds, 300)  # 最多等待5分钟
-                else:
-                    wait_seconds = 60  # 如果没有待轮换的服务器，等待1分钟
+                wait_seconds = config.interval  # 如果没有待轮换的服务器，等待1分钟
                 
                 if self.logger:
                     self.logger.debug(f"[轮换通知] 下次检查等待 {wait_seconds:.1f} 秒")
