@@ -28,12 +28,14 @@ class BannerCommands(commands.Cog):
         self.db = BannerDatabase()
         self._config_cache = {}
         self._config_cache_mtime = None
+        self._task_running = True
 
     async def on_disable(self):
         """Cog卸载时停止后台任务"""
-        self.rotation_task.cancel()
+        # 设置停止标志
+        self._task_running = False
         if self.logger:
-            self.logger.info("轮换通知模块已卸载，后台任务已停止")
+            self.logger.info("轮换通知模块已卸载，后台任务将停止")
 
     @property
     def config(self):
@@ -63,7 +65,10 @@ class BannerCommands(commands.Cog):
             if self.logger:
                 self.logger.error(f"❌ 注册申请按钮视图失败: {e}")
         
-        self.rotation_task.start()
+        # 启动轮换任务
+        
+        self._task_running = True
+        asyncio.create_task(self.rotation_task())
         if self.logger:
             self.logger.info("✅ 轮换通知模块已加载，后台任务已启动")
 
@@ -458,77 +463,102 @@ class BannerCommands(commands.Cog):
             days = seconds // 86400
             return f"{days}天"
 
-    @tasks.loop(seconds=20)  # 每20s检查一次
     async def rotation_task(self):
-        """后台轮换任务"""
-        try:
-            # 遍历所有有配置的服务器
-            for config_file in self.db.data_dir.glob("*.json"):
-                try:
-                    guild_id = int(config_file.stem)
-                    guild = self.bot.get_guild(guild_id)
-                    
-                    if not guild:
-                        continue
-                    
-                    config = self.db.load_config(guild_id)
-                    
-                    # 清理过期的申请banner并记录
-                    expired_items = self.db.cleanup_expired_with_details(guild_id)
-                    if expired_items and self.logger:
-                        self.logger.info(f"[轮换通知] 服务器 {guild.name} 清理了 {len(expired_items)} 个过期banner")
-                        
-                        # 为过期的banner记录审核日志
-                        for expired_item in expired_items:
-                            if expired_item.application_id:
-                                try:
-                                    from src.banner.ui import _send_audit_log
-                                    # 获取对应的申请
-                                    application = self.db.get_application(guild_id, expired_item.application_id)
-                                    if application:
-                                        await _send_audit_log(
-                                            guild,
-                                            application,
-                                            "过期",
-                                            guild.me,  # 系统自动操作
-                                            f"Banner已达到{get_config_value('banner_application', guild_id, {}).get('banner_duration_days', 7)}天期限"
-                                        )
-                                except Exception as e:
-                                    if self.logger:
-                                        self.logger.error(f"[轮换通知] 记录过期日志失败: {e}")
-                    
-                    # 检查是否需要轮换
-                    if not config.items or not config.event_id:
-                        continue
-                    
-                    # 检查event是否存在
-                    try:
-                        event = await guild.fetch_scheduled_event(config.event_id)
-                    except:
-                        # Event不存在，尝试创建新的
-                        await self._create_or_update_event(guild)
-                        continue
-                    
-                    # 计算距离event结束的时间
-                    now = discord.utils.utcnow()
-                    time_until_end = (event.end_time - now).total_seconds()
-                    
-                    # 如果event即将结束（小于20秒），更新到下一个条目
-                    if time_until_end < 20:
-                        await self._rotate_to_next_item(guild)
-                
-                except Exception as e:
-                    if self.logger:
-                        self.logger.error(f"[轮换通知] 处理服务器 {guild_id} 时出错: {e}")
-        
-        except Exception as e:
-            if self.logger:
-                self.logger.error(f"[轮换通知] 轮换任务出错: {e}")
-
-    @rotation_task.before_loop
-    async def before_rotation_task(self):
-        """等待bot准备完成"""
+        """动态轮换任务"""
         await self.bot.wait_until_ready()
+        while self._task_running:
+            try:
+                next_rotation_time = None
+                current_time = discord.utils.utcnow()
+                
+                # 遍历所有有配置的服务器
+                for config_file in self.db.data_dir.glob("*.json"):
+                    try:
+                        guild_id = int(config_file.stem)
+                        guild = self.bot.get_guild(guild_id)
+                        
+                        if not guild:
+                            continue
+                        
+                        config = self.db.load_config(guild_id)
+                        
+                        # 清理过期的申请banner并记录
+                        expired_items = self.db.cleanup_expired_with_details(guild_id)
+                        if expired_items and self.logger:
+                            self.logger.info(f"[轮换通知] 服务器 {guild.name} 清理了 {len(expired_items)} 个过期banner")
+                            
+                            # 为过期的banner记录审核日志
+                            for expired_item in expired_items:
+                                if expired_item.application_id:
+                                    try:
+                                        from src.banner.ui import _send_audit_log
+                                        # 获取对应的申请
+                                        application = self.db.get_application(guild_id, expired_item.application_id)
+                                        if application:
+                                            await _send_audit_log(
+                                                guild,
+                                                application,
+                                                "过期",
+                                                guild.me,  # 系统自动操作
+                                                f"Banner已达到{get_config_value('banner_application', guild_id, {}).get('banner_duration_days', 7)}天期限"
+                                            )
+                                    except Exception as e:
+                                        if self.logger:
+                                            self.logger.error(f"[轮换通知] 记录过期日志失败: {e}")
+                        
+                        # 检查是否需要轮换
+                        if not config.items or not config.event_id:
+                            continue
+                        
+                        # 检查event是否存在
+                        try:
+                            event = await guild.fetch_scheduled_event(config.event_id)
+                        except:
+                            # Event不存在，尝试创建新的
+                            await self._create_or_update_event(guild)
+                            continue
+                        
+                        # 计算下次轮换时间
+                        next_guild_rotation = event.start_time + datetime.timedelta(seconds=config.interval)
+                        
+                        # 如果已到轮换时间，立即执行轮换
+                        if current_time >= next_guild_rotation:
+                            await self._rotate_to_next_item(guild)
+                            # 重新计算下次轮换时间（因为轮换后event.start_time会更新）
+                            config = self.db.load_config(guild_id)  # 重新加载配置
+                            try:
+                                event = await guild.fetch_scheduled_event(config.event_id)
+                                next_guild_rotation = event.start_time + datetime.timedelta(seconds=config.interval)
+                            except:
+                                continue
+                        
+                        # 记录这个服务器的下次轮换时间
+                        if next_rotation_time is None or next_guild_rotation < next_rotation_time:
+                            next_rotation_time = next_guild_rotation
+                    
+                    except Exception as e:
+                        if self.logger:
+                            self.logger.error(f"[轮换通知] 处理服务器 {guild_id} 时出错: {e}")
+                
+                # 计算等待时间
+                if next_rotation_time:
+                    wait_seconds = max(10, (next_rotation_time - current_time).total_seconds())
+                    # 限制最大等待时间，避免等待过久
+                    wait_seconds = min(wait_seconds, 300)  # 最多等待5分钟
+                else:
+                    wait_seconds = 60  # 如果没有待轮换的服务器，等待1分钟
+                
+                if self.logger:
+                    self.logger.debug(f"[轮换通知] 下次检查等待 {wait_seconds:.1f} 秒")
+                
+                # 等待到下次检查时间
+                await asyncio.sleep(wait_seconds)
+            
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(f"[轮换通知] 轮换任务出错: {e}")
+                await asyncio.sleep(30)  # 出错时等待30秒再继续
+
 
     async def _create_or_update_event(self, guild: discord.Guild):
         """创建或更新event"""
@@ -543,7 +573,8 @@ class BannerCommands(commands.Cog):
             
             # 计算开始时间（从现在开始）
             start_time = discord.utils.utcnow() + datetime.timedelta(seconds=10)
-            end_time = start_time + datetime.timedelta(seconds=config.interval)
+            # 结束时间延后30秒，为下一次轮换的网络延迟预留空间
+            end_time = start_time + datetime.timedelta(seconds=config.interval + 30)
             
             # 准备event数据
             event_kwargs = {
@@ -573,10 +604,12 @@ class BannerCommands(commands.Cog):
             # 如果已有event，尝试编辑；否则创建新的
             if config.event_id:
                 try:
+                    # 为更新的事件也预留网络延迟时间
+                    update_end_time = discord.utils.utcnow() + datetime.timedelta(seconds=config.interval + 30)
                     update_kwargs = {
                         'name': event_kwargs['name'],
                         'description': event_kwargs['description'],
-                        'end_time': event_kwargs['end_time'],
+                        'end_time': update_end_time,
                         'location': event_kwargs['location'],
                         'privacy_level': event_kwargs['privacy_level']
                     }

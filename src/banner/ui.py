@@ -8,6 +8,7 @@ from discord import ui
 from typing import Optional
 import uuid
 import datetime
+from src.utils import dm
 
 from src.banner.database import BannerDatabase, BannerApplication, ApplicationStatus
 from src.utils.config_helper import get_config_value
@@ -371,13 +372,7 @@ class ReviewView(ui.View):
         try:
             applicant = interaction.guild.get_member(application.applicant_id)
             if applicant:
-                await applicant.send(
-                    f"🎉 您的轮换通知申请已通过！\n\n"
-                    f"**申请ID**: `{self.application_id}`\n"
-                    f"**标题**: {application.title}\n"
-                    f"**审核员**: {interaction.user}\n"
-                    f"**持续时间**: {duration_days}天"
-                )
+                await dm.send_dm(applicant.guild, applicant, embed=discord.Embed(title="🎉 您的轮换通知申请已通过！", description=f"申请ID: `{self.application_id}`\n标题: {application.title}\n审核员: {interaction.user}\n持续时间: {duration_days}天"))
         except:
             pass  # 忽略私信失败
     
@@ -499,13 +494,7 @@ class RejectModal(ui.Modal):
         try:
             applicant = interaction.guild.get_member(application.applicant_id)
             if applicant:
-                await applicant.send(
-                    f"❌ 您的轮换通知申请已被拒绝\n\n"
-                    f"**申请ID**: `{self.application_id}`\n"
-                    f"**标题**: {application.title}\n"
-                    f"**审核员**: {self.reviewer}\n"
-                    f"**拒绝理由**: {self.reason_input.value}"
-                )
+                await dm.send_dm(applicant.guild, applicant, embed=discord.Embed(title="❌ 您的轮换通知申请已被拒绝", description=f"申请ID: `{self.application_id}`\n标题: {application.title}\n审核员: {self.reviewer}\n拒绝理由: {self.reason_input.value}"))
         except:
             pass  # 忽略私信失败
         
