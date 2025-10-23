@@ -290,15 +290,11 @@ class BannerCommands(commands.Cog):
             await interaction.response.send_message("❌ 设置失败", ephemeral=True)
 
     @banner.command(name="创建申请按钮", description="在当前频道发送轮换通知申请按钮")
+    @is_admin()
     async def create_application_button(self, interaction: discord.Interaction):
         """创建申请按钮"""
         if not interaction.guild:
             await interaction.response.send_message("❌ 此命令只能在服务器中使用", ephemeral=True)
-            return
-        
-        # 检查管理员权限
-        if not is_admin(interaction.user, interaction.guild.id):
-            await interaction.response.send_message("❌ 只有管理员可以使用此命令", ephemeral=True)
             return
         
         # 检查配置
