@@ -34,15 +34,13 @@ async def _send_audit_log(guild: discord.Guild, application: BannerApplication,
                 target = guild.get_thread(audit_thread_id)
                 if not target:
                     # 线程可能不在缓存中，尝试从频道获取
-                    channel = guild.get_channel(audit_channel_id)
-                    if hasattr(channel, 'get_thread'):
-                        target = await channel.fetch_thread(audit_thread_id)
+                    target = guild.fetch_channel(audit_thread_id)
             except:
                 pass
         
         if not target:
             # 使用频道
-            target = guild.get_channel(audit_channel_id)
+            target = guild.get_channel_or_thread(audit_channel_id)
         
         if not target:
             return False
@@ -511,7 +509,7 @@ class RejectModal(ui.Modal):
         if promoted:
             config = get_config_value("banner_application", interaction.guild.id, {})
             review_channel_id = config.get("review_channel_id")
-            review_channel = interaction.guild.get_channel(review_channel_id)
+            review_channel = interaction.guild.get_channel_or_thread(review_channel_id)
             
             if review_channel:
                 for app in promoted:
