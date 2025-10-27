@@ -1462,25 +1462,46 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send("❌ 无修改权限", ephemeral=True)
 
     # ---- 移动频道 ----
-    @admin.command(name="移动频道", description="移动频道到指定分类或位置")
+    @admin.command(name="移动频道", description="移动频道到指定分类或相对位置")
     @app_commands.describe(
         channel="要移动的频道",
         category="目标分类（可选）",
-        position="位置（可选，从0开始）"
+        reference_channel="参考频道（可选）",
+        direction="相对于参考频道的位置"
     )
-    @app_commands.rename(channel="频道", category="分类", position="位置")
+    @app_commands.choices(
+        direction=[
+            app_commands.Choice(name="移动到上方", value="above"),
+            app_commands.Choice(name="移动到下方", value="below"),
+        ]
+    )
+    @app_commands.rename(channel="频道", category="分类", reference_channel="参考频道", direction="位置")
     @is_admin()
     async def move_channel(
         self,
         interaction,  # type: discord.Interaction
         channel: "discord.TextChannel",
         category: "discord.CategoryChannel" = None,
-        position: int = None,
+        reference_channel: "discord.TextChannel" = None,
+        direction: app_commands.Choice[str] = None,
     ):
         await interaction.response.defer(ephemeral=True)
         
-        if category is None and position is None:
-            await interaction.followup.send("❌ 请至少指定分类或位置参数", ephemeral=True)
+        if category is None and reference_channel is None:
+            await interaction.followup.send("❌ 请至少指定分类或参考频道参数", ephemeral=True)
+            return
+        
+        # 如果指定了参考频道但没有指定方向，默认移动到下方
+        if reference_channel is not None and direction is None:
+            direction_value = "below"
+        elif direction is not None:
+            direction_value = direction.value
+        else:
+            direction_value = None
+        
+        # 检查是否试图移动到自己
+        if reference_channel and reference_channel.id == channel.id:
+            await interaction.followup.send("❌ 不能以自己作为参考频道", ephemeral=True)
             return
         
         # 记录移动前的状态
@@ -1496,11 +1517,14 @@ class AdminCommands(commands.Cog):
                 edit_kwargs["category"] = category
             
             # 设置位置
-            if position is not None:
-                if position < 0:
-                    await interaction.followup.send("❌ 位置不能为负数", ephemeral=True)
-                    return
-                edit_kwargs["position"] = position
+            if reference_channel is not None:
+                target_position = reference_channel.position
+                if direction_value == "above":
+                    # 移动到参考频道上方
+                    edit_kwargs["position"] = max(0, target_position)
+                else:  # below
+                    # 移动到参考频道下方
+                    edit_kwargs["position"] = target_position + 1
             
             # 执行移动
             await channel.edit(**edit_kwargs, reason=f"频道移动 by {interaction.user}")
@@ -1510,8 +1534,10 @@ class AdminCommands(commands.Cog):
             if category is not None:
                 old_cat_name = old_category.name if old_category else "无分类"
                 move_description.append(f"分类: {old_cat_name} → {category.name}")
-            if position is not None:
-                move_description.append(f"位置: {old_position} → {position}")
+            if reference_channel is not None:
+                direction_text = "上方" if direction_value == "above" else "下方"
+                move_description.append(f"位置: 移动到 {reference_channel.mention} 的{direction_text}")
+                move_description.append(f"位置变化: {old_position} → {channel.position}")
             
             move_info = "\n".join(move_description)
             
