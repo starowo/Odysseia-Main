@@ -1461,6 +1461,87 @@ class AdminCommands(commands.Cog):
         except discord.Forbidden:
             await interaction.followup.send("❌ 无修改权限", ephemeral=True)
 
+    # ---- 移动频道 ----
+    @admin.command(name="移动频道", description="移动频道到指定分类或位置")
+    @app_commands.describe(
+        channel="要移动的频道",
+        category="目标分类（可选）",
+        position="位置（可选，从0开始）"
+    )
+    @app_commands.rename(channel="频道", category="分类", position="位置")
+    @is_admin()
+    async def move_channel(
+        self,
+        interaction,  # type: discord.Interaction
+        channel: "discord.TextChannel",
+        category: "discord.CategoryChannel" = None,
+        position: int = None,
+    ):
+        await interaction.response.defer(ephemeral=True)
+        
+        if category is None and position is None:
+            await interaction.followup.send("❌ 请至少指定分类或位置参数", ephemeral=True)
+            return
+        
+        # 记录移动前的状态
+        old_category = channel.category
+        old_position = channel.position
+        
+        try:
+            # 准备编辑参数
+            edit_kwargs = {}
+            
+            # 设置分类
+            if category is not None:
+                edit_kwargs["category"] = category
+            
+            # 设置位置
+            if position is not None:
+                if position < 0:
+                    await interaction.followup.send("❌ 位置不能为负数", ephemeral=True)
+                    return
+                edit_kwargs["position"] = position
+            
+            # 执行移动
+            await channel.edit(**edit_kwargs, reason=f"频道移动 by {interaction.user}")
+            
+            # 构造移动结果描述
+            move_description = []
+            if category is not None:
+                old_cat_name = old_category.name if old_category else "无分类"
+                move_description.append(f"分类: {old_cat_name} → {category.name}")
+            if position is not None:
+                move_description.append(f"位置: {old_position} → {position}")
+            
+            move_info = "\n".join(move_description)
+            
+            # 记录日志
+            moderation_log_channel_id = self.get_guild_config("moderation_log_channel_id", interaction.guild.id, 0)
+            moderation_log_channel = interaction.guild.get_channel_or_thread(int(moderation_log_channel_id)) if moderation_log_channel_id else None
+            if moderation_log_channel:
+                embed = discord.Embed(
+                    title="🔄 频道移动",
+                    description=f"管理员 {interaction.user.mention} 移动了频道 {channel.mention}",
+                    color=discord.Color.blue()
+                )
+                embed.add_field(name="移动详情", value=move_info, inline=False)
+                embed.set_author(name=interaction.user.name, icon_url=interaction.user.display_avatar.url)
+                await moderation_log_channel.send(embed=embed)
+            
+            await interaction.followup.send(
+                f"✅ 已成功移动频道 {channel.mention}\n{move_info}", 
+                ephemeral=True
+            )
+            
+        except discord.Forbidden:
+            await interaction.followup.send("❌ 无权限移动该频道", ephemeral=True)
+        except discord.HTTPException as e:
+            await interaction.followup.send(f"❌ 移动频道失败: {str(e)}", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"❌ 移动频道时发生错误: {str(e)}", ephemeral=True)
+            if self.logger:
+                self.logger.error(f"移动频道错误: {e}")
+
     # ---- 一键删帖 ----
     @admin.command(name="一键删帖", description="一键删除某成员发布的全部帖子")
     @app_commands.describe(member="要删除帖子的成员ID", channel="要删除帖子的频道")
