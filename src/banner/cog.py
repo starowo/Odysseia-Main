@@ -13,7 +13,7 @@ import pathlib
 import json
 
 from src.banner.database import BannerDatabase, BannerItem
-from src.banner.ui import ApplicationButton, ReviewView, ApplicationModal, RejectModal
+from src.banner.ui import ApplicationButton, ReviewView, ApplicationModal, RejectModal, BannerListView
 from src.utils.auth import is_admin
 from src.utils.config_helper import get_config_value
 
@@ -237,13 +237,18 @@ class BannerCommands(commands.Cog):
         config = self.db.load_config(interaction.guild.id)
 
         if not items:
-            await interaction.response.send_message("📝 当前没有轮换通知条目", ephemeral=True)
+            embed = discord.Embed(
+                title="📝 轮换通知列表",
+                description="当前没有轮换通知条目",
+                color=discord.Color.orange()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
-        # 构建列表
+        # 构建初始显示embed
         embed = discord.Embed(
-            title="🔄 轮换通知列表",
-            description=f"共有 {len(items)} 个条目",
+            title="🔄 轮换通知管理",
+            description=f"共有 **{len(items)}** 个条目\n\n使用下方的下拉菜单选择要操作的条目，然后点击编辑或删除按钮。",
             color=discord.Color.blue()
         )
 
@@ -255,20 +260,20 @@ class BannerCommands(commands.Cog):
             inline=False
         )
 
-        # 添加每个条目
-        for i, item in enumerate(items, 1):
-            current_marker = "🔹 " if i - 1 == config.current_index else ""
-            field_value = f"{current_marker}**标题**: {item.title}\n**描述**: {item.description}\n**位置**: {item.location}"
-            if item.cover_image:
-                field_value += f"\n**封面**: [查看]({item.cover_image})"
-            
+        # 显示当前活跃的条目
+        if items:
+            current_item = items[config.current_index] if config.current_index < len(items) else items[0]
             embed.add_field(
-                name=f"#{i} - ID: `{item.id}`",
-                value=field_value,
+                name="🔹 当前显示的条目",
+                value=f"**ID**: `{current_item.id}`\n**标题**: {current_item.title}",
                 inline=False
             )
 
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        embed.set_footer(text="💡 提示：选择条目后可进行编辑或删除操作")
+
+        # 创建交互式视图
+        view = BannerListView(interaction.guild.id, items)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     @banner.command(name="切换频率", description="设置轮换通知的切换频率")
     @app_commands.describe(间隔时间="切换间隔（秒），例如：3600=1小时, 1800=30分钟")
