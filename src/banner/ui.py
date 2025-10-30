@@ -532,3 +532,262 @@ class RejectModal(ui.Modal):
                         "晋升",
                         interaction.guild.me  # 使用机器人作为"审核员"
                     )
+
+
+class BannerListView(ui.View):
+    """Banner列表管理视图"""
+    
+    def __init__(self, guild_id: int, items: list):
+        super().__init__(timeout=300)
+        self.guild_id = guild_id
+        self.items = items
+        self.selected_item_id = None
+        self.db = BannerDatabase()
+        
+        # 添加下拉选择框
+        if items:
+            options = []
+            for item in items:
+                # 截断长标题以适应Discord限制
+                label = item.title[:100] if len(item.title) > 100 else item.title
+                description = item.description[:100] if item.description and len(item.description) > 100 else item.description
+                options.append(discord.SelectOption(
+                    label=label,
+                    value=item.id,
+                    description=description[:100] if description else f"位置: {item.location[:50]}"
+                ))
+            
+            self.banner_select.options = options
+        else:
+            # 没有条目时禁用选择框
+            self.banner_select.disabled = True
+            self.edit_button.disabled = True 
+            self.delete_button.disabled = True
+    
+    @ui.select(placeholder="选择要操作的banner条目...")
+    async def banner_select(self, interaction: discord.Interaction, select: ui.Select):
+        """处理下拉选择框选择"""
+        self.selected_item_id = select.values[0]
+        
+        # 启用编辑和删除按钮
+        self.edit_button.disabled = False
+        self.delete_button.disabled = False
+        
+        # 获取选中的条目信息
+        selected_item = next((item for item in self.items if item.id == self.selected_item_id), None)
+        if selected_item:
+            # 创建选中条目的详细信息embed
+            embed = discord.Embed(
+                title="🔹 已选择Banner条目",
+                description=f"**ID**: `{selected_item.id}`",
+                color=discord.Color.blue()
+            )
+            embed.add_field(name="📝 标题", value=selected_item.title, inline=False)
+            embed.add_field(name="📄 描述", value=selected_item.description or "无", inline=False)
+            embed.add_field(name="📍 位置", value=selected_item.location, inline=False)
+            
+            if selected_item.cover_image:
+                embed.add_field(name="🖼️ 封面图", value=f"[查看图片]({selected_item.cover_image})", inline=False)
+                embed.set_thumbnail(url=selected_item.cover_image)
+            
+            embed.set_footer(text="您现在可以编辑或删除此条目")
+            
+            await interaction.response.edit_message(embed=embed, view=self)
+        else:
+            await interaction.response.send_message("❌ 选中的条目不存在", ephemeral=True)
+    
+    @ui.button(label="编辑", style=discord.ButtonStyle.secondary, emoji="✏️", disabled=True)
+    async def edit_button(self, interaction: discord.Interaction, button: ui.Button):
+        """处理编辑按钮点击"""
+        if not self.selected_item_id:
+            await interaction.response.send_message("❌ 请先选择一个条目", ephemeral=True)
+            return
+        
+        # 获取选中的条目
+        selected_item = next((item for item in self.items if item.id == self.selected_item_id), None)
+        if not selected_item:
+            await interaction.response.send_message("❌ 选中的条目不存在", ephemeral=True)
+            return
+        
+        # 显示编辑modal
+        modal = BannerEditModal(self.guild_id, selected_item)
+        await interaction.response.send_modal(modal)
+    
+    @ui.button(label="删除", style=discord.ButtonStyle.danger, emoji="🗑️", disabled=True)
+    async def delete_button(self, interaction: discord.Interaction, button: ui.Button):
+        """处理删除按钮点击"""
+        if not self.selected_item_id:
+            await interaction.response.send_message("❌ 请先选择一个条目", ephemeral=True)
+            return
+        
+        # 获取选中的条目
+        selected_item = next((item for item in self.items if item.id == self.selected_item_id), None)
+        if not selected_item:
+            await interaction.response.send_message("❌ 选中的条目不存在", ephemeral=True)
+            return
+        
+        # 确认删除
+        confirm_embed = discord.Embed(
+            title="⚠️ 确认删除",
+            description=f"您确定要删除以下banner条目吗？\n\n**ID**: `{selected_item.id}`\n**标题**: {selected_item.title}",
+            color=discord.Color.red()
+        )
+        
+        # 创建确认视图
+        confirm_view = BannerDeleteConfirmView(self.guild_id, self.selected_item_id, selected_item.title)
+        await interaction.response.send_message(embed=confirm_embed, view=confirm_view, ephemeral=True)
+
+
+class BannerDeleteConfirmView(ui.View):
+    """删除确认视图"""
+    
+    def __init__(self, guild_id: int, item_id: str, item_title: str):
+        super().__init__(timeout=30)
+        self.guild_id = guild_id
+        self.item_id = item_id 
+        self.item_title = item_title
+        self.db = BannerDatabase()
+    
+    @ui.button(label="确认删除", style=discord.ButtonStyle.danger, emoji="✅")
+    async def confirm_delete(self, interaction: discord.Interaction, button: ui.Button):
+        """确认删除"""
+        # 删除条目
+        if self.db.remove_item(self.guild_id, self.item_id):
+            # 获取BannerCommands cog来处理event更新
+            try:
+                banner_cog = interaction.client.get_cog("轮换通知")
+                if banner_cog:
+                    # 检查是否需要删除或更新event
+                    config = self.db.load_config(self.guild_id)
+                    if len(config.items) == 0 and config.event_id:
+                        # 如果没有条目了，删除event
+                        await banner_cog._delete_event(interaction.guild)
+                    else:
+                        # 更新event显示下一个条目
+                        await banner_cog._create_or_update_event(interaction.guild)
+            except Exception as e:
+                # 记录错误但不阻止删除成功响应
+                print(f"更新event时出错: {e}")
+            
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="✅ 删除成功",
+                    description=f"已删除banner条目 `{self.item_id}` - {self.item_title}",
+                    color=discord.Color.green()
+                ),
+                view=None
+            )
+        else:
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="❌ 删除失败",
+                    description="删除操作失败，请稍后重试",
+                    color=discord.Color.red()
+                ),
+                view=None
+            )
+    
+    @ui.button(label="取消", style=discord.ButtonStyle.secondary, emoji="❌")
+    async def cancel_delete(self, interaction: discord.Interaction, button: ui.Button):
+        """取消删除"""
+        await interaction.response.edit_message(
+            embed=discord.Embed(
+                title="❌ 已取消",
+                description="删除操作已取消",
+                color=discord.Color.orange()
+            ),
+            view=None
+        )
+
+
+class BannerEditModal(ui.Modal):
+    """Banner编辑表单"""
+    
+    def __init__(self, guild_id: int, item):
+        super().__init__(title=f"编辑Banner - {item.id}", timeout=300)
+        self.guild_id = guild_id
+        self.item = item
+        self.db = BannerDatabase()
+        
+        # 设置初始值
+        self.title_input.default = item.title
+        self.description_input.default = item.description or ""
+        self.location_input.default = item.location
+        self.cover_image_input.default = item.cover_image or ""
+    
+    title_input = ui.TextInput(
+        label="标题",
+        placeholder="请输入banner标题...",
+        max_length=100,
+        required=True
+    )
+    
+    description_input = ui.TextInput(
+        label="描述",
+        placeholder="请输入banner描述...",
+        style=discord.TextStyle.paragraph,
+        max_length=1000,
+        required=False
+    )
+    
+    location_input = ui.TextInput(
+        label="位置",
+        placeholder="请输入位置...",
+        max_length=100,
+        required=True
+    )
+    
+    cover_image_input = ui.TextInput(
+        label="封面图链接（可选）",
+        placeholder="请输入封面图URL...",
+        max_length=500,
+        required=False
+    )
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        """处理编辑提交"""
+        from src.banner.database import BannerItem
+        
+        # 创建更新后的条目
+        updated_item = BannerItem(
+            id=self.item.id,
+            title=self.title_input.value,
+            description=self.description_input.value or None,
+            location=self.location_input.value,
+            cover_image=self.cover_image_input.value or None
+        )
+        
+        # 更新数据库
+        if self.db.update_item(self.guild_id, updated_item):
+            # 获取BannerCommands cog来处理event更新
+            try:
+                banner_cog = interaction.client.get_cog("轮换通知")
+                if banner_cog:
+                    # 更新event以反映更改
+                    await banner_cog._create_or_update_event(interaction.guild)
+            except Exception as e:
+                # 记录错误但不阻止编辑成功响应
+                print(f"更新event时出错: {e}")
+            
+            embed = discord.Embed(
+                title="✅ 编辑成功",
+                description=f"已更新banner条目 `{self.item.id}`",
+                color=discord.Color.green()
+            )
+            embed.add_field(name="📝 标题", value=updated_item.title, inline=False)
+            embed.add_field(name="📄 描述", value=updated_item.description or "无", inline=False)
+            embed.add_field(name="📍 位置", value=updated_item.location, inline=False)
+            
+            if updated_item.cover_image:
+                embed.add_field(name="🖼️ 封面图", value=f"[查看图片]({updated_item.cover_image})", inline=False)
+            
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        else:
+            await interaction.response.send_message(
+                embed=discord.Embed(
+                    title="❌ 编辑失败",
+                    description="更新操作失败，请稍后重试",
+                    color=discord.Color.red()
+                ),
+                ephemeral=True
+            )
