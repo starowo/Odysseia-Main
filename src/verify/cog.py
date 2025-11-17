@@ -474,6 +474,8 @@ class VerifyCommands(commands.Cog):
         await channel.send(embed=en_embed, view=view_en)
 
         await interaction.followup.send(f"✅ 已在 {channel.mention} 创建答题按钮", ephemeral=True)
+        if self.logger:
+            self.logger.info(f"用户 {interaction.user} 在 {channel.mention} 创建答题按钮")
 
     @verify.command(name="自动升级状态", description="查看自动升级功能状态")
     
