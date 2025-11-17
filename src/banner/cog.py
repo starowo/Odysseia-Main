@@ -221,8 +221,6 @@ class BannerCommands(commands.Cog):
             # 更新event
             await self._create_or_update_event(interaction.guild)
             
-            if self.logger:
-                self.logger.info(f"[轮换通知] {interaction.user} 编辑了条目 {id}")
         else:
             await interaction.response.send_message("❌ 编辑失败", ephemeral=True)
 
@@ -604,8 +602,6 @@ class BannerCommands(commands.Cog):
                         update_kwargs['image'] = None
                     event = await guild.fetch_scheduled_event(config.event_id)
                     await event.edit(**update_kwargs)
-                    if self.logger:
-                        self.logger.info(f"[轮换通知] 更新了服务器 {guild.name} 的event: {current_item.title}")
                 except Exception as e:
                     if self.logger:
                         self.logger.error(f"[轮换通知] 更新event时出错: {e}")
@@ -637,8 +633,6 @@ class BannerCommands(commands.Cog):
             # 更新event
             await self._create_or_update_event(guild)
             
-            if self.logger:
-                self.logger.info(f"[轮换通知] 服务器 {guild.name} 轮换到下一个条目: {next_item.title}")
         
         except Exception as e:
             if self.logger:
