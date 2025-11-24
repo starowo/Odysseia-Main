@@ -1165,10 +1165,12 @@ class QuizView(discord.ui.View):
                 await interaction.response.send_message("❌ 答题会话已过期", ephemeral=True)
                 return
             
+            """
             # 检查用户权限
             if interaction.user.id != session["user_id"]:
                 await interaction.response.send_message("❌ 这不是您的答题界面", ephemeral=True)
                 return
+                """
             
             current_idx = session["current_question"]
             current_answer = session["answers"][current_idx] or ""
@@ -1197,10 +1199,12 @@ class QuizView(discord.ui.View):
             await interaction.response.send_message("❌ 答题会话已过期", ephemeral=True)
             return
         
+        """
         # 检查用户权限
         if interaction.user.id != session["user_id"]:
             await interaction.response.send_message("❌ 这不是您的答题界面", ephemeral=True)
             return
+            """
         
         # 显示输入模态框
         modal = FillBlankModal(self, self.session_id)
@@ -1211,11 +1215,12 @@ class QuizView(discord.ui.View):
         if not session:
             await interaction.response.send_message("❌ 答题会话已过期", ephemeral=True)
             return
-        
+        """
         # 检查用户权限
         if interaction.user.id != session["user_id"]:
             await interaction.response.send_message("❌ 这不是您的答题界面", ephemeral=True)
             return
+            """
         
         current_idx = session["current_question"]
         if current_idx > 0:
@@ -1235,10 +1240,11 @@ class QuizView(discord.ui.View):
             return
         
         # 检查用户权限
+        """
         if interaction.user.id != session["user_id"]:
             await interaction.response.send_message("❌ 这不是您的答题界面", ephemeral=True)
             return
-        
+        """
         current_idx = session["current_question"]
         questions = session["questions"]
         if current_idx < len(questions) - 1:
@@ -1258,10 +1264,11 @@ class QuizView(discord.ui.View):
             return
         
         # 检查用户权限
+        """
         if interaction.user.id != session["user_id"]:
             await interaction.response.send_message("❌ 这不是您的答题界面", ephemeral=True)
             return
-        
+        """
         await self.cog._process_quiz_submission(self.session_id, interaction)
     
     async def on_timeout(self):
@@ -1294,10 +1301,11 @@ class FillBlankModal(discord.ui.Modal):
             return
         
         # 检查用户权限
+        """
         if interaction.user.id != session["user_id"]:
             await interaction.response.send_message("❌ 这不是您的答题界面", ephemeral=True)
             return
-        
+        """
         current_idx = session["current_question"]
         answer = self.answer_input.value.strip()
         session["answers"][current_idx] = answer
