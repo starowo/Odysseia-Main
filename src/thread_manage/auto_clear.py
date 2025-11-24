@@ -128,7 +128,7 @@ class AutoClearManager:
         # 检查成员数量
         try:
             members = await channel.fetch_members()
-            return len(members) >= 1000
+            return len(members) >= 999
         except Exception:
             return False
 
