@@ -146,37 +146,45 @@ class AdminCommands(commands.Cog):
                         
                     # 遍历警告文件，时间到则移除并删除文件
                     if guild_dir.exists():
+                        to_remove_warn = dict()
                         for file in guild_dir.glob("*.json"):
+
                             try:
                                 with open(file, "r", encoding="utf-8") as f:
                                     warn_record = json.load(f)
                                     
                                 if warn_record.get("until", None):
+                                    user_id = warn_record.get("user_id")
                                     until_time = datetime.datetime.fromisoformat(warn_record["until"])
+                                    timestamp = datetime.datetime.fromisoformat(warn_record.get("timestamp"))
+                                    if user_id not in to_remove_warn:
+                                        to_remove_warn[user_id] = [until_time, timestamp]
+                                    elif timestamp > to_remove_warn[user_id][1]:
+                                        # 如果有多个警告，则更新为最新的警告时间
+                                        to_remove_warn[user_id] = [until_time, timestamp]
                                     if datetime.datetime.now(datetime.timezone.utc) > until_time:
-                                        # 获取用户对象并移除警告身份组
-                                        user_id = warn_record.get("user_id")
-                                        if user_id:
-                                            try:
-                                                member = guild.get_member(user_id)
-                                                if member:
-                                                    # 使用服务器特定配置
-                                                    warned_role_id = self.get_guild_config("warned_role_id", guild.id, 0)
-                                                    warned_role = guild.get_role(int(warned_role_id)) if warned_role_id else None
-                                                    if warned_role and warned_role in member.roles:
-                                                        await member.remove_roles(warned_role, reason=f"警告到期自动移除 by {self.bot.user}")
-                                                        if self.logger:
-                                                            self.logger.info(f"自动移除警告: 用户 {member} (ID: {user_id}) 在服务器 {guild.name}")
-                                                # 删除警告记录文件
-                                                file.unlink(missing_ok=True)
-                                            except Exception as e:
-                                                if self.logger:
-                                                    self.logger.error(f"移除警告身份组失败: 用户ID {user_id}, 错误: {e}")
-                                                # 即使移除身份组失败，也删除过期的记录文件
-                                                file.unlink(missing_ok=True)
+                                        # 删除过期的记录文件
+                                        file.unlink(missing_ok=True)
                             except Exception as e:
                                 if self.logger:
                                     self.logger.error(f"处理警告文件失败: {file}, 错误: {e}")
+                        for user_id, until_time in to_remove_warn.items():
+                            if datetime.datetime.now(datetime.timezone.utc) > until_time:
+                                # 获取用户对象并移除警告身份组
+                                if user_id:
+                                    try:
+                                        member = guild.get_member(user_id)
+                                        if member:
+                                            # 使用服务器特定配置
+                                            warned_role_id = self.get_guild_config("warned_role_id", guild.id, 0)
+                                            warned_role = guild.get_role(int(warned_role_id)) if warned_role_id else None
+                                            if warned_role and warned_role in member.roles:
+                                                await member.remove_roles(warned_role, reason=f"警告到期自动移除 by {self.bot.user}")
+                                                if self.logger:
+                                                    self.logger.info(f"自动移除警告: 用户 {member} (ID: {user_id}) 在服务器 {guild.name}")
+                                    except Exception as e:
+                                        if self.logger:
+                                            self.logger.error(f"移除警告身份组失败: 用户ID {user_id}, 错误: {e}")
                 except Exception as e:
                     if self.logger:
                         self.logger.error(f"处理服务器警告目录失败: {guild_dir}, 错误: {e}")
@@ -283,6 +291,8 @@ class AdminCommands(commands.Cog):
     
     # ---- 工具函数：将字符串时间转换为数字时长 ----
     def _parse_time(self, time_str: str) -> tuple[int, str]:
+        if time_str == "0":
+            return 0, "0秒"
         """将字符串时间转换为数字时长"""
         if time_str.endswith("m"):
             return int(time_str[:-1]) * 60, time_str[:-1] + "分钟"
@@ -663,7 +673,7 @@ class AdminCommands(commands.Cog):
         self,
         interaction,  # type: discord.Interaction
         member: "discord.Member",
-        time: str,
+        time: str = "0d",
         reason: str = None,
         img: discord.Attachment = None,
         warn: int = 0,
