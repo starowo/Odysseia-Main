@@ -158,17 +158,17 @@ class AdminCommands(commands.Cog):
                                     until_time = datetime.datetime.fromisoformat(warn_record["until"])
                                     timestamp = datetime.datetime.fromisoformat(warn_record.get("timestamp"))
                                     if user_id not in to_remove_warn:
-                                        to_remove_warn[user_id] = [until_time, timestamp]
+                                        to_remove_warn[user_id] = (until_time, timestamp)
                                     elif timestamp > to_remove_warn[user_id][1]:
                                         # 如果有多个警告，则更新为最新的警告时间
-                                        to_remove_warn[user_id] = [until_time, timestamp]
+                                        to_remove_warn[user_id] = (until_time, timestamp)
                                     if datetime.datetime.now(datetime.timezone.utc) > until_time:
                                         # 删除过期的记录文件
                                         file.unlink(missing_ok=True)
                             except Exception as e:
                                 if self.logger:
                                     self.logger.error(f"处理警告文件失败: {file}, 错误: {e}")
-                        for user_id, until_time in to_remove_warn.items():
+                        for user_id, (until_time, timestamp) in to_remove_warn.items():
                             if datetime.datetime.now(datetime.timezone.utc) > until_time:
                                 # 获取用户对象并移除警告身份组
                                 if user_id:
