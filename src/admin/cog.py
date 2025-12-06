@@ -1024,6 +1024,166 @@ class AdminCommands(commands.Cog):
             if moderation_log_channel:
                 await moderation_log_channel.send(embed=embed)
 
+    # ---- 批量永封 ----
+    @admin.command(name="批量永封", description="批量永久封禁多个用户（使用逗号分隔的用户ID）")
+    @app_commands.describe(
+        user_ids="用户ID列表（用逗号分隔，例如：123456789,987654321,111222333）",
+        reason="原因（可选）",
+        delete_message_days="删除消息天数（0-7）"
+    )
+    @app_commands.rename(user_ids="用户id列表", reason="原因", delete_message_days="删除消息天数")
+    @is_senior_admin()
+    @guild_only()
+    async def bulk_ban_members(
+        self,
+        interaction,  # type: discord.Interaction
+        user_ids: str,
+        reason: str = None,
+        delete_message_days: int = 0,
+    ):
+        guild = interaction.guild
+        await interaction.response.defer(ephemeral=True)
+
+        # 解析用户ID列表
+        raw_ids = [id_str.strip() for id_str in user_ids.split(",") if id_str.strip()]
+        
+        if not raw_ids:
+            await interaction.followup.send("❌ 请提供至少一个有效的用户ID", ephemeral=True)
+            return
+
+        # 验证并转换ID
+        valid_ids: List[int] = []
+        invalid_ids: List[str] = []
+        
+        for raw_id in raw_ids:
+            try:
+                user_id = int(raw_id)
+                valid_ids.append(user_id)
+            except ValueError:
+                invalid_ids.append(raw_id)
+
+        if not valid_ids:
+            await interaction.followup.send(f"❌ 没有有效的用户ID。无效的ID: {', '.join(invalid_ids)}", ephemeral=True)
+            return
+
+        # 确认操作
+        confirmed = await confirm_view(
+            interaction,
+            title="批量永封确认",
+            description=f"确定要永久封禁以下 {len(valid_ids)} 个用户吗？\n\n用户ID: {', '.join(str(uid) for uid in valid_ids[:20])}" + (f"\n...还有 {len(valid_ids) - 20} 个" if len(valid_ids) > 20 else "") + f"\n\n原因: {reason or '未提供'}",
+            colour=discord.Colour.red(),
+            timeout=60,
+        )
+
+        if not confirmed:
+            return
+
+        # 执行批量封禁
+        success_list: List[Tuple[int, str]] = []  # (user_id, user_name)
+        failed_list: List[Tuple[int, str]] = []   # (user_id, error_reason)
+
+        await interaction.edit_original_response(content=f"正在执行批量封禁... (0/{len(valid_ids)})")
+
+        for idx, user_id in enumerate(valid_ids):
+            try:
+                # 尝试获取用户信息
+                user_name = f"用户 {user_id}"
+                try:
+                    user = await self.bot.fetch_user(user_id)
+                    user_name = str(user)
+                except Exception:
+                    pass
+
+                # 执行封禁
+                await guild.ban(discord.Object(id=user_id), reason=reason, delete_message_days=delete_message_days)
+                success_list.append((user_id, user_name))
+
+                # 保存记录
+                self._save_punish_record(guild.id, {
+                    "type": "ban",
+                    "user_id": user_id,
+                    "moderator_id": interaction.user.id,
+                    "reason": f"[批量永封] {reason}" if reason else "[批量永封]",
+                })
+
+            except discord.Forbidden:
+                failed_list.append((user_id, "无权限"))
+            except discord.NotFound:
+                failed_list.append((user_id, "用户不存在或已被封禁"))
+            except Exception as e:
+                failed_list.append((user_id, str(e)))
+
+            # 每10个更新一次进度
+            if (idx + 1) % 10 == 0:
+                await interaction.edit_original_response(content=f"正在执行批量封禁... ({idx + 1}/{len(valid_ids)})")
+
+        # 构建结果消息
+        result_parts = []
+        
+        if success_list:
+            success_text = f"✅ 成功封禁 {len(success_list)} 个用户"
+            if len(success_list) <= 20:
+                success_text += ":\n" + "\n".join([f"• {name} ({uid})" for uid, name in success_list])
+            result_parts.append(success_text)
+
+        if failed_list:
+            failed_text = f"❌ 失败 {len(failed_list)} 个用户"
+            if len(failed_list) <= 20:
+                failed_text += ":\n" + "\n".join([f"• {uid}: {err}" for uid, err in failed_list])
+            result_parts.append(failed_text)
+
+        if invalid_ids:
+            result_parts.append(f"⚠️ 无效的ID格式: {', '.join(invalid_ids[:10])}" + (f" 等{len(invalid_ids)}个" if len(invalid_ids) > 10 else ""))
+
+        result_message = "\n\n".join(result_parts)
+        await interaction.edit_original_response(content=result_message)
+
+        # 公示和日志（使用服务器特定配置）
+        if success_list:
+            channel_id = self.get_guild_config("punish_announce_channel_id", guild.id, 0)
+            announce_channel = guild.get_channel(int(channel_id)) if channel_id else None
+            moderation_log_channel_id = self.get_guild_config("moderation_log_channel_id", guild.id, 0)
+            moderation_log_channel = guild.get_channel_or_thread(int(moderation_log_channel_id)) if moderation_log_channel_id else None
+            
+            if announce_channel or moderation_log_channel:
+                embed = discord.Embed(title="⛔ 批量永久封禁", color=discord.Color.red())
+                embed.add_field(name="封禁数量", value=f"{len(success_list)} 人")
+                embed.add_field(name="管理员", value=interaction.user.mention)
+                embed.add_field(name="原因", value=reason or "未提供", inline=False)
+                
+                # 显示部分封禁用户
+                user_list_text = "\n".join([f"• <@{uid}>" for uid, name in success_list[:15]])
+                if len(success_list) > 15:
+                    user_list_text += f"\n...还有 {len(success_list) - 15} 个用户"
+                embed.add_field(name="封禁用户", value=user_list_text, inline=False)
+                
+                if announce_channel:
+                    await announce_channel.send(embed=embed)
+                if moderation_log_channel:
+                    await moderation_log_channel.send(embed=embed)
+
+            # 同步处罚到其他服务器
+            sync_cog = self.bot.get_cog("ServerSyncCommands")
+            if sync_cog:
+                for user_id, user_name in success_list:
+                    try:
+                        await sync_cog.sync_punishment(
+                            guild=guild,
+                            punishment_type="ban",
+                            member=None,
+                            moderator=interaction.user,
+                            reason=f"[批量永封] {reason}" if reason else "[批量永封]",
+                            punishment_id=None,
+                            img=None,
+                            user_id=user_id
+                        )
+                    except Exception as e:
+                        if self.logger:
+                            self.logger.warning(f"同步批量封禁失败 (用户 {user_id}): {e}")
+
+        if self.logger:
+            self.logger.info(f"批量永封完成: 成功 {len(success_list)}, 失败 {len(failed_list)}, 操作者: {interaction.user.id}")
+
     # ---- 永封审查 ----
     @admin.command(name="永封审查", description="启动永封审查流程")
     @app_commands.describe(

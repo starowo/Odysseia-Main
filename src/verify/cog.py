@@ -754,16 +754,16 @@ class VerifyCommands(commands.Cog):
             await interaction.response.send_message("❌ 答题会话已过期", ephemeral=True)
             return
 
-        guild_id = session["guild_id"]
-        user_id = session["user_id"]
         questions = session["questions"]
         answers = session["answers"]
         language = session["language"]
 
         guild = interaction.guild
         user = interaction.user
+        guild_id = guild.id
+        user_id = user.id
 
-        if not guild or not user or guild.id != guild_id or user.id != user_id:
+        if not guild or not user:
             await interaction.response.send_message("❌ 系统错误", ephemeral=True)
             return
 
