@@ -28,6 +28,7 @@ class VerifyCommands(commands.Cog):
         self.auto_upgrade_enabled = True
         # 活跃的答题会话
         self.active_quiz_sessions = {}
+        self.active_quiz_sessions_by_user = {}
 
     @property
     def config(self):
@@ -232,11 +233,21 @@ class VerifyCommands(commands.Cog):
             "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat()
         }
         self.active_quiz_sessions[session_id] = session_data
+        self.active_quiz_sessions_by_user[user_id] = session_data
         return session_id
 
     def _get_quiz_session(self, session_id: str) -> Optional[Dict]:
         """获取答题会话"""
+        if session_id in self.active_quiz_sessions_by_user:
+            return self.active_quiz_sessions_by_user[session_id]
         return self.active_quiz_sessions.get(session_id)
+    
+    def _get_quiz_id_by_user(self, user_id: int) -> Optional[str]:
+        """通过用户ID获取答题会话ID"""
+        session = self.active_quiz_sessions_by_user.get(user_id)
+        if session:
+            return session["session_id"]
+        return None
 
     def _update_quiz_session(self, session_id: str, **kwargs):
         """更新答题会话"""
@@ -749,6 +760,7 @@ class VerifyCommands(commands.Cog):
 
     async def _process_quiz_submission(self, session_id: str, interaction: discord.Interaction):
         """处理答题提交"""
+        session_id = self._get_quiz_id_by_user(interaction.user.id)
         session = self._get_quiz_session(session_id)
         if not session:
             await interaction.response.send_message("❌ 答题会话已过期", ephemeral=True)
@@ -1120,7 +1132,8 @@ class QuizView(discord.ui.View):
     
     async def update_view(self, interaction: discord.Interaction):
         """更新视图"""
-        session = self.cog._get_quiz_session(self.session_id)
+        self.session_id = self.cog._get_quiz_id_by_user(interaction.user.id)
+        session = self.cog._get_quiz_session(interaction.user.id)
         if not session:
             # 会话已过期
             embed = discord.Embed(
@@ -1136,7 +1149,8 @@ class QuizView(discord.ui.View):
     
     def _create_choice_callback(self, choice_id: str):
         async def callback(interaction: discord.Interaction):
-            session = self.cog._get_quiz_session(self.session_id)
+            self.session_id = self.cog._get_quiz_id_by_user(interaction.user.id)
+            session = self.cog._get_quiz_session(interaction.user.id)
             if not session:
                 await interaction.response.send_message("❌ 答题会话已过期", ephemeral=True)
                 return
@@ -1160,7 +1174,8 @@ class QuizView(discord.ui.View):
     
     def _create_multichoice_callback(self, choice_id: str):
         async def callback(interaction: discord.Interaction):
-            session = self.cog._get_quiz_session(self.session_id)
+            self.session_id = self.cog._get_quiz_id_by_user(interaction.user.id)
+            session = self.cog._get_quiz_session(interaction.user.id)
             if not session:
                 await interaction.response.send_message("❌ 答题会话已过期", ephemeral=True)
                 return
@@ -1194,7 +1209,8 @@ class QuizView(discord.ui.View):
         return callback
     
     async def _fill_blank_callback(self, interaction: discord.Interaction):
-        session = self.cog._get_quiz_session(self.session_id)
+        self.session_id = self.cog._get_quiz_id_by_user(interaction.user.id)
+        session = self.cog._get_quiz_session(interaction.user.id)
         if not session:
             await interaction.response.send_message("❌ 答题会话已过期", ephemeral=True)
             return
@@ -1211,7 +1227,8 @@ class QuizView(discord.ui.View):
         await interaction.response.send_modal(modal)
     
     async def _prev_question_callback(self, interaction: discord.Interaction):
-        session = self.cog._get_quiz_session(self.session_id)
+        self.session_id = self.cog._get_quiz_id_by_user(interaction.user.id)
+        session = self.cog._get_quiz_session(interaction.user.id)
         if not session:
             await interaction.response.send_message("❌ 答题会话已过期", ephemeral=True)
             return
@@ -1234,7 +1251,8 @@ class QuizView(discord.ui.View):
             await interaction.response.defer()
     
     async def _next_question_callback(self, interaction: discord.Interaction):
-        session = self.cog._get_quiz_session(self.session_id)
+        self.session_id = self.cog._get_quiz_id_by_user(interaction.user.id)
+        session = self.cog._get_quiz_session(interaction.user.id)
         if not session:
             await interaction.response.send_message("❌ 答题会话已过期", ephemeral=True)
             return
@@ -1258,7 +1276,8 @@ class QuizView(discord.ui.View):
             await interaction.response.defer()
     
     async def _submit_callback(self, interaction: discord.Interaction):
-        session = self.cog._get_quiz_session(self.session_id)
+        self.session_id = self.cog._get_quiz_id_by_user(interaction.user.id)
+        session = self.cog._get_quiz_session(interaction.user.id)
         if not session:
             await interaction.response.send_message("❌ 答题会话已过期", ephemeral=True)
             return
@@ -1295,7 +1314,8 @@ class FillBlankModal(discord.ui.Modal):
         self.add_item(self.answer_input)
     
     async def on_submit(self, interaction: discord.Interaction):
-        session = self.quiz_view.cog._get_quiz_session(self.session_id)
+        self.session_id = self.cog._get_quiz_id_by_user(interaction.user.id)
+        session = self.cog._get_quiz_session(interaction.user.id)
         if not session:
             await interaction.response.send_message("❌ 答题会话已过期", ephemeral=True)
             return
