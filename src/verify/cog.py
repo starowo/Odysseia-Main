@@ -266,6 +266,8 @@ class VerifyCommands(commands.Cog):
             if session["guild_id"] == guild_id and session["user_id"] == user_id:
                 to_remove.append(session_id)
         
+        del self.active_quiz_sessions_by_user[user_id]
+        
         for session_id in to_remove:
             del self.active_quiz_sessions[session_id]
 
