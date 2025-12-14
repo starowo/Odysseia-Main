@@ -1314,8 +1314,8 @@ class FillBlankModal(discord.ui.Modal):
         self.add_item(self.answer_input)
     
     async def on_submit(self, interaction: discord.Interaction):
-        self.session_id = self.cog._get_quiz_id_by_user(interaction.user.id)
-        session = self.cog._get_quiz_session(interaction.user.id)
+        self.session_id = self.quiz_view.cog._get_quiz_id_by_user(interaction.user.id)
+        session = self.quiz_view.cog._get_quiz_session(interaction.user.id)
         if not session:
             await interaction.response.send_message("❌ 答题会话已过期", ephemeral=True)
             return
