@@ -568,6 +568,135 @@ class VerifyCommands(commands.Cog):
             
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    @verify.command(name="查询成员状态", description="查询指定成员的答题状态和缓冲区剩余时间")
+    @app_commands.describe(member="要查询的成员")
+    @app_commands.rename(member="成员")
+    async def query_member_status(self, interaction: discord.Interaction, member: discord.Member):
+        """查询指定成员的答题状态和缓冲区剩余时间"""
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("❌ 只能在服务器中使用此命令", ephemeral=True)
+            return
+        
+        # 获取用户数据
+        user_data = self._get_user_data(guild.id, member.id)
+        last_success = user_data.get("last_success")
+        
+        # 获取身份组配置
+        buffer_role_id = self.get_guild_config("buffer_role_id", guild.id)
+        verified_role_id = self.get_guild_config("verified_role_id", guild.id)
+        upper_buffer_role_id = self.get_guild_config("upper_buffer_role_id", guild.id)
+        
+        buffer_role = guild.get_role(int(buffer_role_id)) if buffer_role_id and buffer_role_id != "请填入缓冲区身份组ID" else None
+        verified_role = guild.get_role(int(verified_role_id)) if verified_role_id and verified_role_id != "请填入已验证身份组ID" else None
+        upper_buffer_role = guild.get_role(int(upper_buffer_role_id)) if upper_buffer_role_id else None
+        
+        # 创建embed
+        embed = discord.Embed(
+            title=f"📋 成员状态查询",
+            description=f"查询成员：{member.mention}",
+            color=discord.Color.blue()
+        )
+        
+        # 显示当前身份组状态
+        role_status = []
+        if verified_role and verified_role in member.roles:
+            role_status.append(f"✅ {verified_role.name}")
+        if upper_buffer_role and upper_buffer_role in member.roles:
+            role_status.append(f"🟡 {upper_buffer_role.name}（高级缓冲区）")
+        if buffer_role and buffer_role in member.roles:
+            role_status.append(f"🟠 {buffer_role.name}（缓冲区）")
+        
+        if role_status:
+            embed.add_field(name="🎭 当前身份组", value="\n".join(role_status), inline=False)
+        else:
+            embed.add_field(name="🎭 当前身份组", value="无相关身份组", inline=False)
+        
+        # 显示答题成功时间和缓冲区剩余时间
+        if last_success:
+            try:
+                success_time = datetime.datetime.fromisoformat(last_success)
+                current_time = datetime.datetime.now(datetime.timezone.utc)
+                time_since_success = current_time - success_time
+                
+                # 格式化最后成功时间（使用Discord时间戳格式）
+                unix_timestamp = int(success_time.timestamp())
+                success_time_str = f"<t:{unix_timestamp}:F> (<t:{unix_timestamp}:R>)"
+                embed.add_field(name="⏰ 最后答题成功时间", value=success_time_str, inline=False)
+                
+                # 计算缓冲区剩余时间
+                buffer_threshold = datetime.timedelta(days=5)
+                upper_buffer_threshold = datetime.timedelta(days=3)
+                
+                # 普通缓冲区剩余时间（5天）
+                if time_since_success < buffer_threshold:
+                    buffer_remaining = buffer_threshold - time_since_success
+                    buffer_remaining_days = buffer_remaining.days
+                    buffer_remaining_hours = buffer_remaining.seconds // 3600
+                    buffer_remaining_minutes = (buffer_remaining.seconds % 3600) // 60
+                    
+                    if buffer_remaining_days > 0:
+                        buffer_str = f"{buffer_remaining_days}天 {buffer_remaining_hours}小时 {buffer_remaining_minutes}分钟"
+                    elif buffer_remaining_hours > 0:
+                        buffer_str = f"{buffer_remaining_hours}小时 {buffer_remaining_minutes}分钟"
+                    else:
+                        buffer_str = f"{buffer_remaining_minutes}分钟"
+                    
+                    embed.add_field(name="🟠 缓冲区剩余时间（5天）", value=buffer_str, inline=True)
+                else:
+                    embed.add_field(name="🟠 缓冲区剩余时间（5天）", value="✅ 已达到升级条件", inline=True)
+                
+                # 高级缓冲区剩余时间（3天）
+                if time_since_success < upper_buffer_threshold:
+                    upper_buffer_remaining = upper_buffer_threshold - time_since_success
+                    upper_remaining_days = upper_buffer_remaining.days
+                    upper_remaining_hours = upper_buffer_remaining.seconds // 3600
+                    upper_remaining_minutes = (upper_buffer_remaining.seconds % 3600) // 60
+                    
+                    if upper_remaining_days > 0:
+                        upper_str = f"{upper_remaining_days}天 {upper_remaining_hours}小时 {upper_remaining_minutes}分钟"
+                    elif upper_remaining_hours > 0:
+                        upper_str = f"{upper_remaining_hours}小时 {upper_remaining_minutes}分钟"
+                    else:
+                        upper_str = f"{upper_remaining_minutes}分钟"
+                    
+                    embed.add_field(name="🟡 高级缓冲区剩余时间（3天）", value=upper_str, inline=True)
+                else:
+                    embed.add_field(name="🟡 高级缓冲区剩余时间（3天）", value="✅ 已达到升级条件", inline=True)
+                
+                # 显示已经过的时间
+                elapsed_days = time_since_success.days
+                elapsed_hours = time_since_success.seconds // 3600
+                elapsed_minutes = (time_since_success.seconds % 3600) // 60
+                
+                if elapsed_days > 0:
+                    elapsed_str = f"{elapsed_days}天 {elapsed_hours}小时 {elapsed_minutes}分钟"
+                elif elapsed_hours > 0:
+                    elapsed_str = f"{elapsed_hours}小时 {elapsed_minutes}分钟"
+                else:
+                    elapsed_str = f"{elapsed_minutes}分钟"
+                
+                embed.add_field(name="📅 距离答题成功已过", value=elapsed_str, inline=False)
+                
+            except Exception as e:
+                embed.add_field(name="⚠️ 错误", value=f"解析时间失败: {e}", inline=False)
+        else:
+            embed.add_field(name="⏰ 答题记录", value="该成员暂无答题成功记录", inline=False)
+        
+        # 显示答题尝试统计
+        attempts = user_data.get("attempts", [])
+        if attempts:
+            total_attempts = len(attempts)
+            success_count = sum(1 for a in attempts if a.get("success", False))
+            fail_count = total_attempts - success_count
+            embed.add_field(
+                name="📊 答题统计",
+                value=f"总尝试次数：{total_attempts}\n成功：{success_count} | 失败：{fail_count}",
+                inline=False
+            )
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
     @verify.command(name="手动升级检查", description="立即执行一次自动升级检查")
     
     async def manual_upgrade_check(self, interaction: discord.Interaction):
