@@ -549,7 +549,6 @@ class VerifyCommands(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @verify.command(name="查询成员状态", description="查询指定成员的答题状态和缓冲区剩余时间")
-    @is_admin()
     @app_commands.describe(member="要查询的成员")
     @app_commands.rename(member="成员")
     async def query_member_status(self, interaction: discord.Interaction, member: discord.Member):
