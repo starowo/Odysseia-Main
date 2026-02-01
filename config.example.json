@@ -49,6 +49,10 @@
         "banner": {
             "enabled": true,
             "description": "轮换通知功能"
+        },
+        "track_welcome": {
+        "enabled": true,
+        "description": "成员人数追踪与目标达成通知"
         }
     },
 
