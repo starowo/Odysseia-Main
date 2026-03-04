@@ -234,7 +234,7 @@ class VerifyCommands(commands.Cog):
                 else:
                     # 在此bot上线前就通过答题的成员，直接升级
                     eligible_members.append((member, current_time))
-            upgrade_threshold = datetime.timedelta(days=7)  # 7天后自动升级
+            upgrade_threshold = datetime.timedelta(days=8)  # 8天后自动升级
             
             for member in buffer_role.members:
                 if upper_buffer_role in member.roles:
@@ -526,10 +526,10 @@ class VerifyCommands(commands.Cog):
                 embed.add_field(name="⏰ 最后答题成功时间", value=success_time_str, inline=False)
                 
                 # 计算缓冲区剩余时间
-                buffer_threshold = datetime.timedelta(days=5)
+                buffer_threshold = datetime.timedelta(days=8)
                 upper_buffer_threshold = datetime.timedelta(days=3)
                 
-                # 普通缓冲区剩余时间（5天）
+                # 普通缓冲区剩余时间（8天）
                 if time_since_success < buffer_threshold:
                     buffer_remaining = buffer_threshold - time_since_success
                     buffer_remaining_days = buffer_remaining.days
@@ -543,9 +543,9 @@ class VerifyCommands(commands.Cog):
                     else:
                         buffer_str = f"{buffer_remaining_minutes}分钟"
                     
-                    embed.add_field(name="🟠 缓冲区剩余时间（5天）", value=buffer_str, inline=True)
+                    embed.add_field(name="🟠 缓冲区剩余时间（8天）", value=buffer_str, inline=True)
                 else:
-                    embed.add_field(name="🟠 缓冲区剩余时间（5天）", value="✅ 已达到升级条件", inline=True)
+                    embed.add_field(name="🟠 缓冲区剩余时间（8天）", value="✅ 已达到升级条件", inline=True)
                 
                 # 高级缓冲区剩余时间（3天）
                 if time_since_success < upper_buffer_threshold:
@@ -746,7 +746,7 @@ class VerifyCommands(commands.Cog):
                                 await sync_cog.sync_add_role(guild, user, role, "答题验证通过")
                             else:
                                 await user.add_roles(role, reason="答题验证通过")
-                            success_msg += "\n✅ 已添加缓冲区身份组\n服务器当前处于缓冲准入模式，您可浏览资源区，但无法在服务器内发言\n您将在缓冲区等待5天，之后会自动转移到可正常发言的身份组。\n如果想要提前离开缓冲区，并获取答疑区发言权限，可以前往https://discord.com/channels/1134557553011998840/1400260572070547666 进行进阶答题" if language == "zh_cn" else "\n✅ Buffer role added\nThe server is currently in buffer access mode, you can browse the resource area, but you can only speak in the slow-speed restricted answer channel.\nThe server will transfer buffer status users to the normal speaking identity group at the appropriate time.\nIf you want to leave the buffer zone early, and get the support channel speaking permission, you can go to https://discord.com/channels/1134557553011998840/1400260572070547666 to take the advanced quiz"
+                            success_msg += "\n✅ 已添加缓冲区身份组\n服务器当前处于缓冲准入模式，您可浏览资源区，但无法在服务器内发言\n您将在缓冲区等待8天，之后会自动转移到可正常发言的身份组。\n如果想要提前离开缓冲区，并获取答疑区发言权限，可以前往https://discord.com/channels/1134557553011998840/1400260572070547666 进行进阶答题" if language == "zh_cn" else "\n✅ Buffer role added\nThe server is currently in buffer access mode, you can browse the resource area, but you cannot speak in the server.\nYou will wait 8 days in the buffer zone, after which you will be automatically transferred to the normal speaking role.\nIf you want to leave the buffer zone early, and get the support channel speaking permission, you can go to https://discord.com/channels/1134557553011998840/1400260572070547666 to take the advanced quiz"
                 else:
                     role = guild.get_role(int(verified_role_id))
                     if role:
@@ -883,7 +883,7 @@ class VerifyCommands(commands.Cog):
                                 await sync_cog.sync_add_role(guild, user, role, "答题验证通过")
                             else:
                                 await user.add_roles(role, reason="答题验证通过")
-                            success_msg += "\n✅ 已添加缓冲区身份组\n服务器当前处于缓冲准入模式，您可浏览资源区，但无法在服务器内发言\n您将在缓冲区等待5天，之后会自动转移到可正常发言的身份组。\n如果想要提前离开缓冲区，并获取答疑区发言权限，可以前往https://discord.com/channels/1134557553011998840/1400260572070547666 进行进阶答题" if language == "zh_cn" else "\n✅ Buffer role added\nThe server is currently in buffer access mode, you can browse the resource area, but you can only speak in the slow-speed restricted answer channel.\nThe server will transfer buffer status users to the normal speaking identity group at the appropriate time.\nIf you want to leave the buffer zone early, and get the support channel speaking permission, you can go to https://discord.com/channels/1134557553011998840/1400260572070547666 to take the advanced quiz"
+                            success_msg += "\n✅ 已添加缓冲区身份组\n服务器当前处于缓冲准入模式，您可浏览资源区，但无法在服务器内发言\n您将在缓冲区等待8天，之后会自动转移到可正常发言的身份组。\n如果想要提前离开缓冲区，并获取答疑区发言权限，可以前往https://discord.com/channels/1134557553011998840/1400260572070547666 进行进阶答题" if language == "zh_cn" else "\n✅ Buffer role added\nThe server is currently in buffer access mode, you can browse the resource area, but you cannot speak in the server.\nYou will wait 8 days in the buffer zone, after which you will be automatically transferred to the normal speaking role.\nIf you want to leave the buffer zone early, and get the support channel speaking permission, you can go to https://discord.com/channels/1134557553011998840/1400260572070547666 to take the advanced quiz"
                 else:
                     role = guild.get_role(int(verified_role_id))
                     if role:
