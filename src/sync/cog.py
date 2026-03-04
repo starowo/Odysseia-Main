@@ -10,7 +10,21 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from src.utils.auth import guild_only, is_admin
+from src.utils.auth import guild_only
+
+
+def is_sync_admin():
+    async def predicate(interaction: discord.Interaction) -> bool:
+        cog = interaction.client.get_cog("ServerSyncCommands")
+        if not cog:
+            await interaction.response.send_message("❌ 同步模块未加载", ephemeral=True)
+            return False
+        allowed_ids = cog.config.get("sync_admins", [])
+        if interaction.user.id in allowed_ids:
+            return True
+        await interaction.response.send_message("❌ 您没有同步管理权限", ephemeral=True)
+        return False
+    return app_commands.check(predicate)
 
 
 class ServerSyncCommands(commands.Cog):
@@ -59,6 +73,7 @@ class ServerSyncCommands(commands.Cog):
     def _default_config(self) -> Dict:
         return {
             "enabled": True,
+            "sync_admins": [],
             "server_groups": {},
             "servers": {},
             "role_mapping": {},
@@ -87,6 +102,9 @@ class ServerSyncCommands(commands.Cog):
         cfg = dict(data or {})
         if "enabled" not in cfg:
             cfg["enabled"] = True
+            changed = True
+        if "sync_admins" not in cfg:
+            cfg["sync_admins"] = []
             changed = True
         if "server_groups" not in cfg:
             cfg["server_groups"] = {}
@@ -292,7 +310,7 @@ class ServerSyncCommands(commands.Cog):
         }
         unicode_emoji = getattr(source_role, "unicode_emoji", None)
         if unicode_emoji:
-            base_kwargs["unicode_emoji"] = unicode_emoji
+            base_kwargs["display_icon"] = unicode_emoji
         elif icon_bytes:
             base_kwargs["display_icon"] = icon_bytes
 
@@ -632,7 +650,7 @@ class ServerSyncCommands(commands.Cog):
 
     @sync.command(name="发布手动同步按钮", description="在当前频道发送手动同步面板（Embed + 持久化按钮）")
     @guild_only()
-    @is_admin()
+    @is_sync_admin()
     async def post_manual_sync_panel(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="🔄 主服身份组手动同步",
@@ -649,7 +667,7 @@ class ServerSyncCommands(commands.Cog):
 
     @sync.command(name="主服全量身份组同步", description="从指定组主服务器全量同步可管理身份组到当前子服务器")
     @guild_only()
-    @is_admin()
+    @is_sync_admin()
     @app_commands.describe(组名="服务器组名称")
     async def sync_all_roles_from_main(self, interaction: discord.Interaction, 组名: str):
         await interaction.response.defer(ephemeral=True)
@@ -686,12 +704,13 @@ class ServerSyncCommands(commands.Cog):
             return
 
         server_cfg = group_cfg["servers"][guild_id]
+        main_server_cfg = group_cfg["servers"].get(main_server_id, {})
         updated = 0
         skipped = 0
         role_map: Dict[discord.Role, int] = {}
         top_limit = target_guild.me.top_role.position - 1 if target_guild.me else 0
         total = len(source_roles)
-        step = max(1, total // 20)  # 约 20 次更新，避免过多编辑消息
+        step = max(1, total // 20)
         progress_msg = await interaction.followup.send(
             (
                 f"🔄 正在从主服同步身份组（组: `{组名}`）\n"
@@ -708,6 +727,7 @@ class ServerSyncCommands(commands.Cog):
                 if not target_role:
                     skipped += 1
                 else:
+                    main_server_cfg.setdefault("roles", {})[source_role.name] = source_role.id
                     server_cfg["roles"][source_role.name] = target_role.id
                     role_map[target_role] = min(source_role.position, top_limit)
                     updated += 1
@@ -749,7 +769,7 @@ class ServerSyncCommands(commands.Cog):
     # ====== 同步管理指令 ======
     @sync_manage.command(name="创建组", description="创建一个新的同步服务器组")
     @guild_only()
-    @is_admin()
+    @is_sync_admin()
     @app_commands.describe(组名="服务器组名称")
     async def create_group(self, interaction: discord.Interaction, 组名: str):
         config = self.config
@@ -763,7 +783,7 @@ class ServerSyncCommands(commands.Cog):
 
     @sync_manage.command(name="删除组", description="删除一个同步服务器组")
     @guild_only()
-    @is_admin()
+    @is_sync_admin()
     @app_commands.describe(组名="服务器组名称")
     async def delete_group(self, interaction: discord.Interaction, 组名: str):
         config = self.config
@@ -777,7 +797,7 @@ class ServerSyncCommands(commands.Cog):
 
     @sync_manage.command(name="设置主服务器", description="将当前服务器设置为指定组的主服务器")
     @guild_only()
-    @is_admin()
+    @is_sync_admin()
     @app_commands.describe(组名="服务器组名称")
     async def set_main_server(self, interaction: discord.Interaction, 组名: str):
         config = self.config
@@ -794,7 +814,7 @@ class ServerSyncCommands(commands.Cog):
 
     @sync_manage.command(name="设置子服务器", description="将当前服务器设置为指定组的子服务器")
     @guild_only()
-    @is_admin()
+    @is_sync_admin()
     @app_commands.describe(组名="服务器组名称")
     async def set_sub_server(self, interaction: discord.Interaction, 组名: str):
         config = self.config
@@ -816,7 +836,7 @@ class ServerSyncCommands(commands.Cog):
 
     @sync_manage.command(name="移出当前服务器", description="将当前服务器从所在服务器组中移除")
     @guild_only()
-    @is_admin()
+    @is_sync_admin()
     async def remove_current_server(self, interaction: discord.Interaction):
         guild_id = str(interaction.guild.id)
         config = self.config
@@ -834,7 +854,7 @@ class ServerSyncCommands(commands.Cog):
 
     @sync_manage.command(name="查看组", description="查看全部同步服务器组及主子服务器信息")
     @guild_only()
-    @is_admin()
+    @is_sync_admin()
     async def list_groups(self, interaction: discord.Interaction):
         groups = self.config.get("server_groups", {})
         if not groups:
@@ -852,7 +872,7 @@ class ServerSyncCommands(commands.Cog):
 
     @sync_manage.command(name="身份组", description="设置当前服务器可同步身份组映射")
     @guild_only()
-    @is_admin()
+    @is_sync_admin()
     @app_commands.describe(名字="映射名称（建议与主服身份组同名）", role="当前服务器中的身份组")
     async def add_role_mapping(self, interaction: discord.Interaction, 名字: str, role: discord.Role):
         guild_id = str(interaction.guild.id)
@@ -871,7 +891,7 @@ class ServerSyncCommands(commands.Cog):
 
     @sync_manage.command(name="处罚同步", description="开启或关闭当前服务器在同组中的处罚同步")
     @guild_only()
-    @is_admin()
+    @is_sync_admin()
     @app_commands.describe(状态="开启或关闭")
     @app_commands.choices(
         状态=[
@@ -897,7 +917,7 @@ class ServerSyncCommands(commands.Cog):
 
     @sync_manage.command(name="处罚公示频道", description="设置当前服务器的处罚同步公示频道")
     @guild_only()
-    @is_admin()
+    @is_sync_admin()
     @app_commands.describe(频道="公示频道")
     async def set_punishment_announce_channel(self, interaction: discord.Interaction, 频道: discord.TextChannel):
         guild_id = str(interaction.guild.id)
