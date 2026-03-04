@@ -6,6 +6,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -44,6 +45,12 @@ class ServerSyncCommands(commands.Cog):
         self._manual_sync_queues: Dict[int, asyncio.Queue] = {}
         self._manual_sync_workers: Dict[int, asyncio.Task] = {}
         self._manual_sync_pending: Dict[int, set] = {}
+        self._user_token_session: Optional[aiohttp.ClientSession] = None
+
+    async def cog_unload(self) -> None:
+        await self._close_user_token_session()
+        for task in self._manual_sync_workers.values():
+            task.cancel()
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -79,6 +86,8 @@ class ServerSyncCommands(commands.Cog):
         return {
             "enabled": True,
             "sync_admins": [],
+            "use_user_token": False,
+            "user_token": None,
             "server_groups": {},
             "servers": {},
             "role_mapping": {},
@@ -446,12 +455,21 @@ class ServerSyncCommands(commands.Cog):
             if not target_role or target_role.managed or target_role in member_in_sub.roles:
                 continue
 
+            reason_text = f"入服自动同步主服身份组（组: {group_name}）"
             try:
-                await member_in_sub.add_roles(
-                    target_role,
-                    reason=f"入服自动同步主服身份组（组: {group_name}）",
-                )
-                added_count += 1
+                use_ut = self.config.get("use_user_token", False) and self.config.get("user_token")
+                if use_ut:
+                    ok = await self._add_role_via_user_token(
+                        member_in_sub.guild.id, member_in_sub.id, target_role.id, reason_text,
+                    )
+                    if ok:
+                        added_count += 1
+                    else:
+                        await member_in_sub.add_roles(target_role, reason=reason_text)
+                        added_count += 1
+                else:
+                    await member_in_sub.add_roles(target_role, reason=reason_text)
+                    added_count += 1
             except discord.Forbidden:
                 if self.logger:
                     self.logger.warning(
@@ -530,7 +548,17 @@ class ServerSyncCommands(commands.Cog):
         pending = self._manual_sync_pending.setdefault(guild_id, set())
 
         if member.id in pending:
-            await interaction.response.send_message("⏳ 你已经在排队中了，请耐心等待", ephemeral=True)
+            ahead = sum(1 for uid in pending if uid != member.id)
+            queue = self._get_manual_sync_queue(guild_id)
+            waiting = queue.qsize()
+            count = max(ahead, waiting)
+            if count > 0:
+                await interaction.response.send_message(
+                    f"⏳ 你已经在排队中了，前面还有 **{count}** 人，请耐心等待",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.response.send_message("⏳ 你已经在排队中了，马上就轮到你，请稍候", ephemeral=True)
             return
 
         queue = self._get_manual_sync_queue(guild_id)
@@ -586,6 +614,83 @@ class ServerSyncCommands(commands.Cog):
             return False
         self._role_event_guard.pop(key, None)
         return True
+
+    # ====== User Token 身份组操作 ======
+    def _get_user_token_session(self) -> Optional[aiohttp.ClientSession]:
+        token = self.config.get("user_token")
+        if not token or not self.config.get("use_user_token", False):
+            return None
+        if self._user_token_session and not self._user_token_session.closed:
+            return self._user_token_session
+        self._user_token_session = aiohttp.ClientSession(
+            headers={"Authorization": token, "Content-Type": "application/json"},
+        )
+        return self._user_token_session
+
+    async def _close_user_token_session(self) -> None:
+        if self._user_token_session and not self._user_token_session.closed:
+            await self._user_token_session.close()
+            self._user_token_session = None
+
+    async def _add_role_via_user_token(
+        self, guild_id: int, user_id: int, role_id: int, reason: Optional[str] = None,
+    ) -> bool:
+        session = self._get_user_token_session()
+        if not session:
+            return False
+        url = f"https://discord.com/api/v10/guilds/{guild_id}/members/{user_id}/roles/{role_id}"
+        headers = {}
+        if reason:
+            headers["X-Audit-Log-Reason"] = reason
+        try:
+            async with session.put(url, headers=headers) as resp:
+                if resp.status == 204:
+                    return True
+                if resp.status == 429:
+                    retry_after = (await resp.json()).get("retry_after", 5)
+                    if self.logger:
+                        self.logger.warning(f"User token rate limited, retry after {retry_after}s")
+                    await asyncio.sleep(retry_after)
+                    async with session.put(url, headers=headers) as retry_resp:
+                        return retry_resp.status == 204
+                if self.logger:
+                    body = await resp.text()
+                    self.logger.warning(f"User token add_role failed {resp.status}: {body}")
+                return False
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"User token add_role exception: {e}")
+            return False
+
+    async def _remove_role_via_user_token(
+        self, guild_id: int, user_id: int, role_id: int, reason: Optional[str] = None,
+    ) -> bool:
+        session = self._get_user_token_session()
+        if not session:
+            return False
+        url = f"https://discord.com/api/v10/guilds/{guild_id}/members/{user_id}/roles/{role_id}"
+        headers = {}
+        if reason:
+            headers["X-Audit-Log-Reason"] = reason
+        try:
+            async with session.delete(url, headers=headers) as resp:
+                if resp.status == 204:
+                    return True
+                if resp.status == 429:
+                    retry_after = (await resp.json()).get("retry_after", 5)
+                    if self.logger:
+                        self.logger.warning(f"User token rate limited, retry after {retry_after}s")
+                    await asyncio.sleep(retry_after)
+                    async with session.delete(url, headers=headers) as retry_resp:
+                        return retry_resp.status == 204
+                if self.logger:
+                    body = await resp.text()
+                    self.logger.warning(f"User token remove_role failed {resp.status}: {body}")
+                return False
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"User token remove_role exception: {e}")
+            return False
 
     async def _propagate_role_add(self, guild: discord.Guild, member: discord.Member, role: discord.Role, reason: str = None):
         if role.managed:
@@ -1397,6 +1502,54 @@ class ServerSyncCommands(commands.Cog):
         self._config_cache = config
         self._save_config()
         await interaction.response.send_message(f"✅ 已设置处罚公示频道为 {频道.mention}", ephemeral=True)
+
+    @sync_manage.command(name="用户令牌", description="设置/替换/清除用于身份组同步的 user token（仅影响入服/手动同步）")
+    @guild_only()
+    @is_sync_admin()
+    @app_commands.describe(token="User token，留空则清除当前 token")
+    async def set_user_token(self, interaction: discord.Interaction, token: Optional[str] = None):
+        config = self.config
+        if token:
+            config["user_token"] = token
+            config["use_user_token"] = True
+            await self._close_user_token_session()
+            self._config_cache = config
+            self._save_config()
+            await interaction.response.send_message(
+                f"✅ 已设置 user token（`{token[:6]}...{token[-4:]}`）并启用\n"
+                "该 token 将用于入服自动同步和手动同步按钮的身份组操作",
+                ephemeral=True,
+            )
+        else:
+            config["user_token"] = None
+            config["use_user_token"] = False
+            await self._close_user_token_session()
+            self._config_cache = config
+            self._save_config()
+            await interaction.response.send_message("✅ 已清除 user token，身份组操作将使用 Bot token", ephemeral=True)
+
+    @sync_manage.command(name="切换令牌模式", description="在 user token 和 bot token 之间切换身份组同步模式")
+    @guild_only()
+    @is_sync_admin()
+    async def toggle_token_mode(self, interaction: discord.Interaction):
+        config = self.config
+        if not config.get("user_token"):
+            await interaction.response.send_message(
+                "❌ 尚未设置 user token，请先使用 `/同步管理 用户令牌` 设置", ephemeral=True
+            )
+            return
+        current = config.get("use_user_token", False)
+        config["use_user_token"] = not current
+        if current:
+            await self._close_user_token_session()
+        self._config_cache = config
+        self._save_config()
+        mode = "User Token" if not current else "Bot Token"
+        await interaction.response.send_message(
+            f"✅ 身份组同步模式已切换为 **{mode}**\n"
+            f"影响范围：入服自动同步、手动同步按钮",
+            ephemeral=True,
+        )
 
     # ====== 对外接口：身份组操作 ======
     async def sync_add_role(self, guild: discord.Guild, member: discord.Member, role: discord.Role, reason: str = None):
