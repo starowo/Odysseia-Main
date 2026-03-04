@@ -14,6 +14,7 @@ from src.utils import dm
 from src.utils.auth import is_admin
 from src.utils.confirm_view import confirm_view
 from src.utils.config_helper import get_config_value, get_config_for_guild
+from src.verify.database import VerifyDatabase
 
 
 class VerifyCommands(commands.Cog):
@@ -30,6 +31,8 @@ class VerifyCommands(commands.Cog):
         # 活跃的答题会话
         self.active_quiz_sessions = {}
         self.active_quiz_sessions_by_user = {}
+        # SQLite 数据库
+        self.db = VerifyDatabase()
 
     @property
     def config(self):
@@ -67,137 +70,53 @@ class VerifyCommands(commands.Cog):
             if self.logger:
                 self.logger.error(f"加载题目失败: {e}")
 
-    def _save_user_attempt(self, guild_id: int, user_id: int, success: bool):
+    def _save_questions(self):
+        """保存题目库到文件"""
+        questions_path = pathlib.Path("config/verify/questions.json")
+        questions_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(questions_path, 'w', encoding='utf-8') as f:
+            json.dump(self.questions, f, ensure_ascii=False, indent=2)
+
+    async def _save_user_attempt(self, guild_id: int, user_id: int, success: bool):
         """保存用户答题记录"""
-        data_dir = pathlib.Path("data") / "verify" / str(guild_id)
-        data_dir.mkdir(parents=True, exist_ok=True)
-        
-        file_path = data_dir / f"{user_id}.json"
-        
-        # 读取现有记录
-        if file_path.exists():
-            with open(file_path, 'r', encoding='utf-8') as f:
-                user_data = json.load(f)
-        else:
-            user_data = {
-                "attempts": [],
-                "last_success": None,
-                "timeout_until": None,  # 保持向后兼容
-                "quiz_cooldown_until": None  # 新增：答题冷却时间
-            }
-        
-        # 添加新记录
-        attempt_record = {
-            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            "success": success
-        }
-        user_data["attempts"].append(attempt_record)
-        
-        if success:
-            user_data["last_success"] = attempt_record["timestamp"]
-        
-        # 保存记录
-        with open(file_path, 'w', encoding='utf-8') as f:
-            json.dump(user_data, f, ensure_ascii=False, indent=2)
-        
-        return user_data
+        return await self.db.save_user_attempt(guild_id, user_id, success)
 
     def _get_user_data(self, guild_id: int, user_id: int) -> Dict:
+        """获取用户数据（同步包装，供非 async 上下文兼容调用）"""
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            import concurrent.futures
+            raise RuntimeError("请使用 _get_user_data_async 代替")
+        return loop.run_until_complete(self._get_user_data_async(guild_id, user_id))
+
+    async def _get_user_data_async(self, guild_id: int, user_id: int) -> Dict:
         """获取用户数据"""
-        data_dir = pathlib.Path("data") / "verify" / str(guild_id)
-        file_path = data_dir / f"{user_id}.json"
-        
-        if file_path.exists():
-            with open(file_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        
-        return {
-            "attempts": [],
-            "last_success": None,
-            "timeout_until": None,  # 保持向后兼容
-            "quiz_cooldown_until": None  # 新增：答题冷却时间
-        }
+        return await self.db.get_user_data(guild_id, user_id)
 
-    def _set_user_timeout(self, guild_id: int, user_id: int, minutes: int):
-        """设置用户禁言时间（保持向后兼容）"""
-        data_dir = pathlib.Path("data") / "verify" / str(guild_id)
-        data_dir.mkdir(parents=True, exist_ok=True)
-        file_path = data_dir / f"{user_id}.json"
-        
-        user_data = self._get_user_data(guild_id, user_id)
-        timeout_until = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=minutes)
-        user_data["timeout_until"] = timeout_until.isoformat()
-        
-        with open(file_path, 'w', encoding='utf-8') as f:
-            json.dump(user_data, f, ensure_ascii=False, indent=2)
+    async def _set_user_timeout(self, guild_id: int, user_id: int, minutes: int):
+        """设置用户禁言时间"""
+        await self.db.set_user_timeout(guild_id, user_id, minutes)
 
-    def _set_user_quiz_cooldown(self, guild_id: int, user_id: int, minutes: int):
+    async def _set_user_quiz_cooldown(self, guild_id: int, user_id: int, minutes: int):
         """设置用户答题冷却时间"""
-        data_dir = pathlib.Path("data") / "verify" / str(guild_id)
-        data_dir.mkdir(parents=True, exist_ok=True)
-        file_path = data_dir / f"{user_id}.json"
-        
-        user_data = self._get_user_data(guild_id, user_id)
-        cooldown_until = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=minutes)
-        user_data["quiz_cooldown_until"] = cooldown_until.isoformat()
-        
-        with open(file_path, 'w', encoding='utf-8') as f:
-            json.dump(user_data, f, ensure_ascii=False, indent=2)
+        await self.db.set_user_quiz_cooldown(guild_id, user_id, minutes)
 
-    def _is_user_in_timeout(self, guild_id: int, user_id: int) -> bool:
-        """检查用户是否在禁言期间（保持向后兼容）"""
-        user_data = self._get_user_data(guild_id, user_id)
-        timeout_until = user_data.get("timeout_until")
-        
-        if timeout_until:
-            timeout_time = datetime.datetime.fromisoformat(timeout_until)
-            return datetime.datetime.now(datetime.timezone.utc) < timeout_time
-        
-        return False
+    async def _is_user_in_timeout(self, guild_id: int, user_id: int) -> bool:
+        """检查用户是否在禁言期间"""
+        return await self.db.is_user_in_timeout(guild_id, user_id)
 
-    def _is_user_in_quiz_cooldown(self, guild_id: int, user_id: int) -> bool:
+    async def _is_user_in_quiz_cooldown(self, guild_id: int, user_id: int) -> bool:
         """检查用户是否在答题冷却期间"""
-        user_data = self._get_user_data(guild_id, user_id)
-        cooldown_until = user_data.get("quiz_cooldown_until")
-        
-        if cooldown_until:
-            cooldown_time = datetime.datetime.fromisoformat(cooldown_until)
-            return datetime.datetime.now(datetime.timezone.utc) < cooldown_time
-        
-        return False
+        return await self.db.is_user_in_quiz_cooldown(guild_id, user_id)
 
-    def _get_quiz_cooldown_remaining(self, guild_id: int, user_id: int) -> Optional[int]:
+    async def _get_quiz_cooldown_remaining(self, guild_id: int, user_id: int) -> Optional[int]:
         """获取答题冷却剩余时间（分钟）"""
-        user_data = self._get_user_data(guild_id, user_id)
-        cooldown_until = user_data.get("quiz_cooldown_until")
-        
-        if cooldown_until:
-            cooldown_time = datetime.datetime.fromisoformat(cooldown_until)
-            now = datetime.datetime.now(datetime.timezone.utc)
-            if now < cooldown_time:
-                remaining_seconds = (cooldown_time - now).total_seconds()
-                return int(remaining_seconds / 60) + 1  # 向上取整
-        
-        return None
+        return await self.db.get_quiz_cooldown_remaining(guild_id, user_id)
 
-    def _get_recent_failed_attempts(self, guild_id: int, user_id: int) -> int:
+    async def _get_recent_failed_attempts(self, guild_id: int, user_id: int) -> int:
         """获取最近失败次数"""
-        user_data = self._get_user_data(guild_id, user_id)
-        now = datetime.datetime.now(datetime.timezone.utc)
         reset_hours = self.config.get("attempt_reset_hours", 24)
-        cutoff_time = now - datetime.timedelta(hours=reset_hours)
-        
-        recent_failures = 0
-        for attempt in reversed(user_data.get("attempts", [])):
-            attempt_time = datetime.datetime.fromisoformat(attempt["timestamp"])
-            if attempt_time < cutoff_time:
-                break
-            if not attempt["success"]:
-                recent_failures += 1
-            else:
-                break  # 遇到成功记录就停止计数
-        
-        return recent_failures
+        return await self.db.get_recent_failed_attempts(guild_id, user_id, reset_hours)
 
     def _create_quiz_session(self, guild_id: int, user_id: int, questions: List[Dict], language: str) -> str:
         """创建答题会话"""
@@ -300,7 +219,7 @@ class VerifyCommands(commands.Cog):
             for member in upper_buffer_role.members:
 
                 # 检查用户的最后成功答题时间
-                user_data = self._get_user_data(guild.id, member.id)
+                user_data = await self._get_user_data_async(guild.id, member.id)
                 last_success = user_data.get("last_success")
                 
                 if last_success:
@@ -315,14 +234,14 @@ class VerifyCommands(commands.Cog):
                 else:
                     # 在此bot上线前就通过答题的成员，直接升级
                     eligible_members.append((member, current_time))
-            upgrade_threshold = datetime.timedelta(days=5)  # 5天后自动升级
+            upgrade_threshold = datetime.timedelta(days=7)  # 7天后自动升级
             
             for member in buffer_role.members:
                 if upper_buffer_role in member.roles:
                     continue # 刚才已经检查过，跳过
                     
                 # 检查用户的最后成功答题时间
-                user_data = self._get_user_data(guild.id, member.id)
+                user_data = await self._get_user_data_async(guild.id, member.id)
                 last_success = user_data.get("last_success")
                 
                 if last_success:
@@ -391,6 +310,7 @@ class VerifyCommands(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
+        await self.db.init()
         self._load_questions()
         if self.logger:
             self.logger.info("答题验证模块已加载")
@@ -407,6 +327,7 @@ class VerifyCommands(commands.Cog):
     async def on_disable(self):
         self.active_quiz_sessions.clear()
         self.auto_upgrade_task.cancel()
+        await self.db.close()
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -559,7 +480,7 @@ class VerifyCommands(commands.Cog):
             return
         
         # 获取用户数据
-        user_data = self._get_user_data(guild.id, member.id)
+        user_data = await self._get_user_data_async(guild.id, member.id)
         last_success = user_data.get("last_success")
         
         # 获取身份组配置
@@ -746,7 +667,7 @@ class VerifyCommands(commands.Cog):
             return
 
         # 检查是否在禁言期
-        if self._is_user_in_timeout(guild.id, user.id):
+        if await self._is_user_in_timeout(guild.id, user.id):
             timeout_msg = "您因多次答题错误被临时禁言，请稍后再试" if language == "zh_cn" else "You are temporarily timed out due to multiple wrong answers. Please try again later."
             await interaction.response.send_message(f"❌ {timeout_msg}", ephemeral=True)
             return
@@ -789,14 +710,14 @@ class VerifyCommands(commands.Cog):
         is_success = correct_count == 5
         
         # 检查是否曾经通过答题
-        data = self._get_user_data(guild.id, user.id)
+        data = await self._get_user_data_async(guild.id, user.id)
         if data and data.get("last_success") is not None:
             has_passed = True
         else:
             has_passed = False
 
         # 保存记录
-        self._save_user_attempt(guild.id, user.id, is_success)
+        await self._save_user_attempt(guild.id, user.id, is_success)
 
         if is_success:
             # 答题成功
@@ -845,7 +766,7 @@ class VerifyCommands(commands.Cog):
             await interaction.followup.send(success_msg, ephemeral=True)
         else:
             # 答题失败
-            failed_attempts = self._get_recent_failed_attempts(guild.id, user.id)
+            failed_attempts = await self._get_recent_failed_attempts(guild.id, user.id)
             max_attempts = self.config.get("max_attempts_per_period", 3)
             
             fail_msg = f"❌ 答题失败（{correct_count}/5）" if language == "zh_cn" else f"❌ Quiz failed ({correct_count}/5)"
@@ -859,7 +780,7 @@ class VerifyCommands(commands.Cog):
                 else:
                     minutes = timeout_minutes[1] if len(timeout_minutes) > 1 else 60
                 
-                self._set_user_timeout(guild.id, user.id, minutes)
+                await self._set_user_timeout(guild.id, user.id, minutes)
                 timeout_msg = f"由于多次答题失败，您被禁言 {minutes} 分钟" if language == "zh_cn" else f"Due to multiple quiz failures, you are timed out for {minutes} minutes"
                 fail_msg += f"\n{timeout_msg}"
             else:
@@ -917,14 +838,14 @@ class VerifyCommands(commands.Cog):
         is_success = correct_count == len(questions)
 
         # 检查是否曾经通过答题
-        data = self._get_user_data(guild.id, user.id)
+        data = await self._get_user_data_async(guild.id, user.id)
         if data and data.get("last_success") is not None:
             has_passed = True
         else:
             has_passed = False
 
         # 保存记录
-        self._save_user_attempt(guild_id, user_id, is_success)
+        await self._save_user_attempt(guild_id, user_id, is_success)
 
         # 清除答题会话
         self._clear_quiz_session(session_id)
@@ -980,7 +901,7 @@ class VerifyCommands(commands.Cog):
             await interaction.followup.send(success_msg, ephemeral=True)
         else:
             # 答题失败
-            failed_attempts = self._get_recent_failed_attempts(guild_id, user_id)
+            failed_attempts = await self._get_recent_failed_attempts(guild_id, user_id)
             max_attempts = self.config.get("max_attempts_per_period", 3)
             
             fail_msg = f"❌ 答题失败（{correct_count}正确/{len(questions)}题）" if language == "zh_cn" else f"❌ Quiz failed ({correct_count} correct /{len(questions)} questions)"
@@ -994,7 +915,7 @@ class VerifyCommands(commands.Cog):
                 else:
                     minutes = cooldown_minutes[1] if len(cooldown_minutes) > 1 else 60
                 
-                self._set_user_quiz_cooldown(guild_id, user_id, minutes)
+                await self._set_user_quiz_cooldown(guild_id, user_id, minutes)
                 cooldown_msg = f"由于多次答题失败，您需要冷却 {minutes} 分钟后才能再次答题" if language == "zh_cn" else f"Due to multiple quiz failures, you need to wait {minutes} minutes before taking the quiz again"
                 fail_msg += f"\n{cooldown_msg}"
             else:
@@ -1006,30 +927,25 @@ class VerifyCommands(commands.Cog):
 
     async def _get_user_questions(self, guild_id: int, user_id: int) -> Optional[List[Dict]]:
         """获取用户的题目"""
-        cache_dir = pathlib.Path("data") / "thread_cache"
-        cache_file = cache_dir / f"verify_questions_{guild_id}_{user_id}.json"
-        
-        if cache_file.exists():
-            with open(cache_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        return None
+        return await self.db.get_user_questions(guild_id, user_id)
 
     async def _save_user_questions(self, guild_id: int, user_id: int, questions: List[Dict]):
         """保存用户的题目"""
-        cache_dir = pathlib.Path("data") / "thread_cache"
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        cache_file = cache_dir / f"verify_questions_{guild_id}_{user_id}.json"
-        
-        with open(cache_file, 'w', encoding='utf-8') as f:
-            json.dump(questions, f, ensure_ascii=False, indent=2)
+        await self.db.save_user_questions(guild_id, user_id, questions)
 
     async def _clear_user_questions(self, guild_id: int, user_id: int):
         """清除用户的题目"""
-        cache_dir = pathlib.Path("data") / "thread_cache"
-        cache_file = cache_dir / f"verify_questions_{guild_id}_{user_id}.json"
-        
-        if cache_file.exists():
-            cache_file.unlink()
+        await self.db.clear_user_questions(guild_id, user_id)
+
+    @verify.command(name="题库管理", description="管理答题验证题库（查看/添加/编辑/删除题目）")
+    @is_admin()
+    async def manage_questions(self, interaction: discord.Interaction):
+        """题库管理界面"""
+        if not self.questions:
+            self._load_questions()
+        view = QuestionManageView(self)
+        embed = view.build_embed()
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     async def start_quiz(self, interaction: discord.Interaction, language: str):
         """开始答题流程"""
@@ -1042,8 +958,8 @@ class VerifyCommands(commands.Cog):
             return
 
         # 检查是否在答题冷却期
-        if self._is_user_in_quiz_cooldown(guild.id, user.id):
-            remaining = self._get_quiz_cooldown_remaining(guild.id, user.id)
+        if await self._is_user_in_quiz_cooldown(guild.id, user.id):
+            remaining = await self._get_quiz_cooldown_remaining(guild.id, user.id)
             cooldown_msg = f"您因多次答题错误需要冷却 {remaining} 分钟后才能再次答题" if language == "zh_cn" else f"You need to wait {remaining} minutes before taking the quiz again due to multiple failures."
             await interaction.response.send_message(f"❌ {cooldown_msg}", ephemeral=True)
             return
@@ -1445,6 +1361,300 @@ class FillBlankModal(discord.ui.Modal):
         await self.quiz_view.update_view(interaction)
         embed = await self.quiz_view.create_question_embed()
         await interaction.response.edit_message(embed=embed, view=self.quiz_view)
+
+
+# ── 题库管理 UI ──────────────────────────────────────────────
+
+QUESTIONS_PER_PAGE = 8
+TYPE_LABELS = {
+    "single_choice": "单选",
+    "multiple_choice": "多选",
+    "fill_in_blank": "填空",
+}
+TYPE_LABELS_REV = {v: k for k, v in TYPE_LABELS.items()}
+
+
+class QuestionManageView(discord.ui.View):
+    """题库管理主视图：分页浏览 + 选择题目 + CRUD 操作"""
+
+    def __init__(self, cog: VerifyCommands, page: int = 0):
+        super().__init__(timeout=600)
+        self.cog = cog
+        self.page = page
+        self.selected_index: Optional[int] = None
+        self._rebuild_items()
+
+    # ── helpers ─────────────────────────────────────────────
+
+    @property
+    def total_pages(self) -> int:
+        return max(1, (len(self.cog.questions) + QUESTIONS_PER_PAGE - 1) // QUESTIONS_PER_PAGE)
+
+    def _page_questions(self) -> List[tuple]:
+        start = self.page * QUESTIONS_PER_PAGE
+        end = start + QUESTIONS_PER_PAGE
+        return list(enumerate(self.cog.questions[start:end], start=start))
+
+    def build_embed(self) -> discord.Embed:
+        total = len(self.cog.questions)
+        embed = discord.Embed(
+            title="📚 题库管理",
+            description=f"共 **{total}** 道题目　|　第 **{self.page + 1}** / **{self.total_pages}** 页",
+            color=discord.Color.gold(),
+        )
+        for idx, q in self._page_questions():
+            q_type = TYPE_LABELS.get(q.get("type", "single_choice"), q.get("type", "?"))
+            zh = q.get("zh_cn", {})
+            text = zh.get("question", "—") if isinstance(zh, dict) else str(zh)
+            if len(text) > 50:
+                text = text[:47] + "..."
+            ans = q.get("answer", "—")
+            embed.add_field(
+                name=f"#{idx + 1}  [{q_type}]  答案: {ans}",
+                value=text,
+                inline=False,
+            )
+        if not self.cog.questions:
+            embed.add_field(name="(空)", value="题库为空，请点击下方按钮添加题目。", inline=False)
+        return embed
+
+    # ── rebuild dynamic items ──────────────────────────────
+
+    def _rebuild_items(self):
+        self.clear_items()
+
+        page_qs = self._page_questions()
+        if page_qs:
+            select = discord.ui.Select(
+                placeholder="选择一道题目进行编辑 / 删除…",
+                min_values=1,
+                max_values=1,
+                row=0,
+                options=[
+                    discord.SelectOption(
+                        label=f"#{idx + 1} {TYPE_LABELS.get(q.get('type',''), '?')} — {(q.get('zh_cn',{}).get('question','') if isinstance(q.get('zh_cn'), dict) else str(q.get('zh_cn','')))[:40]}",
+                        value=str(idx),
+                    )
+                    for idx, q in page_qs
+                ],
+            )
+            select.callback = self._on_select
+            self.add_item(select)
+
+        type_select = discord.ui.Select(
+            placeholder="选择题型（添加新题目时使用）",
+            min_values=1,
+            max_values=1,
+            row=1,
+            options=[
+                discord.SelectOption(label="单选题", value="single_choice", emoji="1️⃣"),
+                discord.SelectOption(label="多选题", value="multiple_choice", emoji="🔢"),
+                discord.SelectOption(label="填空题", value="fill_in_blank", emoji="✏️"),
+            ],
+        )
+        type_select.callback = self._on_type_select
+        self.add_item(type_select)
+        self._new_type = "single_choice"
+
+        prev_btn = discord.ui.Button(label="⬅", style=discord.ButtonStyle.secondary, row=2, disabled=self.page <= 0)
+        prev_btn.callback = self._prev_page
+        self.add_item(prev_btn)
+
+        next_btn = discord.ui.Button(label="➡", style=discord.ButtonStyle.secondary, row=2, disabled=self.page >= self.total_pages - 1)
+        next_btn.callback = self._next_page
+        self.add_item(next_btn)
+
+        add_btn = discord.ui.Button(label="➕ 添加", style=discord.ButtonStyle.success, row=2)
+        add_btn.callback = self._add_question
+        self.add_item(add_btn)
+
+        edit_btn = discord.ui.Button(label="✏️ 编辑", style=discord.ButtonStyle.primary, row=2, disabled=self.selected_index is None)
+        edit_btn.callback = self._edit_question
+        self.add_item(edit_btn)
+
+        del_btn = discord.ui.Button(label="🗑️ 删除", style=discord.ButtonStyle.danger, row=2, disabled=self.selected_index is None)
+        del_btn.callback = self._delete_question
+        self.add_item(del_btn)
+
+    # ── callbacks ───────────────────────────────────────────
+
+    async def _refresh(self, interaction: discord.Interaction):
+        self._rebuild_items()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def _on_select(self, interaction: discord.Interaction):
+        self.selected_index = int(interaction.data["values"][0])
+        await self._refresh(interaction)
+
+    async def _on_type_select(self, interaction: discord.Interaction):
+        self._new_type = interaction.data["values"][0]
+        await interaction.response.defer()
+
+    async def _prev_page(self, interaction: discord.Interaction):
+        self.page = max(0, self.page - 1)
+        self.selected_index = None
+        await self._refresh(interaction)
+
+    async def _next_page(self, interaction: discord.Interaction):
+        self.page = min(self.total_pages - 1, self.page + 1)
+        self.selected_index = None
+        await self._refresh(interaction)
+
+    async def _add_question(self, interaction: discord.Interaction):
+        q_type = getattr(self, "_new_type", "single_choice")
+        modal = QuestionEditModal(self, q_type=q_type, edit_index=None)
+        await interaction.response.send_modal(modal)
+
+    async def _edit_question(self, interaction: discord.Interaction):
+        if self.selected_index is None or self.selected_index >= len(self.cog.questions):
+            await interaction.response.send_message("❌ 请先在下拉菜单中选择一道题目", ephemeral=True)
+            return
+        q = self.cog.questions[self.selected_index]
+        modal = QuestionEditModal(self, q_type=q.get("type", "single_choice"), edit_index=self.selected_index)
+        await interaction.response.send_modal(modal)
+
+    async def _delete_question(self, interaction: discord.Interaction):
+        if self.selected_index is None or self.selected_index >= len(self.cog.questions):
+            await interaction.response.send_message("❌ 请先选择一道题目", ephemeral=True)
+            return
+        q = self.cog.questions[self.selected_index]
+        zh_text = q.get("zh_cn", {}).get("question", "—") if isinstance(q.get("zh_cn"), dict) else str(q.get("zh_cn", ""))
+        if len(zh_text) > 60:
+            zh_text = zh_text[:57] + "..."
+
+        confirm_view = DeleteConfirmView(self, self.selected_index)
+        embed = discord.Embed(
+            title="⚠️ 确认删除",
+            description=f"即将删除第 **#{self.selected_index + 1}** 题：\n>>> {zh_text}",
+            color=discord.Color.red(),
+        )
+        await interaction.response.edit_message(embed=embed, view=confirm_view)
+
+
+class DeleteConfirmView(discord.ui.View):
+    """删除确认视图"""
+
+    def __init__(self, parent: QuestionManageView, index: int):
+        super().__init__(timeout=60)
+        self.parent = parent
+        self.index = index
+
+    @discord.ui.button(label="确认删除", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if 0 <= self.index < len(self.parent.cog.questions):
+            self.parent.cog.questions.pop(self.index)
+            self.parent.cog._save_questions()
+        self.parent.selected_index = None
+        if self.parent.page >= self.parent.total_pages:
+            self.parent.page = max(0, self.parent.total_pages - 1)
+        self.parent._rebuild_items()
+        await interaction.response.edit_message(embed=self.parent.build_embed(), view=self.parent)
+
+    @discord.ui.button(label="取消", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.parent._rebuild_items()
+        await interaction.response.edit_message(embed=self.parent.build_embed(), view=self.parent)
+
+
+class QuestionEditModal(discord.ui.Modal):
+    """添加 / 编辑题目的模态框"""
+
+    def __init__(self, parent_view: QuestionManageView, q_type: str, edit_index: Optional[int]):
+        self.parent_view = parent_view
+        self.q_type = q_type
+        self.edit_index = edit_index
+        is_edit = edit_index is not None
+
+        type_label = TYPE_LABELS.get(q_type, q_type)
+        super().__init__(title=f"{'编辑' if is_edit else '添加'}{type_label}题")
+
+        existing = parent_view.cog.questions[edit_index] if is_edit else None
+
+        zh_data = (existing.get("zh_cn", {}) if isinstance(existing.get("zh_cn") if existing else None, dict) else {}) if existing else {}
+        en_data = (existing.get("en_us", {}) if isinstance(existing.get("en_us") if existing else None, dict) else {}) if existing else {}
+
+        self.zh_question = discord.ui.TextInput(
+            label="中文题目",
+            style=discord.TextStyle.paragraph,
+            required=True,
+            max_length=500,
+            default=zh_data.get("question", "") if is_edit else None,
+        )
+        self.add_item(self.zh_question)
+
+        if q_type != "fill_in_blank":
+            self.zh_choices = discord.ui.TextInput(
+                label="中文选项（每行一个，如 A. 选项内容）",
+                style=discord.TextStyle.paragraph,
+                required=True,
+                max_length=1000,
+                default="\n".join(zh_data.get("choices", [])) if is_edit else None,
+            )
+            self.add_item(self.zh_choices)
+        else:
+            self.zh_choices = None
+
+        self.en_question = discord.ui.TextInput(
+            label="English Question",
+            style=discord.TextStyle.paragraph,
+            required=False,
+            max_length=500,
+            default=en_data.get("question", "") if is_edit else None,
+        )
+        self.add_item(self.en_question)
+
+        if q_type != "fill_in_blank":
+            self.en_choices = discord.ui.TextInput(
+                label="English Choices (one per line, e.g. A. ...)",
+                style=discord.TextStyle.paragraph,
+                required=False,
+                max_length=1000,
+                default="\n".join(en_data.get("choices", [])) if is_edit else None,
+            )
+            self.add_item(self.en_choices)
+        else:
+            self.en_choices = None
+
+        self.answer_input = discord.ui.TextInput(
+            label="正确答案（单选: A  多选: ABD  填空: 文本）",
+            style=discord.TextStyle.short,
+            required=True,
+            max_length=200,
+            default=existing.get("answer", "") if is_edit else None,
+        )
+        self.add_item(self.answer_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        zh_choices_list = [l.strip() for l in self.zh_choices.value.strip().splitlines() if l.strip()] if self.zh_choices else []
+        en_choices_list = [l.strip() for l in self.en_choices.value.strip().splitlines() if l.strip()] if self.en_choices else []
+
+        question_obj = {
+            "type": self.q_type,
+            "answer": self.answer_input.value.strip(),
+            "zh_cn": {
+                "question": self.zh_question.value.strip(),
+                "choices": zh_choices_list,
+            },
+            "en_us": {
+                "question": self.en_question.value.strip() if self.en_question.value else "",
+                "choices": en_choices_list,
+            },
+        }
+
+        cog = self.parent_view.cog
+        if self.edit_index is not None and self.edit_index < len(cog.questions):
+            cog.questions[self.edit_index] = question_obj
+        else:
+            cog.questions.append(question_obj)
+
+        cog._save_questions()
+
+        self.parent_view.selected_index = None
+        if self.edit_index is None:
+            last_page = self.parent_view.total_pages - 1
+            self.parent_view.page = last_page
+        self.parent_view._rebuild_items()
+        await interaction.response.edit_message(embed=self.parent_view.build_embed(), view=self.parent_view)
 
 
 class VerifyButtonView(discord.ui.View):
