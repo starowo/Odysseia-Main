@@ -294,8 +294,18 @@ class ServerSyncCommands(commands.Cog):
             if self.logger:
                 self.logger.warning(f"补丁同步角色扩展颜色失败 {guild.name}/{role.name}: {e}")
 
-    async def _upsert_role_from_main(self, source_role: discord.Role, target_guild: discord.Guild) -> Optional[discord.Role]:
-        existing = discord.utils.get(target_guild.roles, name=source_role.name)
+    async def _upsert_role_from_main(
+        self,
+        source_role: discord.Role,
+        target_guild: discord.Guild,
+        existing_role_id: Optional[int] = None,
+    ) -> Optional[discord.Role]:
+        existing: Optional[discord.Role] = None
+        if existing_role_id:
+            existing = target_guild.get_role(existing_role_id)
+        if not existing:
+            existing = discord.utils.get(target_guild.roles, name=source_role.name)
+
         icon_bytes = await self._read_role_icon(source_role)
         colors_payload = self._role_colors_payload(source_role)
         reason = f"主服务器身份组同步: {source_role.name}"
@@ -317,12 +327,11 @@ class ServerSyncCommands(commands.Cog):
 
         if existing:
             if not self._is_manageable_role(target_guild, existing):
-                return None
+                return existing
             result_role = await self._edit_role_with_optional_icon(existing, base_kwargs)
         else:
             result_role = await self._create_role_with_optional_icon(target_guild, base_kwargs)
 
-        # 再次通过 API 兜底，避免库版本差异导致 secondary/tertiary 丢失
         await self._patch_role_colors_via_api(target_guild, result_role, colors_payload, reason)
         return result_role
 
@@ -721,9 +730,14 @@ class ServerSyncCommands(commands.Cog):
             wait=True,
         )
 
+        existing_mappings = server_cfg.get("roles", {})
         for idx, source_role in enumerate(source_roles, start=1):
             try:
-                target_role = await self._upsert_role_from_main(source_role, target_guild)
+                mapped_role_id = existing_mappings.get(source_role.name)
+                target_role = await self._upsert_role_from_main(
+                    source_role, target_guild,
+                    existing_role_id=int(mapped_role_id) if mapped_role_id else None,
+                )
                 if not target_role:
                     skipped += 1
                 else:
