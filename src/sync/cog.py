@@ -11,6 +11,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from src.utils.auth import guild_only
+from src.utils.confirm_view import confirm_view
 
 
 def is_sync_admin():
@@ -708,7 +709,6 @@ class ServerSyncCommands(commands.Cog):
         updated = 0
         skipped = 0
         role_map: Dict[discord.Role, int] = {}
-        top_limit = target_guild.me.top_role.position - 1 if target_guild.me else 0
         total = len(source_roles)
         step = max(1, total // 20)
         progress_msg = await interaction.followup.send(
@@ -729,7 +729,7 @@ class ServerSyncCommands(commands.Cog):
                 else:
                     main_server_cfg.setdefault("roles", {})[source_role.name] = source_role.id
                     server_cfg["roles"][source_role.name] = target_role.id
-                    role_map[target_role] = min(source_role.position, top_limit)
+                    role_map[target_role] = source_role.position
                     updated += 1
             except discord.Forbidden:
                 skipped += 1
@@ -751,7 +751,15 @@ class ServerSyncCommands(commands.Cog):
 
         if role_map:
             try:
-                await target_guild.edit_role_positions(positions=role_map, reason=f"主服务器身份组全量同步: {组名}")
+                sorted_pairs = sorted(role_map.items(), key=lambda pair: pair[1])
+                bot_top = target_guild.me.top_role.position if target_guild.me else 1
+                positions = {}
+                for i, (role_obj, _) in enumerate(sorted_pairs, start=1):
+                    pos = min(i, bot_top - 1)
+                    if pos < 1:
+                        pos = 1
+                    positions[role_obj] = pos
+                await target_guild.edit_role_positions(positions=positions, reason=f"主服务器身份组全量同步: {组名}")
             except Exception as e:
                 if self.logger:
                     self.logger.warning(f"更新身份组排序失败: {e}")
@@ -764,6 +772,77 @@ class ServerSyncCommands(commands.Cog):
                 f"`{self._format_progress_bar(total, total)}` {total}/{total} (100%)\n"
                 f"成功 {updated} | 跳过/失败 {skipped}"
             )
+        )
+
+    @sync.command(name="删除同步身份组", description="一键删除当前子服务器中所有从主服同步过来的身份组（不可在主服使用）")
+    @guild_only()
+    @is_sync_admin()
+    @app_commands.describe(组名="服务器组名称")
+    async def delete_synced_roles(self, interaction: discord.Interaction, 组名: str):
+        guild_id = str(interaction.guild.id)
+        group_cfg = self.config.get("server_groups", {}).get(组名)
+        if not group_cfg:
+            await interaction.response.send_message(f"❌ 服务器组 `{组名}` 不存在", ephemeral=True)
+            return
+        if guild_id not in group_cfg.get("servers", {}):
+            await interaction.response.send_message("❌ 当前服务器不在该组中", ephemeral=True)
+            return
+
+        main_server_id = str(group_cfg.get("main_server_id") or "")
+        if guild_id == main_server_id:
+            await interaction.response.send_message("❌ 绝对禁止在主服务器执行此操作", ephemeral=True)
+            return
+
+        server_cfg = group_cfg["servers"][guild_id]
+        role_entries = server_cfg.get("roles", {})
+        if not role_entries:
+            await interaction.response.send_message("❌ 当前服务器在该组中没有已映射的同步身份组", ephemeral=True)
+            return
+
+        target_roles = []
+        for alias, role_id in role_entries.items():
+            role_obj = interaction.guild.get_role(int(role_id))
+            if role_obj and self._is_manageable_role(interaction.guild, role_obj):
+                target_roles.append((alias, role_obj))
+
+        if not target_roles:
+            await interaction.response.send_message("❌ 没有可删除的同步身份组（可能已被删除或 Bot 权限不足）", ephemeral=True)
+            return
+
+        role_list_text = "\n".join(f"- {alias} ({role_obj.name}, {len(role_obj.members)} 人持有)" for alias, role_obj in target_roles)
+        confirmed = await confirm_view(
+            interaction,
+            title="⚠️ 危险操作：删除全部同步身份组",
+            description=(
+                f"即将在当前服务器删除 **{len(target_roles)}** 个从主服同步的身份组：\n\n"
+                f"{role_list_text}\n\n"
+                "**此操作不可逆，所有持有这些身份组的用户都会失去对应权限。**\n"
+                "确定要继续吗？"
+            ),
+            colour=discord.Colour.red(),
+            timeout=60,
+        )
+        if not confirmed:
+            return
+
+        deleted = 0
+        failed = 0
+        for alias, role_obj in target_roles:
+            try:
+                await role_obj.delete(reason=f"一键删除同步身份组（组: {组名}）")
+                deleted += 1
+                await asyncio.sleep(0.2)
+            except Exception as e:
+                failed += 1
+                if self.logger:
+                    self.logger.error(f"删除同步身份组失败 {role_obj.name}: {e}")
+
+        server_cfg["roles"] = {}
+        self._config_cache = self.config
+        self._save_config()
+
+        await interaction.edit_original_response(
+            content=f"✅ 已删除 {deleted} 个同步身份组，失败 {failed} 个。映射配置已清空。",
         )
 
     # ====== 同步管理指令 ======
