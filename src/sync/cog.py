@@ -486,8 +486,16 @@ class ServerSyncCommands(commands.Cog):
     def _get_manual_sync_queue(self, guild_id: int) -> asyncio.Queue:
         if guild_id not in self._manual_sync_queues:
             self._manual_sync_queues[guild_id] = asyncio.Queue()
-            self._manual_sync_pending[guild_id] = set()
+            self._manual_sync_pending[guild_id] = []
         return self._manual_sync_queues[guild_id]
+
+    def _pending_position(self, guild_id: int, user_id: int) -> int:
+        """返回用户在排队列表中前面的人数，不在列表中返回 -1"""
+        pending = self._manual_sync_pending.get(guild_id, [])
+        for idx, uid in enumerate(pending):
+            if uid == user_id:
+                return idx
+        return -1
 
     async def _manual_sync_worker(self, guild_id: int) -> None:
         queue = self._get_manual_sync_queue(guild_id)
@@ -500,8 +508,11 @@ class ServerSyncCommands(commands.Cog):
             interaction: discord.Interaction = item["interaction"]
             group_name: str = item["group_name"]
             member: discord.Member = item["member"]
-            position: int = item["position"]
-            self._manual_sync_pending[guild_id].discard(member.id)
+            pending = self._manual_sync_pending.get(guild_id, [])
+            try:
+                pending.remove(member.id)
+            except ValueError:
+                pass
 
             try:
                 await interaction.edit_original_response(
@@ -545,39 +556,35 @@ class ServerSyncCommands(commands.Cog):
         group_name: str,
     ) -> None:
         guild_id = interaction.guild.id
-        pending = self._manual_sync_pending.setdefault(guild_id, set())
+        self._get_manual_sync_queue(guild_id)
+        pos = self._pending_position(guild_id, member.id)
 
-        if member.id in pending:
-            ahead = sum(1 for uid in pending if uid != member.id)
-            queue = self._get_manual_sync_queue(guild_id)
-            waiting = queue.qsize()
-            count = max(ahead, waiting)
-            if count > 0:
+        if pos >= 0:
+            if pos == 0:
+                await interaction.response.send_message("⏳ 你已经在排队中了，马上就轮到你，请稍候", ephemeral=True)
+            else:
                 await interaction.response.send_message(
-                    f"⏳ 你已经在排队中了，前面还有 **{count}** 人，请耐心等待",
+                    f"⏳ 你已经在排队中了，前面还有 **{pos}** 人，请耐心等待",
                     ephemeral=True,
                 )
-            else:
-                await interaction.response.send_message("⏳ 你已经在排队中了，马上就轮到你，请稍候", ephemeral=True)
             return
 
         queue = self._get_manual_sync_queue(guild_id)
-        position = queue.qsize() + 1
+        ahead = queue.qsize()
 
-        if position > 1:
+        if ahead > 0:
             await interaction.response.send_message(
-                f"⏳ 已加入同步队列，前面还有 **{position - 1}** 人，请耐心等待…",
+                f"⏳ 已加入同步队列，前面还有 **{ahead}** 人，请耐心等待…",
                 ephemeral=True,
             )
         else:
             await interaction.response.send_message("⏳ 正在准备同步…", ephemeral=True)
 
-        pending.add(member.id)
+        self._manual_sync_pending[guild_id].append(member.id)
         await queue.put({
             "interaction": interaction,
             "group_name": group_name,
             "member": member,
-            "position": position,
         })
         self._ensure_manual_sync_worker(guild_id)
 
