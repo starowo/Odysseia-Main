@@ -1,477 +1,987 @@
 import asyncio
+import datetime
 import json
 import pathlib
-import datetime
+import time
 import uuid
-from typing import Dict, List, Optional, Set
-from discord.ext import commands
-from discord import app_commands
-import discord
+from typing import Any, Dict, Optional, Tuple
 
-from src.utils.confirm_view import confirm_view
+import discord
+from discord import app_commands
+from discord.ext import commands
+
+from src.utils.auth import guild_only, is_admin
+
 
 class ServerSyncCommands(commands.Cog):
+    sync = app_commands.Group(name="同步", description="服务器同步相关指令")
+    sync_manage = app_commands.Group(name="同步管理", description="同步管理相关指令")
+
     def __init__(self, bot):
         self.bot = bot
         self.logger = bot.logger
         self.name = "服务器同步"
-        # 初始化配置缓存
-        self._config_cache = {}
-        self._config_cache_mtime = None
+        self._config_cache: Dict = {}
+        self._config_cache_mtime: Optional[float] = None
+        self._persistent_views_registered = False
+        self._role_sync_guard: Dict[str, float] = {}
 
     @commands.Cog.listener()
     async def on_ready(self):
+        if not self._persistent_views_registered:
+            self.bot.add_view(ManualRoleSyncView())
+            self._persistent_views_registered = True
         if self.logger:
             self.logger.info("服务器同步模块已加载")
 
     @property
-    def config(self):
-        """读取同步配置文件并缓存，只有在文件修改后重新加载"""
+    def config(self) -> Dict:
         try:
-            path = pathlib.Path('config/server_sync/config.json')
+            path = pathlib.Path("config/server_sync/config.json")
+            if not path.exists():
+                self._config_cache = self._default_config()
+                self._save_config()
+                return self._config_cache
             mtime = path.stat().st_mtime
             if self._config_cache_mtime != mtime:
-                with open(path, 'r', encoding='utf-8') as f:
-                    self._config_cache = json.load(f)
+                with open(path, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                self._config_cache, changed = self._normalize_config(loaded)
                 self._config_cache_mtime = mtime
+                if changed:
+                    self._save_config()
             return self._config_cache
         except Exception as e:
             if self.logger:
                 self.logger.error(f"加载同步配置文件失败: {e}")
-            return {}
+            return self._default_config()
 
-    def _save_config(self):
-        """保存配置文件"""
+    def _default_config(self) -> Dict:
+        return {
+            "enabled": True,
+            "server_groups": {},
+            "servers": {},
+            "role_mapping": {},
+        }
+
+    def _normalize_server_cfg(self, data: Dict) -> Tuple[Dict, bool]:
+        changed = False
+        cfg = dict(data or {})
+        defaults = {
+            "name": "",
+            "roles": {},
+            "punishment_sync": False,
+            "punishment_announce_channel": None,
+        }
+        for key, value in defaults.items():
+            if key not in cfg:
+                cfg[key] = value
+                changed = True
+        if "punishment_confirm_channel" in cfg:
+            cfg.pop("punishment_confirm_channel", None)
+            changed = True
+        return cfg, changed
+
+    def _normalize_config(self, data: Dict) -> Tuple[Dict, bool]:
+        changed = False
+        cfg = dict(data or {})
+        if "enabled" not in cfg:
+            cfg["enabled"] = True
+            changed = True
+        if "server_groups" not in cfg:
+            cfg["server_groups"] = {}
+            changed = True
+
+        # 兼容旧结构：servers 直接扁平化存储
+        if cfg.get("servers") and not cfg["server_groups"]:
+            group_name = "default"
+            cfg["server_groups"][group_name] = {"main_server_id": None, "servers": {}}
+            for gid, server_cfg in cfg.get("servers", {}).items():
+                normalized_server_cfg, _ = self._normalize_server_cfg(server_cfg)
+                cfg["server_groups"][group_name]["servers"][str(gid)] = normalized_server_cfg
+            if cfg["server_groups"][group_name]["servers"]:
+                first_gid = next(iter(cfg["server_groups"][group_name]["servers"]))
+                cfg["server_groups"][group_name]["main_server_id"] = first_gid
+            changed = True
+
+        for group_name, group_cfg in list(cfg["server_groups"].items()):
+            if not isinstance(group_cfg, dict):
+                cfg["server_groups"][group_name] = {"main_server_id": None, "servers": {}}
+                changed = True
+                continue
+            if "main_server_id" not in group_cfg:
+                group_cfg["main_server_id"] = None
+                changed = True
+            if "servers" not in group_cfg:
+                group_cfg["servers"] = {}
+                changed = True
+            for gid, server_cfg in list(group_cfg["servers"].items()):
+                normalized_server_cfg, server_changed = self._normalize_server_cfg(server_cfg)
+                group_cfg["servers"][str(gid)] = normalized_server_cfg
+                changed = changed or server_changed
+
+            main_id = group_cfg.get("main_server_id")
+            if main_id is not None:
+                group_cfg["main_server_id"] = str(main_id)
+            if not group_cfg.get("main_server_id") and group_cfg["servers"]:
+                group_cfg["main_server_id"] = next(iter(group_cfg["servers"]))
+                changed = True
+            if group_cfg.get("main_server_id") not in group_cfg["servers"] and group_cfg["servers"]:
+                group_cfg["main_server_id"] = next(iter(group_cfg["servers"]))
+                changed = True
+
+        self._refresh_legacy_views(cfg)
+        return cfg, changed
+
+    def _refresh_legacy_views(self, cfg: Dict) -> None:
+        legacy_servers = {}
+        role_mapping: Dict[str, Dict[str, int]] = {}
+        for group_cfg in cfg.get("server_groups", {}).values():
+            for gid, server_cfg in group_cfg.get("servers", {}).items():
+                legacy_servers[gid] = server_cfg
+                for role_alias, role_id in server_cfg.get("roles", {}).items():
+                    role_mapping.setdefault(role_alias, {})[gid] = role_id
+        cfg["servers"] = legacy_servers
+        cfg["role_mapping"] = role_mapping
+
+    def _save_config(self) -> None:
         try:
-            path = pathlib.Path('config/server_sync/config.json')
+            path = pathlib.Path("config/server_sync/config.json")
             path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, 'w', encoding='utf-8') as f:
+            self._refresh_legacy_views(self._config_cache)
+            with open(path, "w", encoding="utf-8") as f:
                 json.dump(self._config_cache, f, ensure_ascii=False, indent=2)
+            self._config_cache_mtime = path.stat().st_mtime
         except Exception as e:
             if self.logger:
                 self.logger.error(f"保存同步配置文件失败: {e}")
 
-    def is_admin():
-        async def predicate(interaction: discord.Interaction):
+    def _get_group_and_server_cfg(self, guild_id: str) -> Tuple[Optional[str], Optional[Dict]]:
+        for group_name, group_cfg in self.config.get("server_groups", {}).items():
+            server_cfg = group_cfg.get("servers", {}).get(guild_id)
+            if server_cfg:
+                return group_name, server_cfg
+        return None, None
+
+    def _ensure_group(self, config: Dict, group_name: str) -> Dict:
+        groups = config.setdefault("server_groups", {})
+        if group_name not in groups:
+            groups[group_name] = {"main_server_id": None, "servers": {}}
+        return groups[group_name]
+
+    def _ensure_server_in_group(self, config: Dict, group_name: str, guild: discord.Guild) -> Dict:
+        group_cfg = self._ensure_group(config, group_name)
+        servers = group_cfg.setdefault("servers", {})
+        server_cfg = servers.get(str(guild.id))
+        if not server_cfg:
+            server_cfg = {
+                "name": guild.name,
+                "roles": {},
+                "punishment_sync": False,
+                "punishment_announce_channel": None,
+            }
+            servers[str(guild.id)] = server_cfg
+        else:
+            server_cfg["name"] = guild.name
+        return server_cfg
+
+    def _get_role_alias_for_source(self, source_server_cfg: Dict, role: discord.Role) -> Optional[str]:
+        for alias, role_id in source_server_cfg.get("roles", {}).items():
+            if int(role_id) == role.id:
+                return alias
+        if role.name in source_server_cfg.get("roles", {}):
+            return role.name
+        return None
+
+    async def _safe_fetch_member(self, guild: discord.Guild, user_id: int) -> Optional[discord.Member]:
+        member = guild.get_member(user_id)
+        if member:
+            return member
+        try:
+            return await guild.fetch_member(user_id)
+        except Exception:
+            return None
+
+    def _bot_can_manage_roles(self, guild: discord.Guild) -> bool:
+        me = guild.me
+        return bool(me and me.guild_permissions.manage_roles)
+
+    def _is_manageable_role(self, guild: discord.Guild, role: discord.Role) -> bool:
+        me = guild.me
+        if not me:
+            return False
+        if role.is_default() or role.managed:
+            return False
+        return role.position < me.top_role.position
+
+    async def _read_role_icon(self, role: discord.Role) -> Optional[bytes]:
+        if not getattr(role, "icon", None):
+            return None
+        try:
+            return await role.icon.read()
+        except Exception:
+            return None
+
+    async def _create_role_with_optional_icon(self, guild: discord.Guild, kwargs: Dict):
+        try:
+            return await guild.create_role(**kwargs)
+        except TypeError:
+            fallback_kwargs = dict(kwargs)
+            if "display_icon" in kwargs:
+                fallback_kwargs["icon"] = fallback_kwargs.pop("display_icon")
+            # 兼容旧版 discord.py：不支持 secondary/tertiary 参数时，先创建再走 API 兜底
+            fallback_kwargs.pop("secondary_color", None)
+            fallback_kwargs.pop("tertiary_color", None)
+            return await guild.create_role(**fallback_kwargs)
+
+    async def _edit_role_with_optional_icon(self, role: discord.Role, kwargs: Dict):
+        try:
+            return await role.edit(**kwargs)
+        except TypeError:
+            fallback_kwargs = dict(kwargs)
+            if "display_icon" in kwargs:
+                fallback_kwargs["icon"] = fallback_kwargs.pop("display_icon")
+            fallback_kwargs.pop("secondary_color", None)
+            fallback_kwargs.pop("tertiary_color", None)
+            return await role.edit(**fallback_kwargs)
+
+    def _role_colors_payload(self, role: discord.Role) -> Dict[str, Optional[int]]:
+        secondary_obj = getattr(role, "secondary_color", None)
+        tertiary_obj = getattr(role, "tertiary_color", None)
+        secondary_value = secondary_obj.value if secondary_obj is not None else None
+        tertiary_value = tertiary_obj.value if tertiary_obj is not None else None
+        return {
+            "primary_color": role.colour.value,
+            "secondary_color": secondary_value,
+            "tertiary_color": tertiary_value,
+        }
+
+    async def _patch_role_colors_via_api(
+        self,
+        guild: discord.Guild,
+        role: discord.Role,
+        colors_payload: Dict[str, Optional[int]],
+        reason: str,
+    ) -> None:
+        try:
+            # 直接调用 Discord API，确保 colors 对象（primary/secondary/tertiary）按文档完整写入
+            await self.bot.http.edit_role(
+                guild.id,
+                role.id,
+                reason=reason,
+                colors=colors_payload,
+            )
+        except Exception as e:
+            if self.logger:
+                self.logger.warning(f"补丁同步角色扩展颜色失败 {guild.name}/{role.name}: {e}")
+
+    async def _upsert_role_from_main(self, source_role: discord.Role, target_guild: discord.Guild) -> Optional[discord.Role]:
+        existing = discord.utils.get(target_guild.roles, name=source_role.name)
+        icon_bytes = await self._read_role_icon(source_role)
+        colors_payload = self._role_colors_payload(source_role)
+        reason = f"主服务器身份组同步: {source_role.name}"
+        base_kwargs = {
+            "name": source_role.name,
+            "permissions": source_role.permissions,
+            "colour": source_role.colour,
+            "secondary_color": colors_payload["secondary_color"],
+            "tertiary_color": colors_payload["tertiary_color"],
+            "hoist": source_role.hoist,
+            "mentionable": source_role.mentionable,
+            "reason": reason,
+        }
+        unicode_emoji = getattr(source_role, "unicode_emoji", None)
+        if unicode_emoji:
+            base_kwargs["unicode_emoji"] = unicode_emoji
+        elif icon_bytes:
+            base_kwargs["display_icon"] = icon_bytes
+
+        if existing:
+            if not self._is_manageable_role(target_guild, existing):
+                return None
+            result_role = await self._edit_role_with_optional_icon(existing, base_kwargs)
+        else:
+            result_role = await self._create_role_with_optional_icon(target_guild, base_kwargs)
+
+        # 再次通过 API 兜底，避免库版本差异导致 secondary/tertiary 丢失
+        await self._patch_role_colors_via_api(target_guild, result_role, colors_payload, reason)
+        return result_role
+
+    async def _apply_punishment_in_guild(self, target_guild: discord.Guild, record: Dict, server_cfg: Dict) -> None:
+        punishment_type = record.get("type")
+        user_id = int(record["user_id"])
+        reason = record.get("reason") or "同步处罚"
+        duration = record.get("duration")
+        warn_days = int(record.get("warn_days") or 0)
+
+        if punishment_type == "mute":
+            user_obj = await self._safe_fetch_member(target_guild, user_id)
+            if not user_obj:
+                return
+            if duration and duration > 0:
+                await user_obj.timeout(datetime.timedelta(seconds=int(duration)), reason=f"同步处罚: {reason}")
+            if warn_days > 0:
+                warned_role_id = self._get_warned_role_id(target_guild.id)
+                if warned_role_id:
+                    warned_role = target_guild.get_role(int(warned_role_id))
+                    if warned_role:
+                        await user_obj.add_roles(warned_role, reason=f"同步处罚警告 {warn_days} 天")
+        elif punishment_type == "ban":
+            await target_guild.ban(discord.Object(id=user_id), reason=f"同步处罚: {reason}", delete_message_days=0)
+        else:
+            return
+
+        punish_dir = pathlib.Path("data") / "punish" / str(target_guild.id)
+        punish_dir.mkdir(parents=True, exist_ok=True)
+        record_file = punish_dir / f"{record['id']}.json"
+        with open(record_file, "w", encoding="utf-8") as f:
+            json.dump(record, f, ensure_ascii=False, indent=2)
+
+        announce_channel_id = server_cfg.get("punishment_announce_channel")
+        if announce_channel_id:
+            announce_channel = target_guild.get_channel(int(announce_channel_id))
+            if announce_channel:
+                embed = discord.Embed(
+                    title="🚨 同步处罚执行",
+                    color=discord.Color.red(),
+                    timestamp=datetime.datetime.now(datetime.timezone.utc),
+                )
+                embed.add_field(name="来源服务器", value=record["source_guild_name"], inline=True)
+                embed.add_field(name="处罚类型", value=punishment_type, inline=True)
+                embed.add_field(name="用户", value=f"<@{user_id}> ({record.get('user_name', user_id)})", inline=True)
+                embed.add_field(name="原管理员", value=record.get("moderator_name", "系统"), inline=True)
+                embed.add_field(name="原因", value=reason, inline=False)
+                if record.get("img_url"):
+                    embed.set_image(url=record["img_url"])
+                embed.set_footer(text=f"处罚ID: {record['id']}")
+                await announce_channel.send(embed=embed)
+
+    def _get_warned_role_id(self, guild_id: int) -> Optional[int]:
+        guild_configs = getattr(self.bot, "config", {}).get("guild_configs", {})
+        guild_config = guild_configs.get(str(guild_id), {})
+        warned_role_id = guild_config.get("warned_role_id")
+        return int(warned_role_id) if warned_role_id else None
+
+    def _format_progress_bar(self, current: int, total: int, width: int = 20) -> str:
+        if total <= 0:
+            return "░" * width
+        ratio = min(max(current / total, 0), 1)
+        filled = int(round(ratio * width))
+        return ("█" * filled) + ("░" * (width - filled))
+
+    async def _sync_member_roles_from_main_to_sub(
+        self,
+        member_in_sub: discord.Member,
+        group_name: str,
+    ) -> int:
+        guild_id = str(member_in_sub.guild.id)
+        group_cfg = self.config.get("server_groups", {}).get(group_name, {})
+        main_server_id = str(group_cfg.get("main_server_id") or "")
+        if not main_server_id or main_server_id == guild_id:
+            return 0
+
+        source_guild = self.bot.get_guild(int(main_server_id))
+        if not source_guild:
+            return 0
+
+        source_member = await self._safe_fetch_member(source_guild, member_in_sub.id)
+        if not source_member:
+            return 0
+
+        source_server_cfg = group_cfg.get("servers", {}).get(main_server_id, {})
+        sub_server_cfg = group_cfg.get("servers", {}).get(guild_id, {})
+        if not source_server_cfg or not sub_server_cfg:
+            return 0
+
+        source_role_ids = {role.id for role in source_member.roles if not role.is_default()}
+        added_count = 0
+        for alias, source_role_id in source_server_cfg.get("roles", {}).items():
+            if int(source_role_id) not in source_role_ids:
+                continue
+
+            target_role_id = sub_server_cfg.get("roles", {}).get(alias)
+            if not target_role_id:
+                continue
+
+            target_role = member_in_sub.guild.get_role(int(target_role_id))
+            if not target_role or target_role in member_in_sub.roles:
+                continue
+
             try:
-                guild = interaction.guild
-                if not guild:
-                    return False
-                    
-                # 使用统一的配置系统
-                cog = interaction.client.get_cog("ServerSyncCommands")
-                if not cog:
-                    return False
-                config = getattr(cog, 'config', {})
-                admin_roles = config.get('admins', [])
-                
-                # 检查用户是否拥有任何管理员身份组
-                for admin_role_id in admin_roles:
-                    role = guild.get_role(int(admin_role_id))
-                    if role and role in interaction.user.roles:
-                        return True
-                      
-                return False
-            except Exception:
-                return False
-        return app_commands.check(predicate)
+                await member_in_sub.add_roles(
+                    target_role,
+                    reason=f"入服自动同步主服身份组（组: {group_name}）",
+                )
+                added_count += 1
+            except discord.Forbidden:
+                if self.logger:
+                    self.logger.warning(
+                        f"自动同步身份组权限不足: {member_in_sub.guild.name}/{member_in_sub.id}/{alias}"
+                    )
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(
+                        f"自动同步身份组失败 {member_in_sub.guild.name}/{member_in_sub.id}/{alias}: {e}"
+                    )
+        return added_count
 
-    # ====== 同步指令 ======
-    sync = app_commands.Group(name="同步", description="服务器同步相关指令")
-    sync_manage = app_commands.Group(name="同步管理", description="同步管理相关指令")
+    def _build_guard_key(self, guild_id: int, user_id: int, role_id: int, action: str) -> str:
+        return f"{guild_id}:{user_id}:{role_id}:{action}"
 
-    @sync.command(name="身份组同步", description="同步可同步的身份组到配置中的全部子服务器")
-    
+    def _mark_guard(self, guild_id: int, user_id: int, role_id: int, action: str, ttl: float = 20.0) -> None:
+        self._role_sync_guard[self._build_guard_key(guild_id, user_id, role_id, action)] = time.monotonic() + ttl
+
+    def _consume_guard(self, guild_id: int, user_id: int, role_id: int, action: str) -> bool:
+        key = self._build_guard_key(guild_id, user_id, role_id, action)
+        expires_at = self._role_sync_guard.get(key)
+        now = time.monotonic()
+        if expires_at is None:
+            return False
+        if expires_at < now:
+            self._role_sync_guard.pop(key, None)
+            return False
+        self._role_sync_guard.pop(key, None)
+        return True
+
+    async def _propagate_role_add(self, guild: discord.Guild, member: discord.Member, role: discord.Role, reason: str = None):
+        guild_id = str(guild.id)
+        group_name, source_server_cfg = self._get_group_and_server_cfg(guild_id)
+        if not group_name or not source_server_cfg:
+            return
+        role_alias = self._get_role_alias_for_source(source_server_cfg, role)
+        if not role_alias:
+            return
+
+        group_servers = self.config["server_groups"][group_name]["servers"]
+        for target_guild_id, target_server_cfg in group_servers.items():
+            if target_guild_id == guild_id:
+                continue
+            target_guild = self.bot.get_guild(int(target_guild_id))
+            if not target_guild:
+                continue
+            target_member = target_guild.get_member(member.id)
+            if not target_member:
+                continue
+            target_role_id = target_server_cfg.get("roles", {}).get(role_alias)
+            if not target_role_id:
+                continue
+            target_role = target_guild.get_role(int(target_role_id))
+            if not target_role or target_role in target_member.roles:
+                continue
+            try:
+                self._mark_guard(target_guild.id, target_member.id, target_role.id, "add")
+                await target_member.add_roles(target_role, reason=f"身份组同步: {reason or '监听到身份组变更'}")
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(f"同步添加身份组失败 {target_guild.name}/{role_alias}: {e}")
+
+    async def _propagate_role_remove(self, guild: discord.Guild, member: discord.Member, role: discord.Role, reason: str = None):
+        guild_id = str(guild.id)
+        group_name, source_server_cfg = self._get_group_and_server_cfg(guild_id)
+        if not group_name or not source_server_cfg:
+            return
+        role_alias = self._get_role_alias_for_source(source_server_cfg, role)
+        if not role_alias:
+            return
+
+        group_servers = self.config["server_groups"][group_name]["servers"]
+        for target_guild_id, target_server_cfg in group_servers.items():
+            if target_guild_id == guild_id:
+                continue
+            target_guild = self.bot.get_guild(int(target_guild_id))
+            if not target_guild:
+                continue
+            target_member = target_guild.get_member(member.id)
+            if not target_member:
+                continue
+            target_role_id = target_server_cfg.get("roles", {}).get(role_alias)
+            if not target_role_id:
+                continue
+            target_role = target_guild.get_role(int(target_role_id))
+            if not target_role or target_role not in target_member.roles:
+                continue
+            try:
+                self._mark_guard(target_guild.id, target_member.id, target_role.id, "remove")
+                await target_member.remove_roles(target_role, reason=f"身份组同步: {reason or '监听到身份组变更'}")
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(f"同步移除身份组失败 {target_guild.name}/{role_alias}: {e}")
+
+    @commands.Cog.listener()
+    async def on_member_join(self, member: discord.Member):
+        if member.bot or not self.config.get("enabled", False):
+            return
+
+        guild_id = str(member.guild.id)
+        group_name, _ = self._get_group_and_server_cfg(guild_id)
+        if not group_name:
+            return
+
+        group_cfg = self.config.get("server_groups", {}).get(group_name, {})
+        main_server_id = str(group_cfg.get("main_server_id") or "")
+        if not main_server_id or main_server_id == guild_id:
+            return
+
+        # 等待 Discord 侧 member 状态稳定，降低刚入服立即改身份组失败概率
+        await asyncio.sleep(1.0)
+        added_count = await self._sync_member_roles_from_main_to_sub(member, group_name)
+        if added_count > 0 and self.logger:
+            self.logger.info(
+                f"已自动同步入服用户身份组: group={group_name}, guild={member.guild.id}, user={member.id}, added={added_count}"
+            )
+
+    @commands.Cog.listener()
+    async def on_member_update(self, before: discord.Member, after: discord.Member):
+        if not self.config.get("enabled", False):
+            return
+        if before.guild.id != after.guild.id:
+            return
+
+        guild_id = str(after.guild.id)
+        group_name, _ = self._get_group_and_server_cfg(guild_id)
+        if not group_name:
+            return
+
+        before_role_ids = {role.id for role in before.roles if not role.is_default()}
+        after_role_ids = {role.id for role in after.roles if not role.is_default()}
+        if before_role_ids == after_role_ids:
+            return
+
+        added_role_ids = after_role_ids - before_role_ids
+        removed_role_ids = before_role_ids - after_role_ids
+
+        for role_id in added_role_ids:
+            if self._consume_guard(after.guild.id, after.id, role_id, "add"):
+                continue
+            role_obj = after.guild.get_role(role_id)
+            if not role_obj:
+                continue
+            await self._propagate_role_add(after.guild, after, role_obj, "监听同步（身份组新增）")
+
+        for role_id in removed_role_ids:
+            if self._consume_guard(after.guild.id, after.id, role_id, "remove"):
+                continue
+            role_obj = after.guild.get_role(role_id)
+            if not role_obj:
+                continue
+            await self._propagate_role_remove(after.guild, after, role_obj, "监听同步（身份组移除）")
+
+    # ====== 用户同步指令 ======
+    @sync.command(name="身份组同步", description="将当前账号在本组中的身份组映射同步到同组其它服务器")
+    @guild_only()
     async def sync_roles(self, interaction: discord.Interaction):
-        """同步身份组到所有配置的服务器"""
         if not self.config.get("enabled", False):
             await interaction.response.send_message("❌ 同步功能未启用", ephemeral=True)
             return
 
         await interaction.response.defer(ephemeral=True)
-        
         guild_id = str(interaction.guild.id)
-        user_id = interaction.user.id
-        
-        # 检查当前服务器是否在同步列表中
-        if guild_id not in self.config.get("servers", {}):
-            await interaction.followup.send("❌ 当前服务器未在同步列表中", ephemeral=True)
+        group_name, source_server_cfg = self._get_group_and_server_cfg(guild_id)
+        if not group_name or not source_server_cfg:
+            await interaction.followup.send("❌ 当前服务器未加入任何同步服务器组", ephemeral=True)
             return
 
-        # 获取用户在当前服务器的身份组
-        user_roles = [role for role in interaction.user.roles if role != interaction.guild.default_role]
-        
-        # 获取可同步的身份组
-        role_mapping = self.config.get("role_mapping", {})
-        syncable_roles = []
-        
-        for role in user_roles:
-            role_name = role.name
-            if role_name in role_mapping:
-                syncable_roles.append((role_name, role))
-
-        if not syncable_roles:
-            await interaction.followup.send("❌ 您没有可同步的身份组", ephemeral=True)
-            return
-
-        # 同步到其他服务器
-        sync_results = []
-        servers_config = self.config.get("servers", {})
-        
-        for target_guild_id, server_config in servers_config.items():
-            if target_guild_id == guild_id:  # 跳过当前服务器
+        syncable = []
+        for role in interaction.user.roles:
+            if role.is_default():
                 continue
-                
+            alias = self._get_role_alias_for_source(source_server_cfg, role)
+            if alias:
+                syncable.append((alias, role))
+
+        if not syncable:
+            await interaction.followup.send("❌ 您没有可同步的身份组映射", ephemeral=True)
+            return
+
+        results = []
+        group_servers = self.config["server_groups"][group_name]["servers"]
+        for target_guild_id, target_server_cfg in group_servers.items():
+            if target_guild_id == guild_id:
+                continue
             target_guild = self.bot.get_guild(int(target_guild_id))
             if not target_guild:
-                sync_results.append(f"❌ 无法访问服务器 {target_guild_id}")
+                results.append(f"❌ 无法访问服务器 {target_guild_id}")
                 continue
-                
-            target_member = target_guild.get_member(user_id)
+            target_member = target_guild.get_member(interaction.user.id)
             if not target_member:
-                sync_results.append(f"❌ 您不在服务器 {target_guild.name} 中")
+                results.append(f"❌ 您不在服务器 {target_guild.name} 中")
                 continue
 
-            # 同步身份组
-            synced_count = 0
-            role_configs = server_config.get("roles", {})
-            
-            for role_name, source_role in syncable_roles:
-                if role_name in role_configs:
-                    target_role_id = role_configs[role_name]
-                    target_role = target_guild.get_role(target_role_id)
-                    
-                    if target_role:
-                        try:
-                            if target_role not in target_member.roles:
-                                await target_member.add_roles(target_role, reason=f"身份组同步 from {interaction.guild.name}")
-                                synced_count += 1
-                        except discord.Forbidden:
-                            sync_results.append(f"❌ 无权限在 {target_guild.name} 中添加身份组 {role_name}")
-                        except Exception as e:
-                            sync_results.append(f"❌ 在 {target_guild.name} 中同步身份组 {role_name} 失败: {e}")
-                    else:
-                        sync_results.append(f"❌ 在 {target_guild.name} 中未找到身份组 {role_name}")
+            success = 0
+            for alias, _ in syncable:
+                target_role_id = target_server_cfg.get("roles", {}).get(alias)
+                if not target_role_id:
+                    continue
+                target_role = target_guild.get_role(int(target_role_id))
+                if not target_role:
+                    continue
+                try:
+                    if target_role not in target_member.roles:
+                        await target_member.add_roles(target_role, reason=f"身份组同步 from {interaction.guild.name}")
+                        success += 1
+                except Exception as e:
+                    if self.logger:
+                        self.logger.error(f"身份组同步失败 {target_guild.name}/{alias}: {e}")
+            if success > 0:
+                results.append(f"✅ {target_guild.name} 同步 {success} 个身份组")
 
-            if synced_count > 0:
-                sync_results.append(f"✅ 在 {target_guild.name} 中成功同步 {synced_count} 个身份组")
-
-        # 发送结果
-        result_text = "\n".join(sync_results) if sync_results else "✅ 同步完成"
-        await interaction.followup.send(f"身份组同步结果:\n{result_text}", ephemeral=True)
-
-    # ====== 同步管理指令 ======
-    @sync_manage.command(name="添加服务器", description="将当前服务器添加到同步列表")
-    
-    async def add_server(self, interaction: discord.Interaction):
-        """添加当前服务器到同步列表"""
-        guild_id = str(interaction.guild.id)
-        
-        config = self.config
-        if "servers" not in config:
-            config["servers"] = {}
-            
-        if guild_id in config["servers"]:
-            await interaction.response.send_message("❌ 当前服务器已在同步列表中", ephemeral=True)
-            return
-            
-        config["servers"][guild_id] = {
-            "name": interaction.guild.name,
-            "roles": {},
-            "punishment_sync": False,
-            "punishment_announce_channel": None,
-            "punishment_confirm_channel": None
-        }
-        
-        self._config_cache = config
-        self._save_config()
-        
-        await interaction.response.send_message("✅ 已将当前服务器添加到同步列表", ephemeral=True)
-
-    @sync_manage.command(name="删除服务器", description="从同步列表中删除当前服务器")
-    
-    async def remove_server(self, interaction: discord.Interaction):
-        """从同步列表删除当前服务器"""
-        guild_id = str(interaction.guild.id)
-        
-        config = self.config
-        if guild_id not in config.get("servers", {}):
-            await interaction.response.send_message("❌ 当前服务器不在同步列表中", ephemeral=True)
-            return
-
-        # 确认删除
-        confirmed = await confirm_view(
-            interaction,
-            title="确认删除服务器",
-            description="确定要从同步列表中删除当前服务器吗？这将移除所有身份组映射配置。",
-            colour=discord.Colour.red(),
-            timeout=60,
+        await interaction.followup.send(
+            "身份组同步结果：\n" + ("\n".join(results) if results else "✅ 无需变更"),
+            ephemeral=True,
         )
 
-        if not confirmed:
+    @sync.command(name="发布手动同步按钮", description="在当前频道发送手动同步面板（Embed + 持久化按钮）")
+    @guild_only()
+    @is_admin()
+    async def post_manual_sync_panel(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="🔄 主服身份组手动同步",
+            description=(
+                "点击下方按钮，可将你在主服务器已有的映射身份组同步到当前服务器。\n"
+                "仅在当前服务器为子服务器时生效。"
+            ),
+            color=discord.Color.blurple(),
+            timestamp=datetime.datetime.now(datetime.timezone.utc),
+        )
+        embed.set_footer(text="按钮为持久化组件，机器人重启后仍可使用")
+        await interaction.channel.send(embed=embed, view=ManualRoleSyncView())
+        await interaction.response.send_message("✅ 已在当前频道发送手动同步面板", ephemeral=True)
+
+    @sync.command(name="主服全量身份组同步", description="从指定组主服务器全量同步可管理身份组到当前子服务器")
+    @guild_only()
+    @is_admin()
+    @app_commands.describe(组名="服务器组名称")
+    async def sync_all_roles_from_main(self, interaction: discord.Interaction, 组名: str):
+        await interaction.response.defer(ephemeral=True)
+        guild_id = str(interaction.guild.id)
+        group_cfg = self.config.get("server_groups", {}).get(组名)
+        if not group_cfg:
+            await interaction.followup.send(f"❌ 服务器组 `{组名}` 不存在", ephemeral=True)
+            return
+        if guild_id not in group_cfg.get("servers", {}):
+            await interaction.followup.send("❌ 当前服务器不在该组中", ephemeral=True)
             return
 
-        del config["servers"][guild_id]
-        
-        # 同时删除相关的身份组映射
-        role_mapping = config.get("role_mapping", {})
-        for role_name in list(role_mapping.keys()):
-            if guild_id in role_mapping[role_name]:
-                del role_mapping[role_name][guild_id]
-                # 如果这个身份组没有其他服务器映射了，删除整个映射
-                if not role_mapping[role_name]:
-                    del role_mapping[role_name]
-        
+        main_server_id = str(group_cfg.get("main_server_id") or "")
+        if not main_server_id:
+            await interaction.followup.send("❌ 该组未设置主服务器", ephemeral=True)
+            return
+        if guild_id == main_server_id:
+            await interaction.followup.send("❌ 当前服务器是主服务器，无法执行“从主服同步到当前子服”", ephemeral=True)
+            return
+
+        source_guild = self.bot.get_guild(int(main_server_id))
+        target_guild = interaction.guild
+        if not source_guild:
+            await interaction.followup.send("❌ 无法访问主服务器", ephemeral=True)
+            return
+        if not self._bot_can_manage_roles(source_guild) or not self._bot_can_manage_roles(target_guild):
+            await interaction.followup.send("❌ Bot 在主服或当前服务器缺少“管理身份组”权限", ephemeral=True)
+            return
+
+        source_roles = [r for r in source_guild.roles if self._is_manageable_role(source_guild, r)]
+        source_roles.sort(key=lambda r: r.position)
+        if not source_roles:
+            await interaction.followup.send("❌ 主服务器没有可由 Bot 操作的身份组", ephemeral=True)
+            return
+
+        server_cfg = group_cfg["servers"][guild_id]
+        updated = 0
+        skipped = 0
+        role_map: Dict[discord.Role, int] = {}
+        top_limit = target_guild.me.top_role.position - 1 if target_guild.me else 0
+        total = len(source_roles)
+        step = max(1, total // 20)  # 约 20 次更新，避免过多编辑消息
+        progress_msg = await interaction.followup.send(
+            (
+                f"🔄 正在从主服同步身份组（组: `{组名}`）\n"
+                f"`{self._format_progress_bar(0, total)}` 0/{total} (0%)\n"
+                "成功 0 | 跳过/失败 0"
+            ),
+            ephemeral=True,
+            wait=True,
+        )
+
+        for idx, source_role in enumerate(source_roles, start=1):
+            try:
+                target_role = await self._upsert_role_from_main(source_role, target_guild)
+                if not target_role:
+                    skipped += 1
+                else:
+                    server_cfg["roles"][source_role.name] = target_role.id
+                    role_map[target_role] = min(source_role.position, top_limit)
+                    updated += 1
+            except discord.Forbidden:
+                skipped += 1
+            except Exception as e:
+                skipped += 1
+                if self.logger:
+                    self.logger.error(f"全量同步身份组失败 {source_role.name}: {e}")
+
+            if idx == 1 or idx % step == 0 or idx == total:
+                percent = int(idx * 100 / total)
+                await progress_msg.edit(
+                    content=(
+                        f"🔄 正在从主服同步身份组（组: `{组名}`）\n"
+                        f"`{self._format_progress_bar(idx, total)}` {idx}/{total} ({percent}%)\n"
+                        f"成功 {updated} | 跳过/失败 {skipped}"
+                    )
+                )
+            await asyncio.sleep(0.1)
+
+        if role_map:
+            try:
+                await target_guild.edit_role_positions(positions=role_map, reason=f"主服务器身份组全量同步: {组名}")
+            except Exception as e:
+                if self.logger:
+                    self.logger.warning(f"更新身份组排序失败: {e}")
+
+        self._config_cache = self.config
+        self._save_config()
+        await progress_msg.edit(
+            content=(
+                f"✅ 主服身份组同步完成（组: `{组名}`）\n"
+                f"`{self._format_progress_bar(total, total)}` {total}/{total} (100%)\n"
+                f"成功 {updated} | 跳过/失败 {skipped}"
+            )
+        )
+
+    # ====== 同步管理指令 ======
+    @sync_manage.command(name="创建组", description="创建一个新的同步服务器组")
+    @guild_only()
+    @is_admin()
+    @app_commands.describe(组名="服务器组名称")
+    async def create_group(self, interaction: discord.Interaction, 组名: str):
+        config = self.config
+        if 组名 in config.get("server_groups", {}):
+            await interaction.response.send_message("❌ 该服务器组已存在", ephemeral=True)
+            return
+        self._ensure_group(config, 组名)
         self._config_cache = config
         self._save_config()
-        
-        await interaction.edit_original_response(content="✅ 已从同步列表中删除当前服务器")
+        await interaction.response.send_message(f"✅ 已创建服务器组 `{组名}`", ephemeral=True)
 
-    @sync_manage.command(name="身份组", description="将身份组添加到同步列表")
-    
-    @app_commands.describe(名字="身份组名字", role="身份组")
+    @sync_manage.command(name="删除组", description="删除一个同步服务器组")
+    @guild_only()
+    @is_admin()
+    @app_commands.describe(组名="服务器组名称")
+    async def delete_group(self, interaction: discord.Interaction, 组名: str):
+        config = self.config
+        if 组名 not in config.get("server_groups", {}):
+            await interaction.response.send_message("❌ 该服务器组不存在", ephemeral=True)
+            return
+        del config["server_groups"][组名]
+        self._config_cache = config
+        self._save_config()
+        await interaction.response.send_message(f"✅ 已删除服务器组 `{组名}`", ephemeral=True)
+
+    @sync_manage.command(name="设置主服务器", description="将当前服务器设置为指定组的主服务器")
+    @guild_only()
+    @is_admin()
+    @app_commands.describe(组名="服务器组名称")
+    async def set_main_server(self, interaction: discord.Interaction, 组名: str):
+        config = self.config
+        guild = interaction.guild
+        group_cfg = self._ensure_group(config, 组名)
+        self._ensure_server_in_group(config, 组名, guild)
+        group_cfg["main_server_id"] = str(guild.id)
+        self._config_cache = config
+        self._save_config()
+        await interaction.response.send_message(
+            f"✅ 当前服务器已设置为 `{组名}` 的主服务器",
+            ephemeral=True,
+        )
+
+    @sync_manage.command(name="设置子服务器", description="将当前服务器设置为指定组的子服务器")
+    @guild_only()
+    @is_admin()
+    @app_commands.describe(组名="服务器组名称")
+    async def set_sub_server(self, interaction: discord.Interaction, 组名: str):
+        config = self.config
+        guild = interaction.guild
+        group_cfg = self._ensure_group(config, 组名)
+        self._ensure_server_in_group(config, 组名, guild)
+        if not group_cfg.get("main_server_id"):
+            await interaction.response.send_message(
+                "❌ 该组还没有主服务器，请先在主服执行“设置主服务器”",
+                ephemeral=True,
+            )
+            return
+        self._config_cache = config
+        self._save_config()
+        await interaction.response.send_message(
+            f"✅ 当前服务器已加入 `{组名}` 作为子服务器",
+            ephemeral=True,
+        )
+
+    @sync_manage.command(name="移出当前服务器", description="将当前服务器从所在服务器组中移除")
+    @guild_only()
+    @is_admin()
+    async def remove_current_server(self, interaction: discord.Interaction):
+        guild_id = str(interaction.guild.id)
+        config = self.config
+        group_name, _ = self._get_group_and_server_cfg(guild_id)
+        if not group_name:
+            await interaction.response.send_message("❌ 当前服务器不在任何同步组中", ephemeral=True)
+            return
+        group_cfg = config["server_groups"][group_name]
+        group_cfg["servers"].pop(guild_id, None)
+        if group_cfg.get("main_server_id") == guild_id:
+            group_cfg["main_server_id"] = next(iter(group_cfg["servers"]), None)
+        self._config_cache = config
+        self._save_config()
+        await interaction.response.send_message(f"✅ 已将当前服务器移出 `{group_name}`", ephemeral=True)
+
+    @sync_manage.command(name="查看组", description="查看全部同步服务器组及主子服务器信息")
+    @guild_only()
+    @is_admin()
+    async def list_groups(self, interaction: discord.Interaction):
+        groups = self.config.get("server_groups", {})
+        if not groups:
+            await interaction.response.send_message("暂无同步服务器组", ephemeral=True)
+            return
+        lines = []
+        for group_name, group_cfg in groups.items():
+            main_id = str(group_cfg.get("main_server_id") or "未设置")
+            lines.append(f"【{group_name}】主服务器: {main_id}")
+            for gid, server_cfg in group_cfg.get("servers", {}).items():
+                role_text = f"身份组映射 {len(server_cfg.get('roles', {}))} 项"
+                tag = "主" if gid == main_id else "子"
+                lines.append(f"  - ({tag}) {server_cfg.get('name') or gid} [{gid}]，{role_text}")
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+    @sync_manage.command(name="身份组", description="设置当前服务器可同步身份组映射")
+    @guild_only()
+    @is_admin()
+    @app_commands.describe(名字="映射名称（建议与主服身份组同名）", role="当前服务器中的身份组")
     async def add_role_mapping(self, interaction: discord.Interaction, 名字: str, role: discord.Role):
-        """添加身份组映射"""
         guild_id = str(interaction.guild.id)
-        
         config = self.config
-        if guild_id not in config.get("servers", {}):
-            await interaction.response.send_message("❌ 当前服务器未在同步列表中，请先添加服务器", ephemeral=True)
+        group_name, server_cfg = self._get_group_and_server_cfg(guild_id)
+        if not group_name or not server_cfg:
+            await interaction.response.send_message("❌ 当前服务器未加入任何同步服务器组", ephemeral=True)
             return
-
-        if "role_mapping" not in config:
-            config["role_mapping"] = {}
-            
-        if 名字 not in config["role_mapping"]:
-            config["role_mapping"][名字] = {}
-            
-        # 添加到服务器配置
-        config["servers"][guild_id]["roles"][名字] = role.id
-        
-        # 添加到全局映射
-        config["role_mapping"][名字][guild_id] = role.id
-        
+        server_cfg.setdefault("roles", {})[名字] = role.id
         self._config_cache = config
         self._save_config()
-        
-        await interaction.response.send_message(f"✅ 已将身份组 {role.mention} 添加到同步列表，名称: {名字}", ephemeral=True)
+        await interaction.response.send_message(
+            f"✅ 已在 `{group_name}` 中添加映射：`{名字}` -> {role.mention}",
+            ephemeral=True,
+        )
 
-    @sync_manage.command(name="处罚同步", description="开启或关闭此服务器的处罚同步")
-    
+    @sync_manage.command(name="处罚同步", description="开启或关闭当前服务器在同组中的处罚同步")
+    @guild_only()
+    @is_admin()
     @app_commands.describe(状态="开启或关闭")
-    @app_commands.choices(状态=[
-        app_commands.Choice(name="开", value="on"),
-        app_commands.Choice(name="关", value="off"),
-    ])
+    @app_commands.choices(
+        状态=[
+            app_commands.Choice(name="开", value="on"),
+            app_commands.Choice(name="关", value="off"),
+        ]
+    )
     async def toggle_punishment_sync(self, interaction: discord.Interaction, 状态: str):
-        """开启或关闭处罚同步"""
         guild_id = str(interaction.guild.id)
-        
         config = self.config
-        if guild_id not in config.get("servers", {}):
-            await interaction.response.send_message("❌ 当前服务器未在同步列表中，请先添加服务器", ephemeral=True)
+        group_name, server_cfg = self._get_group_and_server_cfg(guild_id)
+        if not group_name or not server_cfg:
+            await interaction.response.send_message("❌ 当前服务器未加入任何同步服务器组", ephemeral=True)
             return
-
         enabled = 状态 == "on"
-        config["servers"][guild_id]["punishment_sync"] = enabled
-        
-        if enabled and "punishment_sync" not in config:
-            config["punishment_sync"] = {"enabled": True, "servers": {}}
-            
-        if enabled:
-            config["punishment_sync"]["servers"][guild_id] = True
-        elif guild_id in config.get("punishment_sync", {}).get("servers", {}):
-            del config["punishment_sync"]["servers"][guild_id]
-        
+        server_cfg["punishment_sync"] = enabled
         self._config_cache = config
         self._save_config()
-        
-        status_text = "开启" if enabled else "关闭"
-        await interaction.response.send_message(f"✅ 已{status_text}此服务器的处罚同步", ephemeral=True)
+        await interaction.response.send_message(
+            f"✅ 已{'开启' if enabled else '关闭'} `{group_name}` 内处罚同步",
+            ephemeral=True,
+        )
 
-    @sync_manage.command(name="处罚公示频道", description="设置此服务器的处罚公示频道")
-    
-    @app_commands.describe(频道="处罚公示频道")
+    @sync_manage.command(name="处罚公示频道", description="设置当前服务器的处罚同步公示频道")
+    @guild_only()
+    @is_admin()
+    @app_commands.describe(频道="公示频道")
     async def set_punishment_announce_channel(self, interaction: discord.Interaction, 频道: discord.TextChannel):
-        """设置处罚公示频道"""
         guild_id = str(interaction.guild.id)
-        
         config = self.config
-        if guild_id not in config.get("servers", {}):
-            await interaction.response.send_message("❌ 当前服务器未在同步列表中，请先添加服务器", ephemeral=True)
+        _, server_cfg = self._get_group_and_server_cfg(guild_id)
+        if not server_cfg:
+            await interaction.response.send_message("❌ 当前服务器未加入任何同步服务器组", ephemeral=True)
             return
-
-        config["servers"][guild_id]["punishment_announce_channel"] = 频道.id
-        
+        server_cfg["punishment_announce_channel"] = 频道.id
         self._config_cache = config
         self._save_config()
-        
         await interaction.response.send_message(f"✅ 已设置处罚公示频道为 {频道.mention}", ephemeral=True)
 
-    @sync_manage.command(name="处罚确认频道", description="设置此服务器的处罚同步确认频道")
-    
-    @app_commands.describe(频道="处罚确认频道")
-    async def set_punishment_confirm_channel(self, interaction: discord.Interaction, 频道: discord.TextChannel):
-        """设置处罚确认频道"""
-        guild_id = str(interaction.guild.id)
-        
-        config = self.config
-        if guild_id not in config.get("servers", {}):
-            await interaction.response.send_message("❌ 当前服务器未在同步列表中，请先添加服务器", ephemeral=True)
-            return
-
-        config["servers"][guild_id]["punishment_confirm_channel"] = 频道.id
-        
-        self._config_cache = config
-        self._save_config()
-        
-        await interaction.response.send_message(f"✅ 已设置处罚确认频道为 {频道.mention}", ephemeral=True)
-
-    # ====== 提供给其他模块的身份组操作函数 ======
+    # ====== 对外接口：身份组操作 ======
     async def sync_add_role(self, guild: discord.Guild, member: discord.Member, role: discord.Role, reason: str = None):
-        """同步添加身份组到所有配置的服务器"""
         if not self.config.get("enabled", False):
-            # 同步未启用，使用普通方式
             await member.add_roles(role, reason=reason)
             return
 
         guild_id = str(guild.id)
-        if guild_id not in self.config.get("servers", {}):
-            # 当前服务器未配置同步，使用普通方式
+        group_name, source_server_cfg = self._get_group_and_server_cfg(guild_id)
+        if not group_name or not source_server_cfg:
             await member.add_roles(role, reason=reason)
             return
 
-        # 先在当前服务器添加身份组
+        # 标记当前服本地变更，避免本次操作再次被 on_member_update 捕获并重复广播
+        self._mark_guard(guild.id, member.id, role.id, "add")
         await member.add_roles(role, reason=reason)
-
-        # 检查是否有映射的身份组
-        role_name = role.name
-        role_mapping = self.config.get("role_mapping", {})
-        
-        if role_name not in role_mapping:
-            return  # 没有映射配置
-
-        # 同步到其他服务器
-        servers_config = self.config.get("servers", {})
-        
-        for target_guild_id, server_config in servers_config.items():
-            if target_guild_id == guild_id:  # 跳过当前服务器
-                continue
-                
-            target_guild = self.bot.get_guild(int(target_guild_id))
-            if not target_guild:
-                continue
-                
-            target_member = target_guild.get_member(member.id)
-            if not target_member:
-                continue
-
-            # 获取目标身份组
-            role_configs = server_config.get("roles", {})
-            if role_name in role_configs:
-                target_role_id = role_configs[role_name]
-                target_role = target_guild.get_role(target_role_id)
-                
-                if target_role:
-                    try:
-                        if target_role not in target_member.roles:
-                            await target_member.add_roles(target_role, reason=f"身份组同步: {reason}")
-                    except Exception as e:
-                        if self.logger:
-                            self.logger.error(f"同步添加身份组失败 {target_guild.name}: {e}")
+        await self._propagate_role_add(guild, member, role, reason)
 
     async def sync_remove_role(self, guild: discord.Guild, member: discord.Member, role: discord.Role, reason: str = None):
-        """同步移除身份组到所有配置的服务器"""
         if not self.config.get("enabled", False):
-            # 同步未启用，使用普通方式
             await member.remove_roles(role, reason=reason)
             return
 
         guild_id = str(guild.id)
-        if guild_id not in self.config.get("servers", {}):
-            # 当前服务器未配置同步，使用普通方式
+        group_name, source_server_cfg = self._get_group_and_server_cfg(guild_id)
+        if not group_name or not source_server_cfg:
             await member.remove_roles(role, reason=reason)
             return
 
-        # 先在当前服务器移除身份组
+        # 标记当前服本地变更，避免本次操作再次被 on_member_update 捕获并重复广播
+        self._mark_guard(guild.id, member.id, role.id, "remove")
         await member.remove_roles(role, reason=reason)
+        await self._propagate_role_remove(guild, member, role, reason)
 
-        # 检查是否有映射的身份组
-        role_name = role.name
-        role_mapping = self.config.get("role_mapping", {})
-        
-        if role_name not in role_mapping:
-            return  # 没有映射配置
-
-        # 同步到其他服务器
-        servers_config = self.config.get("servers", {})
-        
-        for target_guild_id, server_config in servers_config.items():
-            if target_guild_id == guild_id:  # 跳过当前服务器
-                continue
-                
-            target_guild = self.bot.get_guild(int(target_guild_id))
-            if not target_guild:
-                continue
-                
-            target_member = target_guild.get_member(member.id)
-            if not target_member:
-                continue
-
-            # 获取目标身份组
-            role_configs = server_config.get("roles", {})
-            if role_name in role_configs:
-                target_role_id = role_configs[role_name]
-                target_role = target_guild.get_role(target_role_id)
-                
-                if target_role:
-                    try:
-                        if target_role in target_member.roles:
-                            await target_member.remove_roles(target_role, reason=f"身份组同步: {reason}")
-                    except Exception as e:
-                        if self.logger:
-                            self.logger.error(f"同步移除身份组失败 {target_guild.name}: {e}")
-
-    # ====== 提供给其他模块的处罚操作函数 ======
-    async def sync_punishment(self, guild: discord.Guild, punishment_type: str, member: discord.Member = None, 
-                            moderator: discord.Member = None, reason: str = None, duration: int = None, 
-                            warn_days: int = 0, punishment_id: str = None, img: discord.Attachment = None,
-                            user_id: int = None):
-        """同步处罚到其他服务器"""
-        if not self.config.get("punishment_sync", {}).get("enabled", False):
-            return  # 处罚同步未启用
-
+    # ====== 对外接口：处罚同步 ======
+    async def sync_punishment(
+        self,
+        guild: discord.Guild,
+        punishment_type: str,
+        member: discord.Member = None,
+        moderator: discord.Member = None,
+        reason: str = None,
+        duration: int = None,
+        warn_days: int = 0,
+        punishment_id: str = None,
+        img: discord.Attachment = None,
+        user_id: int = None,
+    ):
         guild_id = str(guild.id)
-        if not self.config.get("servers", {}).get(guild_id, {}).get("punishment_sync", False):
-            return  # 当前服务器未启用处罚同步
+        group_name, source_server_cfg = self._get_group_and_server_cfg(guild_id)
+        if not group_name or not source_server_cfg:
+            return
+        if not source_server_cfg.get("punishment_sync", False):
+            return
 
-        # 确定用户信息
-        target_user_id = None
-        target_user_name = None
-        target_user = None
-        
         if member is not None:
-            # 使用提供的成员对象
             target_user_id = member.id
             target_user_name = f"{member.display_name}#{member.discriminator}"
-            target_user = member
         elif user_id is not None:
-            # 使用用户ID
-            target_user_id = user_id
+            target_user_id = int(user_id)
+            target_user_name = f"用户 {target_user_id}"
             try:
-                # 尝试获取用户对象
-                target_user = await self.bot.fetch_user(user_id)
-                target_user_name = f"{target_user.display_name}#{target_user.discriminator}"
+                fetched_user = await self.bot.fetch_user(target_user_id)
+                target_user_name = f"{fetched_user.display_name}#{fetched_user.discriminator}"
             except Exception:
-                # 如果无法获取用户信息，使用默认格式
-                target_user_name = f"用户 {user_id}"
+                pass
         else:
             if self.logger:
-                self.logger.error("sync_punishment: 必须提供member或user_id参数")
+                self.logger.error("sync_punishment: 必须提供 member 或 user_id 参数")
             return
 
-        # 创建处罚记录
-        punishment_record = {
+        record = {
             "id": punishment_id or uuid.uuid4().hex[:8],
             "type": punishment_type,
             "source_guild": guild.id,
@@ -481,116 +991,66 @@ class ServerSyncCommands(commands.Cog):
             "moderator_id": moderator.id if moderator else None,
             "moderator_name": f"{moderator.display_name}#{moderator.discriminator}" if moderator else "系统",
             "reason": reason,
-            "duration": duration,
-            "warn_days": warn_days,
+            "duration": int(duration) if duration else None,
+            "warn_days": int(warn_days or 0),
             "img_url": img.url if img else None,
-            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
 
-        # 广播到其他服务器的确认频道
-        servers_config = self.config.get("servers", {})
-        
-        for target_guild_id, server_config in servers_config.items():
-            if target_guild_id == guild_id:  # 跳过当前服务器
+        group_servers = self.config["server_groups"][group_name]["servers"]
+        for target_guild_id, target_server_cfg in group_servers.items():
+            if target_guild_id == guild_id:
                 continue
-                
-            if not server_config.get("punishment_sync", False):
-                continue  # 目标服务器未启用处罚同步
-                
+            if not target_server_cfg.get("punishment_sync", False):
+                continue
             target_guild = self.bot.get_guild(int(target_guild_id))
             if not target_guild:
                 continue
-
-            confirm_channel_id = server_config.get("punishment_confirm_channel")
-            if not confirm_channel_id:
-                continue
-                
-            confirm_channel = target_guild.get_channel(confirm_channel_id)
-            if not confirm_channel:
-                continue
-
-            # 创建确认embed
-            embed = discord.Embed(
-                title="🚨 处罚同步确认",
-                color=discord.Color.orange(),
-                timestamp=datetime.datetime.now(datetime.timezone.utc)
-            )
-            
-            embed.add_field(name="来源服务器", value=guild.name, inline=True)
-            embed.add_field(name="处罚类型", value=punishment_type, inline=True)
-            
-            # 用户信息显示
-            if member:
-                user_display = f"{member.mention} ({member.display_name})"
-            else:
-                user_display = f"<@{target_user_id}> ({target_user_name})"
-            embed.add_field(name="用户", value=user_display, inline=True)
-            
-            # 管理员信息显示
-            if moderator:
-                moderator_display = f"{moderator.mention} ({moderator.display_name})"
-            else:
-                moderator_display = "系统"
-            embed.add_field(name="管理员", value=moderator_display, inline=True)
-            
-            embed.add_field(name="原因", value=reason or "未提供", inline=False)
-            
-            if duration:
-                if punishment_type == "mute":
-                    duration_text = f"{duration // 60}分钟" if duration < 3600 else f"{duration // 3600}小时"
-                    embed.add_field(name="禁言时长", value=duration_text, inline=True)
-            
-            if warn_days > 0:
-                embed.add_field(name="警告天数", value=f"{warn_days}天", inline=True)
-            
-            # 添加图片
-            if img:
-                embed.set_image(url=img.url)
-                
-            embed.set_footer(text=f"处罚ID: {punishment_record['id']}")
-
-            # 创建确认按钮
-            view = PunishmentConfirmView(punishment_record, target_guild_id)
-            
             try:
-                await confirm_channel.send(embed=embed, view=view)
+                await self._apply_punishment_in_guild(target_guild, record, target_server_cfg)
+            except discord.Forbidden:
+                if self.logger:
+                    self.logger.warning(f"处罚同步权限不足: {target_guild.name}")
             except Exception as e:
                 if self.logger:
-                    self.logger.error(f"发送处罚确认消息失败 {target_guild.name}: {e}")
+                    self.logger.error(f"处罚同步失败 {target_guild.name}: {e}")
 
-    async def sync_revoke_punishment(self, guild: discord.Guild, punishment_id: str, moderator: discord.Member, reason: str = None):
-        """同步撤销处罚"""
-        if not self.config.get("punishment_sync", {}).get("enabled", False):
-            return  # 处罚同步未启用
-
+    async def sync_revoke_punishment(
+        self,
+        guild: discord.Guild,
+        punishment_id: str,
+        moderator: discord.Member,
+        reason: str = None,
+    ):
         guild_id = str(guild.id)
-        if not self.config.get("servers", {}).get(guild_id, {}).get("punishment_sync", False):
-            return  # 当前服务器未启用处罚同步
+        group_name, source_server_cfg = self._get_group_and_server_cfg(guild_id)
+        if not group_name or not source_server_cfg:
+            return
+        if not source_server_cfg.get("punishment_sync", False):
+            return
 
-        # 直接同步撤销到其他服务器（不需确认）
-        servers_config = self.config.get("servers", {})
-        
-        for target_guild_id, server_config in servers_config.items():
-            if target_guild_id == guild_id:  # 跳过当前服务器
+        group_servers = self.config["server_groups"][group_name]["servers"]
+        for target_guild_id, target_server_cfg in group_servers.items():
+            if target_guild_id == guild_id:
                 continue
-                
-            if not server_config.get("punishment_sync", False):
-                continue  # 目标服务器未启用处罚同步
-                
+            if not target_server_cfg.get("punishment_sync", False):
+                continue
             target_guild = self.bot.get_guild(int(target_guild_id))
             if not target_guild:
                 continue
+            await self._revoke_punishment_in_guild(target_guild, punishment_id, moderator, reason, target_server_cfg)
 
-            # 尝试撤销处罚
-            await self._revoke_punishment_in_guild(target_guild, punishment_id, moderator, reason)
-
-    async def _revoke_punishment_in_guild(self, guild: discord.Guild, punishment_id: str, moderator: discord.Member, reason: str = None):
-        """在指定服务器撤销处罚"""
-        # 查找处罚记录
+    async def _revoke_punishment_in_guild(
+        self,
+        guild: discord.Guild,
+        punishment_id: str,
+        moderator: discord.Member,
+        reason: str = None,
+        server_cfg: Optional[Dict] = None,
+    ):
         punish_dir = pathlib.Path("data") / "punish" / str(guild.id)
         if not punish_dir.exists():
             return
-
         record_file = punish_dir / f"{punishment_id}.json"
         if not record_file.exists():
             return
@@ -600,29 +1060,17 @@ class ServerSyncCommands(commands.Cog):
                 record = json.load(f)
 
             user_id = int(record["user_id"])
-            user_obj = guild.get_member(user_id)
-            
-            if not user_obj:
-                try:
-                    user_obj = await guild.fetch_member(user_id)
-                except:
-                    user_obj = None
+            user_obj = await self._safe_fetch_member(guild, user_id)
 
             if record["type"] == "mute" and user_obj:
                 try:
                     await user_obj.timeout(None, reason=f"同步撤销处罚: {reason}")
-                    # 移除警告身份组
                     if record.get("warn_days", 0) > 0:
-
-                        # 从多服务器配置获取warned_role_id
-                        guild_configs = getattr(self.bot, 'config', {}).get('guild_configs', {})
-                        guild_config = guild_configs.get(str(guild.id), {})
-                        warned_role_id = guild_config.get("warned_role_id")
-
+                        warned_role_id = self._get_warned_role_id(guild.id)
                         if warned_role_id:
                             warned_role = guild.get_role(int(warned_role_id))
                             if warned_role and warned_role in user_obj.roles:
-                                await user_obj.remove_roles(warned_role, reason=f"同步撤销处罚")
+                                await user_obj.remove_roles(warned_role, reason="同步撤销处罚")
                 except discord.Forbidden:
                     pass
             elif record["type"] == "ban":
@@ -630,15 +1078,15 @@ class ServerSyncCommands(commands.Cog):
                     await guild.unban(discord.Object(id=user_id), reason=f"同步撤销处罚: {reason}")
                 except discord.Forbidden:
                     pass
+                except discord.NotFound:
+                    pass
 
-            # 删除记录文件
             record_file.unlink(missing_ok=True)
-
-            # 发布撤销公告
-            guild_config = self.config.get("servers", {}).get(str(guild.id), {})
-            announce_channel_id = guild_config.get("punishment_announce_channel")
+            if not server_cfg:
+                _, server_cfg = self._get_group_and_server_cfg(str(guild.id))
+            announce_channel_id = server_cfg.get("punishment_announce_channel") if server_cfg else None
             if announce_channel_id:
-                announce_channel = guild.get_channel(announce_channel_id)
+                announce_channel = guild.get_channel(int(announce_channel_id))
                 if announce_channel:
                     embed = discord.Embed(title="🔓 撤销处罚", color=discord.Color.green())
                     embed.add_field(name="处罚ID", value=punishment_id)
@@ -646,167 +1094,54 @@ class ServerSyncCommands(commands.Cog):
                     embed.add_field(name="操作者", value=moderator.mention)
                     embed.add_field(name="原因", value=reason or "同步撤销", inline=False)
                     await announce_channel.send(embed=embed)
-
         except Exception as e:
             if self.logger:
                 self.logger.error(f"撤销处罚失败 {guild.name}: {e}")
 
 
-class PunishmentConfirmView(discord.ui.View):
-    """处罚确认视图"""
-    
-    def __init__(self, punishment_record: dict, target_guild_id: str):
-        super().__init__(timeout=86400)  # 24小时超时
-        self.punishment_record = punishment_record
-        self.target_guild_id = target_guild_id
-        
-    @discord.ui.button(label="确认执行", style=discord.ButtonStyle.danger, emoji="✅")
-    async def confirm_punishment(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """确认执行处罚"""
-        # 检查权限（需要管理员权限）
-        if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("❌ 只有管理员可以确认处罚", ephemeral=True)
-            return
-
-        await interaction.response.defer()
-
-        guild = interaction.guild
-        punishment_type = self.punishment_record["type"]
-        user_id = self.punishment_record["user_id"]
-        reason = self.punishment_record["reason"]
-        duration = self.punishment_record.get("duration")
-        warn_days = self.punishment_record.get("warn_days", 0)
-        punishment_id = self.punishment_record["id"]
-
-        try:
-            # 获取用户
-            user_obj = guild.get_member(user_id)
-            is_member = user_obj is not None
-            
-            # 如果用户不在服务器中但是封禁操作，尝试获取用户对象
-            if not user_obj and punishment_type == "ban":
-                try:
-                    user_obj = await interaction.client.fetch_user(user_id)
-                except discord.NotFound:
-                    await interaction.followup.send("❌ 无法找到用户", ephemeral=True)
-                    return
-                except Exception as e:
-                    await interaction.followup.send(f"❌ 获取用户信息失败: {e}", ephemeral=True)
-                    return
-            elif not user_obj:
-                # 对于禁言等需要用户在服务器的操作
-                await interaction.followup.send("❌ 用户不在此服务器中", ephemeral=True)
-                return
-
-            # 执行处罚
-            if punishment_type == "mute":
-                if not is_member:
-                    await interaction.followup.send("❌ 禁言操作需要用户在服务器中", ephemeral=True)
-                    return
-                    
-                if duration and duration > 0:
-                    await user_obj.timeout(datetime.timedelta(seconds=duration), reason=f"同步处罚: {reason}")
-                
-                # 添加警告身份组
-                if warn_days > 0:
-                    sync_cog = interaction.client.get_cog("ServerSyncCommands")
-                    if sync_cog:
-                        guild_configs = getattr(sync_cog.bot, 'config', {}).get('guild_configs', {})
-                        guild_config = guild_configs.get(str(guild.id), {})
-                        warned_role_id = guild_config.get("warned_role_id")
-                        
-                        if warned_role_id:
-                            warned_role = guild.get_role(int(warned_role_id))
-                            if warned_role:
-                                await user_obj.add_roles(warned_role, reason=f"同步处罚警告 {warn_days} 天")
-
-            elif punishment_type == "ban":
-                if is_member:
-                    await guild.ban(user_obj, reason=f"同步处罚: {reason}", delete_message_days=0)
-                else:
-                    # 用户不在服务器中，使用用户ID进行封禁
-                    await guild.ban(discord.Object(id=user_id), reason=f"同步处罚: {reason}", delete_message_days=0)
-
-            # 保存处罚记录
-            punish_dir = pathlib.Path("data") / "punish" / str(guild.id)
-            punish_dir.mkdir(parents=True, exist_ok=True)
-            
-            record_file = punish_dir / f"{punishment_id}.json"
-            with open(record_file, "w", encoding="utf-8") as f:
-                json.dump(self.punishment_record, f, ensure_ascii=False, indent=2)
-
-            # 发布公告
-            sync_cog = interaction.client.get_cog("ServerSyncCommands")
-            if sync_cog:
-                guild_config = sync_cog.config.get("servers", {}).get(str(guild.id), {})
-                announce_channel_id = guild_config.get("punishment_announce_channel")
-                if announce_channel_id:
-                    announce_channel = guild.get_channel(announce_channel_id)
-                    if announce_channel:
-                        embed = discord.Embed(
-                            title="🚨 同步处罚执行",
-                            color=discord.Color.red(),
-                            timestamp=datetime.datetime.now(datetime.timezone.utc)
-                        )
-                        embed.add_field(name="来源服务器", value=self.punishment_record["source_guild_name"], inline=True)
-                        embed.add_field(name="处罚类型", value=punishment_type, inline=True)
-                        
-                        # 用户显示
-                        if is_member:
-                            user_display = user_obj.mention
-                        else:
-                            user_display = f"<@{user_id}> ({self.punishment_record['user_name']})"
-                        embed.add_field(name="用户", value=user_display, inline=True)
-                        
-                        embed.add_field(name="原管理员", value=self.punishment_record["moderator_name"], inline=True)
-                        embed.add_field(name="确认管理员", value=interaction.user.mention, inline=True)
-                        embed.add_field(name="原因", value=reason or "未提供", inline=False)
-                        
-                        # 添加图片
-                        img_url = self.punishment_record.get("img_url")
-                        if img_url:
-                            embed.set_image(url=img_url)
-                            
-                        embed.set_footer(text=f"处罚ID: {punishment_id}")
-                        await announce_channel.send(embed=embed)
-
-            # 更新确认消息
-            embed = discord.Embed(title="✅ 处罚已确认执行", color=discord.Color.green())
-            embed.add_field(name="确认者", value=interaction.user.mention)
-            embed.add_field(name="执行时间", value=discord.utils.format_dt(datetime.datetime.now(), "F"))
-            
-            # 禁用按钮
-            for item in self.children:
-                item.disabled = True
-                
-            await interaction.edit_original_response(embed=embed, view=self)
-            
-        except discord.Forbidden:
-            await interaction.followup.send("❌ 权限不足，无法执行处罚", ephemeral=True)
-        except discord.NotFound:
-            await interaction.followup.send("❌ 用户不存在或已被封禁", ephemeral=True)
-        except Exception as e:
-            await interaction.followup.send(f"❌ 执行处罚失败: {e}", ephemeral=True)
-
-    @discord.ui.button(label="拒绝执行", style=discord.ButtonStyle.secondary, emoji="❌")
-    async def reject_punishment(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """拒绝执行处罚"""
-        # 检查权限
-        if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("❌ 只有管理员可以拒绝处罚", ephemeral=True)
-            return
-
-        embed = discord.Embed(title="❌ 处罚已拒绝", color=discord.Color.red())
-        embed.add_field(name="拒绝者", value=interaction.user.mention)
-        embed.add_field(name="拒绝时间", value=discord.utils.format_dt(datetime.datetime.now(), "F"))
-        
-        # 禁用按钮
-        for item in self.children:
-            item.disabled = True
-            
-        await interaction.response.edit_message(embed=embed, view=self)
-
-
 async def setup(bot):
-    await bot.add_cog(ServerSyncCommands(bot)) 
+    await bot.add_cog(ServerSyncCommands(bot))
+
+
+class ManualRoleSyncView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="手动同步我的主服身份组",
+        style=discord.ButtonStyle.primary,
+        emoji="🔄",
+        custom_id="sync:manual_main_to_sub",
+    )
+    async def manual_sync(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("❌ 该按钮只能在服务器中使用", ephemeral=True)
+            return
+
+        sync_cog = interaction.client.get_cog("ServerSyncCommands")
+        if not sync_cog:
+            await interaction.response.send_message("❌ 同步模块未加载", ephemeral=True)
+            return
+        if not sync_cog.config.get("enabled", False):
+            await interaction.response.send_message("❌ 同步功能未启用", ephemeral=True)
+            return
+
+        guild_id = str(interaction.guild.id)
+        group_name, _ = sync_cog._get_group_and_server_cfg(guild_id)
+        if not group_name:
+            await interaction.response.send_message("❌ 当前服务器未加入任何同步服务器组", ephemeral=True)
+            return
+
+        group_cfg = sync_cog.config.get("server_groups", {}).get(group_name, {})
+        main_server_id = str(group_cfg.get("main_server_id") or "")
+        if not main_server_id or main_server_id == guild_id:
+            await interaction.response.send_message("❌ 当前服务器不是可同步的子服务器", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        added_count = await sync_cog._sync_member_roles_from_main_to_sub(interaction.user, group_name)
+        if added_count > 0:
+            await interaction.followup.send(f"✅ 同步完成，已新增 {added_count} 个身份组", ephemeral=True)
+        else:
+            await interaction.followup.send("ℹ️ 同步完成，无可新增的身份组", ephemeral=True)
 
