@@ -4,7 +4,7 @@ import json
 import pathlib
 import time
 import uuid
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import discord
 from discord import app_commands
@@ -41,6 +41,9 @@ class ServerSyncCommands(commands.Cog):
         self._persistent_views_registered = False
         self._role_sync_guard: Dict[str, float] = {}
         self._role_event_guard: Dict[str, float] = {}
+        self._manual_sync_queues: Dict[int, asyncio.Queue] = {}
+        self._manual_sync_workers: Dict[int, asyncio.Task] = {}
+        self._manual_sync_pending: Dict[int, set] = {}
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -461,6 +464,95 @@ class ServerSyncCommands(commands.Cog):
                     )
         return added_count
 
+    # ====== 手动同步排队机制 ======
+    def _get_manual_sync_queue(self, guild_id: int) -> asyncio.Queue:
+        if guild_id not in self._manual_sync_queues:
+            self._manual_sync_queues[guild_id] = asyncio.Queue()
+            self._manual_sync_pending[guild_id] = set()
+        return self._manual_sync_queues[guild_id]
+
+    async def _manual_sync_worker(self, guild_id: int) -> None:
+        queue = self._get_manual_sync_queue(guild_id)
+        while True:
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=120)
+            except asyncio.TimeoutError:
+                break
+
+            interaction: discord.Interaction = item["interaction"]
+            group_name: str = item["group_name"]
+            member: discord.Member = item["member"]
+            position: int = item["position"]
+            self._manual_sync_pending[guild_id].discard(member.id)
+
+            try:
+                await interaction.edit_original_response(
+                    content="🔄 正在同步你的身份组，请稍候…"
+                )
+            except Exception:
+                queue.task_done()
+                continue
+
+            try:
+                added_count = await self._sync_member_roles_from_main_to_sub(member, group_name)
+                if added_count > 0:
+                    msg = f"✅ 同步完成，已新增 {added_count} 个身份组"
+                else:
+                    msg = "ℹ️ 同步完成，无可新增的身份组"
+                await interaction.edit_original_response(content=msg)
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(f"手动同步队列任务失败 guild={guild_id} user={member.id}: {e}")
+                try:
+                    await interaction.edit_original_response(content="❌ 同步过程中出错，请稍后重试")
+                except Exception:
+                    pass
+
+            queue.task_done()
+            await asyncio.sleep(1.0)
+
+        self._manual_sync_workers.pop(guild_id, None)
+
+    def _ensure_manual_sync_worker(self, guild_id: int) -> None:
+        existing = self._manual_sync_workers.get(guild_id)
+        if existing and not existing.done():
+            return
+        task = asyncio.create_task(self._manual_sync_worker(guild_id))
+        self._manual_sync_workers[guild_id] = task
+
+    async def enqueue_manual_sync(
+        self,
+        interaction: discord.Interaction,
+        member: discord.Member,
+        group_name: str,
+    ) -> None:
+        guild_id = interaction.guild.id
+        pending = self._manual_sync_pending.setdefault(guild_id, set())
+
+        if member.id in pending:
+            await interaction.response.send_message("⏳ 你已经在排队中了，请耐心等待", ephemeral=True)
+            return
+
+        queue = self._get_manual_sync_queue(guild_id)
+        position = queue.qsize() + 1
+
+        if position > 1:
+            await interaction.response.send_message(
+                f"⏳ 已加入同步队列，前面还有 **{position - 1}** 人，请耐心等待…",
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message("⏳ 正在准备同步…", ephemeral=True)
+
+        pending.add(member.id)
+        await queue.put({
+            "interaction": interaction,
+            "group_name": group_name,
+            "member": member,
+            "position": position,
+        })
+        self._ensure_manual_sync_worker(guild_id)
+
     def _build_guard_key(self, guild_id: int, user_id: int, role_id: int, action: str) -> str:
         return f"{guild_id}:{user_id}:{role_id}:{action}"
 
@@ -842,13 +934,11 @@ class ServerSyncCommands(commands.Cog):
         embed = discord.Embed(
             title="🔄 主服身份组手动同步",
             description=(
-                "点击下方按钮，可将你在主服务器已有的映射身份组同步到当前服务器。\n"
-                "仅在当前服务器为子服务器时生效。"
+                "点击下方按钮，可将你已有的身份组同步到当前服务器。"
             ),
             color=discord.Color.blurple(),
             timestamp=datetime.datetime.now(datetime.timezone.utc),
         )
-        embed.set_footer(text="按钮为持久化组件，机器人重启后仍可使用")
         await interaction.channel.send(embed=embed, view=ManualRoleSyncView())
         await interaction.response.send_message("✅ 已在当前频道发送手动同步面板", ephemeral=True)
 
@@ -1535,10 +1625,5 @@ class ManualRoleSyncView(discord.ui.View):
             await interaction.response.send_message("❌ 当前服务器不是可同步的子服务器", ephemeral=True)
             return
 
-        await interaction.response.defer(ephemeral=True)
-        added_count = await sync_cog._sync_member_roles_from_main_to_sub(interaction.user, group_name)
-        if added_count > 0:
-            await interaction.followup.send(f"✅ 同步完成，已新增 {added_count} 个身份组", ephemeral=True)
-        else:
-            await interaction.followup.send("ℹ️ 同步完成，无可新增的身份组", ephemeral=True)
+        await sync_cog.enqueue_manual_sync(interaction, interaction.user, group_name)
 
