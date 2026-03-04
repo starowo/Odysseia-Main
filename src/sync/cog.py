@@ -40,6 +40,7 @@ class ServerSyncCommands(commands.Cog):
         self._config_cache_mtime: Optional[float] = None
         self._persistent_views_registered = False
         self._role_sync_guard: Dict[str, float] = {}
+        self._role_event_guard: Dict[str, float] = {}
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -180,6 +181,13 @@ class ServerSyncCommands(commands.Cog):
             server_cfg = group_cfg.get("servers", {}).get(guild_id)
             if server_cfg:
                 return group_name, server_cfg
+        return None, None
+
+    def _get_group_as_main(self, guild_id: str) -> Tuple[Optional[str], Optional[Dict]]:
+        """返回 guild 作为主服务器所在的 (组名, 组配置)，否则 (None, None)"""
+        for group_name, group_cfg in self.config.get("server_groups", {}).items():
+            if str(group_cfg.get("main_server_id")) == guild_id:
+                return group_name, group_cfg
         return None, None
 
     def _ensure_group(self, config: Dict, group_name: str) -> Dict:
@@ -421,7 +429,7 @@ class ServerSyncCommands(commands.Cog):
         if not source_server_cfg or not sub_server_cfg:
             return 0
 
-        source_role_ids = {role.id for role in source_member.roles if not role.is_default()}
+        source_role_ids = {role.id for role in source_member.roles if not role.is_default() and not role.managed}
         added_count = 0
         for alias, source_role_id in source_server_cfg.get("roles", {}).items():
             if int(source_role_id) not in source_role_ids:
@@ -432,7 +440,7 @@ class ServerSyncCommands(commands.Cog):
                 continue
 
             target_role = member_in_sub.guild.get_role(int(target_role_id))
-            if not target_role or target_role in member_in_sub.roles:
+            if not target_role or target_role.managed or target_role in member_in_sub.roles:
                 continue
 
             try:
@@ -471,7 +479,25 @@ class ServerSyncCommands(commands.Cog):
         self._role_sync_guard.pop(key, None)
         return True
 
+    def _mark_role_event_guard(self, guild_id: int, role_id: int, action: str, ttl: float = 30.0) -> None:
+        key = f"re:{guild_id}:{role_id}:{action}"
+        self._role_event_guard[key] = time.monotonic() + ttl
+
+    def _consume_role_event_guard(self, guild_id: int, role_id: int, action: str) -> bool:
+        key = f"re:{guild_id}:{role_id}:{action}"
+        expires_at = self._role_event_guard.get(key)
+        now = time.monotonic()
+        if expires_at is None:
+            return False
+        if expires_at < now:
+            self._role_event_guard.pop(key, None)
+            return False
+        self._role_event_guard.pop(key, None)
+        return True
+
     async def _propagate_role_add(self, guild: discord.Guild, member: discord.Member, role: discord.Role, reason: str = None):
+        if role.managed:
+            return
         guild_id = str(guild.id)
         group_name, source_server_cfg = self._get_group_and_server_cfg(guild_id)
         if not group_name or not source_server_cfg:
@@ -494,7 +520,7 @@ class ServerSyncCommands(commands.Cog):
             if not target_role_id:
                 continue
             target_role = target_guild.get_role(int(target_role_id))
-            if not target_role or target_role in target_member.roles:
+            if not target_role or target_role.managed or target_role in target_member.roles:
                 continue
             try:
                 self._mark_guard(target_guild.id, target_member.id, target_role.id, "add")
@@ -504,6 +530,8 @@ class ServerSyncCommands(commands.Cog):
                     self.logger.error(f"同步添加身份组失败 {target_guild.name}/{role_alias}: {e}")
 
     async def _propagate_role_remove(self, guild: discord.Guild, member: discord.Member, role: discord.Role, reason: str = None):
+        if role.managed:
+            return
         guild_id = str(guild.id)
         group_name, source_server_cfg = self._get_group_and_server_cfg(guild_id)
         if not group_name or not source_server_cfg:
@@ -526,7 +554,7 @@ class ServerSyncCommands(commands.Cog):
             if not target_role_id:
                 continue
             target_role = target_guild.get_role(int(target_role_id))
-            if not target_role or target_role not in target_member.roles:
+            if not target_role or target_role.managed or target_role not in target_member.roles:
                 continue
             try:
                 self._mark_guard(target_guild.id, target_member.id, target_role.id, "remove")
@@ -594,6 +622,155 @@ class ServerSyncCommands(commands.Cog):
                 continue
             await self._propagate_role_remove(after.guild, after, role_obj, "监听同步（身份组移除）")
 
+    # ====== 身份组结构变更监听（主服 → 子服） ======
+    @commands.Cog.listener()
+    async def on_guild_role_create(self, role: discord.Role):
+        if not self.config.get("enabled", False):
+            return
+        if role.managed or role.is_default():
+            return
+        if self._consume_role_event_guard(role.guild.id, role.id, "create"):
+            return
+
+        guild_id = str(role.guild.id)
+        group_name, group_cfg = self._get_group_as_main(guild_id)
+        if not group_name or not group_cfg:
+            return
+        if not self._is_manageable_role(role.guild, role):
+            return
+
+        main_server_cfg = group_cfg["servers"].get(guild_id, {})
+        main_server_cfg.setdefault("roles", {})[role.name] = role.id
+
+        for sub_guild_id, sub_server_cfg in group_cfg["servers"].items():
+            if sub_guild_id == guild_id:
+                continue
+            sub_guild = self.bot.get_guild(int(sub_guild_id))
+            if not sub_guild or not self._bot_can_manage_roles(sub_guild):
+                continue
+            try:
+                new_role = await self._upsert_role_from_main(role, sub_guild)
+                if new_role:
+                    self._mark_role_event_guard(sub_guild.id, new_role.id, "create")
+                    sub_server_cfg.setdefault("roles", {})[role.name] = new_role.id
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(f"监听同步创建身份组失败 {sub_guild.name}/{role.name}: {e}")
+
+        self._config_cache = self.config
+        self._save_config()
+        if self.logger:
+            self.logger.info(f"监听主服身份组创建并同步: group={group_name}, role={role.name}")
+
+    @commands.Cog.listener()
+    async def on_guild_role_update(self, before: discord.Role, after: discord.Role):
+        if not self.config.get("enabled", False):
+            return
+        if after.managed or after.is_default():
+            return
+
+        guild_id = str(after.guild.id)
+
+        if self._consume_role_event_guard(after.guild.id, after.id, "update"):
+            return
+
+        group_name, group_cfg = self._get_group_as_main(guild_id)
+        if not group_name or not group_cfg:
+            return
+        if not self._is_manageable_role(after.guild, after):
+            return
+
+        main_server_cfg = group_cfg["servers"].get(guild_id, {})
+        old_alias = None
+        for alias, rid in list(main_server_cfg.get("roles", {}).items()):
+            if int(rid) == before.id:
+                old_alias = alias
+                break
+
+        if not old_alias:
+            return
+
+        if before.name != after.name:
+            main_server_cfg["roles"].pop(old_alias, None)
+            main_server_cfg["roles"][after.name] = after.id
+
+        for sub_guild_id, sub_server_cfg in group_cfg["servers"].items():
+            if sub_guild_id == guild_id:
+                continue
+            sub_guild = self.bot.get_guild(int(sub_guild_id))
+            if not sub_guild or not self._bot_can_manage_roles(sub_guild):
+                continue
+            target_role_id = sub_server_cfg.get("roles", {}).get(old_alias)
+            if not target_role_id:
+                continue
+            try:
+                updated_role = await self._upsert_role_from_main(
+                    after, sub_guild, existing_role_id=int(target_role_id)
+                )
+                if updated_role:
+                    self._mark_role_event_guard(sub_guild.id, updated_role.id, "update")
+                    if before.name != after.name:
+                        sub_server_cfg["roles"].pop(old_alias, None)
+                    sub_server_cfg["roles"][after.name] = updated_role.id
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(f"监听同步更新身份组失败 {sub_guild.name}/{after.name}: {e}")
+
+        self._config_cache = self.config
+        self._save_config()
+        if self.logger:
+            self.logger.info(f"监听主服身份组更新并同步: group={group_name}, role={after.name}")
+
+    @commands.Cog.listener()
+    async def on_guild_role_delete(self, role: discord.Role):
+        if not self.config.get("enabled", False):
+            return
+        if role.managed or role.is_default():
+            return
+        if self._consume_role_event_guard(role.guild.id, role.id, "delete"):
+            return
+
+        guild_id = str(role.guild.id)
+        group_name, group_cfg = self._get_group_as_main(guild_id)
+        if not group_name or not group_cfg:
+            return
+
+        main_server_cfg = group_cfg["servers"].get(guild_id, {})
+        alias = None
+        for a, rid in list(main_server_cfg.get("roles", {}).items()):
+            if int(rid) == role.id:
+                alias = a
+                break
+
+        if not alias:
+            return
+
+        main_server_cfg["roles"].pop(alias, None)
+
+        for sub_guild_id, sub_server_cfg in group_cfg["servers"].items():
+            if sub_guild_id == guild_id:
+                continue
+            sub_guild = self.bot.get_guild(int(sub_guild_id))
+            if not sub_guild:
+                continue
+            target_role_id = sub_server_cfg.get("roles", {}).get(alias)
+            if not target_role_id:
+                continue
+            target_role = sub_guild.get_role(int(target_role_id))
+            if target_role:
+                try:
+                    self._mark_role_event_guard(sub_guild.id, target_role.id, "delete")
+                    await target_role.delete(reason=f"主服身份组同步删除: {alias}")
+                except Exception as e:
+                    if self.logger:
+                        self.logger.error(f"监听同步删除身份组失败 {sub_guild.name}/{alias}: {e}")
+            sub_server_cfg["roles"].pop(alias, None)
+
+        self._config_cache = self.config
+        self._save_config()
+        if self.logger:
+            self.logger.info(f"监听主服身份组删除并同步: group={group_name}, role={role.name}")
+
     # ====== 用户同步指令 ======
     @sync.command(name="身份组同步", description="将当前账号在本组中的身份组映射同步到同组其它服务器")
     @guild_only()
@@ -611,7 +788,7 @@ class ServerSyncCommands(commands.Cog):
 
         syncable = []
         for role in interaction.user.roles:
-            if role.is_default():
+            if role.is_default() or role.managed:
                 continue
             alias = self._get_role_alias_for_source(source_server_cfg, role)
             if alias:
@@ -641,7 +818,7 @@ class ServerSyncCommands(commands.Cog):
                 if not target_role_id:
                     continue
                 target_role = target_guild.get_role(int(target_role_id))
-                if not target_role:
+                if not target_role or target_role.managed:
                     continue
                 try:
                     if target_role not in target_member.roles:
@@ -741,6 +918,8 @@ class ServerSyncCommands(commands.Cog):
                 if not target_role:
                     skipped += 1
                 else:
+                    self._mark_role_event_guard(target_guild.id, target_role.id, "create")
+                    self._mark_role_event_guard(target_guild.id, target_role.id, "update")
                     main_server_cfg.setdefault("roles", {})[source_role.name] = source_role.id
                     server_cfg["roles"][source_role.name] = target_role.id
                     role_map[target_role] = source_role.position
@@ -844,6 +1023,7 @@ class ServerSyncCommands(commands.Cog):
         failed = 0
         for alias, role_obj in target_roles:
             try:
+                self._mark_role_event_guard(interaction.guild.id, role_obj.id, "delete")
                 await role_obj.delete(reason=f"一键删除同步身份组（组: {组名}）")
                 deleted += 1
                 await asyncio.sleep(0.2)
@@ -969,6 +1149,11 @@ class ServerSyncCommands(commands.Cog):
     @is_sync_admin()
     @app_commands.describe(名字="映射名称（建议与主服身份组同名）", role="当前服务器中的身份组")
     async def add_role_mapping(self, interaction: discord.Interaction, 名字: str, role: discord.Role):
+        if role.managed:
+            await interaction.response.send_message(
+                "❌ 该身份组由 App/Bot/集成 管理，无法参与同步映射", ephemeral=True
+            )
+            return
         guild_id = str(interaction.guild.id)
         config = self.config
         group_name, server_cfg = self._get_group_and_server_cfg(guild_id)
@@ -982,6 +1167,104 @@ class ServerSyncCommands(commands.Cog):
             f"✅ 已在 `{group_name}` 中添加映射：`{名字}` -> {role.mention}",
             ephemeral=True,
         )
+
+    @sync_manage.command(name="一键写入主服映射", description="将主服务器所有可管理身份组一键写入映射配置")
+    @guild_only()
+    @is_sync_admin()
+    async def bulk_map_main_roles(self, interaction: discord.Interaction):
+        guild_id = str(interaction.guild.id)
+        config = self.config
+        group_name, server_cfg = self._get_group_and_server_cfg(guild_id)
+        if not group_name or not server_cfg:
+            await interaction.response.send_message("❌ 当前服务器未加入任何同步服务器组", ephemeral=True)
+            return
+
+        group_cfg = config["server_groups"][group_name]
+        if str(group_cfg.get("main_server_id")) != guild_id:
+            await interaction.response.send_message("❌ 该指令只能在主服务器使用", ephemeral=True)
+            return
+
+        manageable = [r for r in interaction.guild.roles if self._is_manageable_role(interaction.guild, r)]
+        if not manageable:
+            await interaction.response.send_message("❌ 没有 Bot 可管理的身份组", ephemeral=True)
+            return
+
+        existing = server_cfg.get("roles", {})
+        added = 0
+        for role in manageable:
+            if role.name not in existing:
+                existing[role.name] = role.id
+                added += 1
+            elif existing[role.name] != role.id:
+                existing[role.name] = role.id
+                added += 1
+        server_cfg["roles"] = existing
+        self._config_cache = config
+        self._save_config()
+
+        msg = (
+            f"✅ 已写入/更新 {added} 个映射，当前共 {len(existing)} 项\n"
+            "（映射名 = 身份组名，后续子服可用「一键智能对应子服映射」自动匹配）"
+        )
+        await interaction.response.send_message(msg, ephemeral=True)
+
+    @sync_manage.command(name="一键智能对应子服映射", description="根据主服映射名，自动匹配当前子服务器的同名身份组写入映射")
+    @guild_only()
+    @is_sync_admin()
+    async def bulk_map_sub_roles(self, interaction: discord.Interaction):
+        guild_id = str(interaction.guild.id)
+        config = self.config
+        group_name, server_cfg = self._get_group_and_server_cfg(guild_id)
+        if not group_name or not server_cfg:
+            await interaction.response.send_message("❌ 当前服务器未加入任何同步服务器组", ephemeral=True)
+            return
+
+        group_cfg = config["server_groups"][group_name]
+        main_server_id = str(group_cfg.get("main_server_id") or "")
+        if not main_server_id:
+            await interaction.response.send_message("❌ 该组未设置主服务器", ephemeral=True)
+            return
+        if guild_id == main_server_id:
+            await interaction.response.send_message("❌ 该指令只能在子服务器使用", ephemeral=True)
+            return
+
+        main_server_cfg = group_cfg["servers"].get(main_server_id, {})
+        main_aliases = set(main_server_cfg.get("roles", {}).keys())
+        if not main_aliases:
+            await interaction.response.send_message("❌ 主服务器还没有映射配置，请先在主服执行「一键写入主服映射」", ephemeral=True)
+            return
+
+        local_roles_by_name: Dict[str, discord.Role] = {}
+        for role in interaction.guild.roles:
+            if not role.is_default() and not role.managed:
+                local_roles_by_name[role.name] = role
+
+        existing = server_cfg.get("roles", {})
+        matched = 0
+        unmatched = []
+        for alias in sorted(main_aliases):
+            local_role = local_roles_by_name.get(alias)
+            if local_role:
+                existing[alias] = local_role.id
+                matched += 1
+            else:
+                unmatched.append(alias)
+
+        server_cfg["roles"] = existing
+        self._config_cache = config
+        self._save_config()
+
+        lines = [f"✅ 已自动匹配 {matched} 个映射，当前共 {len(existing)} 项"]
+        if unmatched:
+            preview = unmatched[:20]
+            lines.append(f"⚠️ 以下 {len(unmatched)} 个主服映射在当前服务器无同名身份组：")
+            lines.append("```")
+            lines.extend(preview)
+            if len(unmatched) > 20:
+                lines.append(f"... 及另外 {len(unmatched) - 20} 个")
+            lines.append("```")
+            lines.append("提示：可手动用 `/同步管理 身份组` 逐个指定，或先执行「主服全量身份组同步」创建身份组后再试。")
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
     @sync_manage.command(name="处罚同步", description="开启或关闭当前服务器在同组中的处罚同步")
     @guild_only()
