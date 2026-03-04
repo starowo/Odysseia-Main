@@ -779,6 +779,7 @@ class ServerSyncCommands(commands.Cog):
     @is_sync_admin()
     @app_commands.describe(组名="服务器组名称")
     async def delete_synced_roles(self, interaction: discord.Interaction, 组名: str):
+        await interaction.response.defer(ephemeral=True)
         guild_id = str(interaction.guild.id)
         group_cfg = self.config.get("server_groups", {}).get(组名)
         if not group_cfg:
