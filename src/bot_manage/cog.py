@@ -7,6 +7,7 @@ import aiohttp
 import tempfile
 import os
 from functools import wraps
+from src.utils.auth import is_bot_owner
 
 class BotManageCommands(commands.Cog):
     def __init__(self, bot):
@@ -29,25 +30,6 @@ class BotManageCommands(commands.Cog):
         if self.logger:
             self.logger.info("管理命令已加载")
             
-    
-    def is_bot_owner():
-        async def predicate(ctx):
-            try:
-                guild = ctx.guild
-                if not guild:
-                    return False
-                    
-                # 在运行时重新加载配置以获取最新的管理员列表
-                with open('config.json', 'r', encoding='utf-8') as f:
-                    config = json.load(f)
-                
-                owner_id = config.get('bot_owner_id', 0)
-                if ctx.author.id == owner_id:
-                    return True
-                return False
-            except Exception:
-                return False
-        return app_commands.check(predicate)
     
     # ---- 全局Cog管理命令 ----
     @command_bot_manage.command(name="模块列表", description="列出所有可用模块及其状态")
