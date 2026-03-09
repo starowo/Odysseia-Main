@@ -966,11 +966,19 @@ class VerifyCommands(commands.Cog):
 
         # 检查是否已有身份组（使用服务器特定配置）
         buffer_role_id = self.get_guild_config("buffer_role_id", guild.id)
+        upper_buffer_role_id = self.get_guild_config("upper_buffer_role_id", guild.id)
         verified_role_id = self.get_guild_config("verified_role_id", guild.id)
         
         if buffer_role_id and buffer_role_id != "请填入缓冲区身份组ID":
             buffer_role = guild.get_role(int(buffer_role_id))
-            if buffer_role and buffer_role in user.roles:
+            if buffer_role and buffer_role in user.roles and not (upper_buffer_role_id and upper_buffer_role_id != "请填入高级缓冲区身份组ID" and guild.get_role(int(upper_buffer_role_id)) and guild.get_role(int(upper_buffer_role_id)) in user.roles):
+                already_msg = "您已拥有相关身份组，无需重复验证" if language == "zh_cn" else "You already have the required role, no need to verify again."
+                await interaction.response.send_message(f"❌ {already_msg}", ephemeral=True)
+                return
+        
+        if upper_buffer_role_id and upper_buffer_role_id != "请填入高级缓冲区身份组ID":
+            upper_buffer_role = guild.get_role(int(upper_buffer_role_id))
+            if upper_buffer_role and upper_buffer_role in user.roles:
                 already_msg = "您已拥有相关身份组，无需重复验证" if language == "zh_cn" else "You already have the required role, no need to verify again."
                 await interaction.response.send_message(f"❌ {already_msg}", ephemeral=True)
                 return

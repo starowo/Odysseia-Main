@@ -713,21 +713,6 @@ class AdminCommands(commands.Cog):
             "duration": duration.total_seconds(),
         })
 
-        # 检查是否启用处罚同步
-        sync_cog = self.bot.get_cog("ServerSyncCommands")
-        if sync_cog:
-            await sync_cog.sync_punishment(
-                guild=guild,
-                punishment_type="mute",
-                member=member,
-                moderator=interaction.user,
-                reason=reason,
-                duration=int(duration.total_seconds()) if duration.total_seconds() > 0 else None,
-                warn_days=warn,
-                punishment_id=record_id,
-                img=img
-            )
-
         if warn > 0:
             self._save_warn_record(guild.id, {
                 "type": "warn",
