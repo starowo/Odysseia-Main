@@ -47,7 +47,7 @@ class BotManageCommands(commands.Cog):
                 return False
             except Exception:
                 return False
-        return commands.check(predicate)
+        return app_commands.check(predicate)
     
     # ---- 全局Cog管理命令 ----
     @command_bot_manage.command(name="模块列表", description="列出所有可用模块及其状态")
