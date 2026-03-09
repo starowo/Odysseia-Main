@@ -95,6 +95,25 @@ def is_admin():
             return False
     return app_commands.check(predicate)
 
+def is_bot_owner():
+    """一个 app_commands.check 装饰器，用于验证用户是否为机器人所有者。"""
+    async def predicate(interaction: discord.Interaction):
+        try:
+            guild = interaction.guild
+            if not guild:
+                return False
+                
+            owner_id = get_config_value('owner_id', guild.id, 0)
+            if interaction.user.id == owner_id:
+                return True
+            
+            await interaction.response.send_message("❌ 您没有权限使用此命令", ephemeral=True)
+            return False
+        except Exception:
+            await interaction.response.send_message("❌ 发生错误，请稍后重试", ephemeral=True)
+            return False
+    return app_commands.check(predicate)
+
 def guild_only():
     """一个 app_commands.check 装饰器，用于验证命令是否在服务器中使用。"""
     async def predicate(interaction: discord.Interaction) -> bool:
