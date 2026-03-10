@@ -38,6 +38,11 @@ CREATE TABLE IF NOT EXISTS verify_question_cache (
     questions TEXT    NOT NULL,
     PRIMARY KEY (guild_id, user_id)
 );
+
+CREATE TABLE IF NOT EXISTS verify_guild_settings (
+    guild_id             INTEGER PRIMARY KEY,
+    auto_upgrade_enabled INTEGER NOT NULL DEFAULT 0
+);
 """
 
 
@@ -211,6 +216,30 @@ class VerifyDatabase:
             (guild_id, user_id),
         )
         await self._db.commit()
+
+    # ── guild settings ──────────────────────────────────────────
+
+    async def get_auto_upgrade_enabled(self, guild_id: int) -> bool:
+        rows = await self._db.execute_fetchall(
+            "SELECT auto_upgrade_enabled FROM verify_guild_settings WHERE guild_id=?",
+            (guild_id,),
+        )
+        if rows:
+            return bool(rows[0][0])
+        return True
+
+    async def set_auto_upgrade_enabled(self, guild_id: int, enabled: bool):
+        await self._db.execute(
+            "INSERT OR REPLACE INTO verify_guild_settings(guild_id, auto_upgrade_enabled) VALUES(?,?)",
+            (guild_id, int(enabled)),
+        )
+        await self._db.commit()
+
+    async def get_all_auto_upgrade_settings(self) -> Dict[int, bool]:
+        rows = await self._db.execute_fetchall(
+            "SELECT guild_id, auto_upgrade_enabled FROM verify_guild_settings",
+        )
+        return {r[0]: bool(r[1]) for r in rows}
 
     # ── bulk import (供迁移脚本使用) ────────────────────────────
 
