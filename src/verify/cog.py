@@ -26,8 +26,8 @@ class VerifyCommands(commands.Cog):
         # 初始化配置缓存
         self._config_cache = {}
         self._config_cache_mtime = None
-        # 自动升级功能状态
-        self.auto_upgrade_enabled = True
+        # 自动升级功能状态（per-guild，guild_id -> bool）
+        self._auto_upgrade_guilds: Dict[int, bool] = {}
         # 活跃的答题会话
         self.active_quiz_sessions = {}
         self.active_quiz_sessions_by_user = {}
@@ -170,18 +170,24 @@ class VerifyCommands(commands.Cog):
         for session_id in to_remove:
             del self.active_quiz_sessions[session_id]
 
+    def _is_auto_upgrade_enabled(self, guild_id: int) -> bool:
+        """检查指定服务器是否启用了自动升级（默认启用）"""
+        return self._auto_upgrade_guilds.get(guild_id, True)
+
+    async def _set_auto_upgrade_enabled(self, guild_id: int, enabled: bool):
+        """设置指定服务器的自动升级状态（同时写入数据库持久化）"""
+        self._auto_upgrade_guilds[guild_id] = enabled
+        await self.db.set_auto_upgrade_enabled(guild_id, enabled)
+
     async def _auto_upgrade_task(self):
         """自动升级任务 - 将缓冲区用户升级到已验证用户"""
         while True:
             try:
-                # 每小时检查一次
                 await asyncio.sleep(60 * 60)
                 
-                if not self.auto_upgrade_enabled:
-                    continue
-                    
-                # 检查所有服务器
                 for guild in self.bot.guilds:
+                    if not self._is_auto_upgrade_enabled(guild.id):
+                        continue
                     await self._process_auto_upgrade(guild)
                     
             except Exception as e:
@@ -314,11 +320,11 @@ class VerifyCommands(commands.Cog):
         self._load_questions()
         if self.logger:
             self.logger.info("答题验证模块已加载")
+        # 从数据库加载各服务器的自动升级设置
+        self._auto_upgrade_guilds = await self.db.get_all_auto_upgrade_settings()
         # 注册持久化按钮视图
         self.bot.add_view(VerifyButtonView(self, "zh_cn"))
         self.bot.add_view(VerifyButtonView(self, "en_us"))
-        # 注册答题视图（在重启后重新加载会话）
-        # 注意：重启后会话会丢失，这是预期的行为
         # 启动自动升级任务
         self.auto_upgrade_task = asyncio.create_task(self._auto_upgrade_task())
         if self.logger:
@@ -391,20 +397,26 @@ class VerifyCommands(commands.Cog):
         if self.logger:
             self.logger.info(f"用户 {interaction.user} 在 {channel.mention} 创建答题按钮")
 
-    @verify.command(name="自动升级状态", description="查看自动升级功能状态")
+    @verify.command(name="自动升级状态", description="查看本服务器自动升级功能状态")
     @is_admin()
     async def auto_upgrade_status(self, interaction: discord.Interaction):
-        """查看自动升级功能状态"""
-        status = "启用" if self.auto_upgrade_enabled else "暂停"
-        status_color = discord.Color.green() if self.auto_upgrade_enabled else discord.Color.red()
+        """查看本服务器自动升级功能状态"""
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("❌ 只能在服务器中使用此命令", ephemeral=True)
+            return
+
+        enabled = self._is_auto_upgrade_enabled(guild.id)
+        status = "启用" if enabled else "暂停"
+        status_color = discord.Color.green() if enabled else discord.Color.red()
         
         embed = discord.Embed(
             title="🔄 自动升级功能状态",
-            description=f"当前状态：**{status}**",
+            description=f"服务器：**{guild.name}**\n当前状态：**{status}**",
             color=status_color
         )
         
-        if self.auto_upgrade_enabled:
+        if enabled:
             embed.add_field(
                 name="📋 功能说明",
                 value="自动升级功能已启用，系统会每小时检查缓冲区用户，将答题成功3天后的用户自动升级为正式成员。",
@@ -419,18 +431,23 @@ class VerifyCommands(commands.Cog):
         
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @verify.command(name="暂停自动升级", description="暂停自动升级功能")
+    @verify.command(name="暂停自动升级", description="暂停本服务器的自动升级功能")
     @is_admin()
     async def pause_auto_upgrade(self, interaction: discord.Interaction):
-        """暂停自动升级功能"""
-        if not self.auto_upgrade_enabled:
-            await interaction.response.send_message("❌ 自动升级功能已经是暂停状态", ephemeral=True)
+        """暂停本服务器的自动升级功能"""
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("❌ 只能在服务器中使用此命令", ephemeral=True)
+            return
+
+        if not self._is_auto_upgrade_enabled(guild.id):
+            await interaction.response.send_message("❌ 本服务器的自动升级功能已经是暂停状态", ephemeral=True)
             return
             
-        self.auto_upgrade_enabled = False
+        await self._set_auto_upgrade_enabled(guild.id, False)
         embed = discord.Embed(
             title="⏸️ 自动升级功能已暂停",
-            description="自动升级功能已被暂停，用户将不会被自动升级。",
+            description=f"**{guild.name}** 的自动升级功能已被暂停，用户将不会被自动升级。",
             color=discord.Color.orange()
         )
         embed.add_field(
@@ -440,22 +457,27 @@ class VerifyCommands(commands.Cog):
         )
         
         if self.logger:
-            self.logger.info(f"自动升级功能已被 {interaction.user} 暂停")
+            self.logger.info(f"服务器 {guild.name} 的自动升级功能已被 {interaction.user} 暂停")
             
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @verify.command(name="恢复自动升级", description="恢复自动升级功能")
+    @verify.command(name="恢复自动升级", description="恢复本服务器的自动升级功能")
     @is_admin()
     async def resume_auto_upgrade(self, interaction: discord.Interaction):
-        """恢复自动升级功能"""
-        if self.auto_upgrade_enabled:
-            await interaction.response.send_message("❌ 自动升级功能已经在运行中", ephemeral=True)
+        """恢复本服务器的自动升级功能"""
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("❌ 只能在服务器中使用此命令", ephemeral=True)
+            return
+
+        if self._is_auto_upgrade_enabled(guild.id):
+            await interaction.response.send_message("❌ 本服务器的自动升级功能已经在运行中", ephemeral=True)
             return
             
-        self.auto_upgrade_enabled = True
+        await self._set_auto_upgrade_enabled(guild.id, True)
         embed = discord.Embed(
             title="▶️ 自动升级功能已恢复",
-            description="自动升级功能已重新启用，系统将继续自动升级符合条件的用户。",
+            description=f"**{guild.name}** 的自动升级功能已重新启用，系统将继续自动升级符合条件的用户。",
             color=discord.Color.green()
         )
         embed.add_field(
@@ -465,7 +487,7 @@ class VerifyCommands(commands.Cog):
         )
         
         if self.logger:
-            self.logger.info(f"自动升级功能已被 {interaction.user} 恢复")
+            self.logger.info(f"服务器 {guild.name} 的自动升级功能已被 {interaction.user} 恢复")
             
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -609,8 +631,8 @@ class VerifyCommands(commands.Cog):
             await interaction.followup.send("❌ 只能在服务器中使用此命令", ephemeral=True)
             return
             
-        if not self.auto_upgrade_enabled:
-            await interaction.followup.send("⚠️ 自动升级功能已暂停，但仍执行此次检查", ephemeral=True)
+        if not self._is_auto_upgrade_enabled(guild.id):
+            await interaction.followup.send("⚠️ 本服务器的自动升级功能已暂停，但仍执行此次检查", ephemeral=True)
         
         try:
             # 统计升级前的信息
