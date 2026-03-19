@@ -29,7 +29,7 @@ class ThreadSelfManage(commands.Cog):
         # 自动清理管理器
         self.auto_clear_manager = AutoClearManager(bot)
 
-    self_manage = app_commands.Group(name="自助管理", description="在贴内进行权限操作，仅在自己子贴内有效")
+    self_manage = app_commands.Group(name="自助管理", description="在贴内进行权限操作，仅限贴主、协管或管理员")
 
     @property
     def config(self):
@@ -64,12 +64,58 @@ class ThreadSelfManage(commands.Cog):
         except Exception:
             return False
 
+    def _get_delegate_file_path(self, guild_id: int, thread_id: int) -> pathlib.Path:
+        data_dir = pathlib.Path("data") / "thread_delegates" / str(guild_id)
+        data_dir.mkdir(parents=True, exist_ok=True)
+        return data_dir / f"{thread_id}.json"
+
+    def _load_thread_delegates(self, guild_id: int, thread_id: int) -> set[int]:
+        file_path = self._get_delegate_file_path(guild_id, thread_id)
+        if not file_path.exists():
+            return set()
+
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return {int(user_id) for user_id in data.get("delegates", [])}
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"读取子区协管配置失败: {file_path} - {e}")
+            return set()
+
+    def _save_thread_delegates(self, guild_id: int, thread_id: int, delegates: set[int]):
+        file_path = self._get_delegate_file_path(guild_id, thread_id)
+
+        try:
+            if not delegates:
+                if file_path.exists():
+                    file_path.unlink()
+                return
+
+            data = {"delegates": sorted(delegates)}
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"保存子区协管配置失败: {file_path} - {e}")
+            raise
+
+    def can_manage_as_owner(self, user_id: int, channel: discord.Thread) -> bool:
+        """检查用户是否拥有与贴主等效的自助管理权限（贴主或协管）"""
+        if user_id == channel.owner_id:
+            return True
+        return user_id in self._load_thread_delegates(channel.guild.id, channel.id)
+
     async def can_manage_thread(self, interaction: discord.Interaction, channel: discord.Thread) -> bool:
-        """检查用户是否可以管理该子区（子区所有者或管理员）"""
-        # 检查是否是子区所有者
+        """检查用户是否可以管理该子区（子区所有者、协管或管理员）"""
+        if self.can_manage_as_owner(interaction.user.id, channel):
+            return True
+        return await self.is_admin(interaction)
+
+    async def can_manage_delegate_settings(self, interaction: discord.Interaction, channel: discord.Thread) -> bool:
+        """检查用户是否可以管理协管权限（仅子区所有者或管理员）"""
         if interaction.user.id == channel.owner_id:
             return True
-        # 检查是否是管理员
         return await self.is_admin(interaction)
 
     def _load_mute_cache(self):
@@ -452,9 +498,9 @@ class ThreadSelfManage(commands.Cog):
             await interaction.response.send_message("此指令仅在子区内有效", ephemeral=True)
             return
         
-        # 验证是否是子区所有者 (不允许管理员删除子区)
-        if interaction.user.id != channel.owner_id:
-            await interaction.response.send_message("只有子区所有者可以删除子区", ephemeral=True)
+        # 验证是否具有贴主等效权限（贴主或协管）
+        if not self.can_manage_as_owner(interaction.user.id, channel):
+            await interaction.response.send_message("只有子区所有者或协管可以删除子区", ephemeral=True)
             return
 
         await interaction.response.defer(ephemeral=True)
@@ -1243,10 +1289,140 @@ class ThreadSelfManage(commands.Cog):
             
             if not is_disabled:
                 embed.add_field(
-                    name="ℹ️ 说明", 
-                    value="当成员数达到 1000 人时将自动清理约 50 名不活跃成员", 
+                    name="ℹ️ 说明",
+                    value="当成员数达到 1000 人时将自动清理约 50 名不活跃成员",
                     inline=False
                 )
             
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    @self_manage.command(name="授权协管", description="授予成员当前子区的协管权限")
+    @app_commands.describe(member="要授予协管权限的成员")
+    @app_commands.rename(member="成员")
+    async def add_thread_delegate(self, interaction: discord.Interaction, member: discord.Member):
+        channel = interaction.channel
+        if not isinstance(channel, discord.Thread):
+            await interaction.response.send_message("此指令仅在子区内有效", ephemeral=True)
+            return
+
+        if not await self.can_manage_delegate_settings(interaction, channel):
+            await interaction.response.send_message("只有子区所有者或管理员可以管理协管权限", ephemeral=True)
+            return
+
+        if member.bot:
+            await interaction.response.send_message("❌ 不能将机器人设为协管", ephemeral=True)
+            return
+
+        if member.id == channel.owner_id:
+            await interaction.response.send_message("❌ 该成员已经是子区所有者，无需重复授权", ephemeral=True)
+            return
+
+        delegates = self._load_thread_delegates(channel.guild.id, channel.id)
+        if member.id in delegates:
+            await interaction.response.send_message(f"❌ {member.mention} 已经是本子区协管", ephemeral=True)
+            return
+
+        delegates.add(member.id)
+        try:
+            self._save_thread_delegates(channel.guild.id, channel.id, delegates)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ 保存协管配置失败: {str(e)}", ephemeral=True)
+            return
+
+        await interaction.response.send_message(f"✅ 已授予 {member.mention} 本子区协管权限", ephemeral=True)
+        try:
+            await channel.send(f"👥 {member.mention} 已被 {interaction.user.mention} 设为本子区协管，可使用大部分自助管理指令。")
+        except discord.HTTPException:
+            pass
+
+    @self_manage.command(name="移除协管", description="移除成员当前子区的协管权限")
+    @app_commands.describe(member="要移除协管权限的成员（在群内时优先使用）", user_id="要移除协管权限的成员ID（用于已退群成员）")
+    @app_commands.rename(member="成员", user_id="成员id")
+    async def remove_thread_delegate(
+        self,
+        interaction: discord.Interaction,
+        member: Optional[discord.Member] = None,
+        user_id: Optional[str] = None
+    ):
+        channel = interaction.channel
+        if not isinstance(channel, discord.Thread):
+            await interaction.response.send_message("此指令仅在子区内有效", ephemeral=True)
+            return
+
+        if not await self.can_manage_delegate_settings(interaction, channel):
+            await interaction.response.send_message("只有子区所有者或管理员可以管理协管权限", ephemeral=True)
+            return
+
+        if member is None and not user_id:
+            await interaction.response.send_message("❌ 请提供要移除的成员或成员ID", ephemeral=True)
+            return
+
+        if member is not None:
+            target_id = member.id
+            target_display = member.mention
+        else:
+            cleaned = user_id.strip()
+            mention_match = re.fullmatch(r"<@!?(\d+)>", cleaned)
+            if mention_match:
+                target_id = int(mention_match.group(1))
+            elif cleaned.isdigit():
+                target_id = int(cleaned)
+            else:
+                await interaction.response.send_message("❌ 请提供有效的成员ID或@成员格式", ephemeral=True)
+                return
+
+            target_member = interaction.guild.get_member(target_id)
+            target_display = target_member.mention if target_member else f"<@{target_id}>"
+
+        if target_id == channel.owner_id:
+            await interaction.response.send_message("❌ 不能移除子区所有者的权限", ephemeral=True)
+            return
+
+        delegates = self._load_thread_delegates(channel.guild.id, channel.id)
+        if target_id not in delegates:
+            await interaction.response.send_message(f"❌ {target_display} 不是本子区协管", ephemeral=True)
+            return
+
+        delegates.remove(target_id)
+        try:
+            self._save_thread_delegates(channel.guild.id, channel.id, delegates)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ 保存协管配置失败: {str(e)}", ephemeral=True)
+            return
+
+        await interaction.response.send_message(f"✅ 已移除 {target_display} 的本子区协管权限", ephemeral=True)
+        try:
+            await channel.send(f"👥 {target_display} 已被 {interaction.user.mention} 移出本子区协管名单。")
+        except discord.HTTPException:
+            pass
+
+    @self_manage.command(name="协管列表", description="查看当前子区的协管成员")
+    async def list_thread_delegates(self, interaction: discord.Interaction):
+        channel = interaction.channel
+        if not isinstance(channel, discord.Thread):
+            await interaction.response.send_message("此指令仅在子区内有效", ephemeral=True)
+            return
+
+        if not await self.can_manage_thread(interaction, channel):
+            await interaction.response.send_message("只有子区所有者、协管或管理员可以查看协管列表", ephemeral=True)
+            return
+
+        delegates = sorted(self._load_thread_delegates(channel.guild.id, channel.id))
+
+        embed = discord.Embed(
+            title="👥 子区协管列表",
+            color=discord.Color.blue(),
+            timestamp=datetime.now()
+        )
+        embed.add_field(name="子区所有者", value=f"<@{channel.owner_id}>", inline=False)
+
+        if delegates:
+            embed.add_field(
+                name=f"协管成员（{len(delegates)}）",
+                value="\n".join(f"<@{user_id}>" for user_id in delegates),
+                inline=False
+            )
+        else:
+            embed.add_field(name="协管成员", value="当前没有协管", inline=False)
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
