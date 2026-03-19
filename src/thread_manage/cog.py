@@ -498,9 +498,9 @@ class ThreadSelfManage(commands.Cog):
             await interaction.response.send_message("此指令仅在子区内有效", ephemeral=True)
             return
         
-        # 验证是否具有贴主等效权限（贴主或协管）
-        if not self.can_manage_as_owner(interaction.user.id, channel):
-            await interaction.response.send_message("只有子区所有者或协管可以删除子区", ephemeral=True)
+        # 验证是否贴主
+        if interaction.user.id != channel.owner_id:
+            await interaction.response.send_message("只有子区所有者可以删除子区", ephemeral=True)
             return
 
         await interaction.response.defer(ephemeral=True)
