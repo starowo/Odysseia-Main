@@ -88,6 +88,15 @@
     "pending_ban_role_id": 123456789012345685,
     
     "_quiz_comment": "答题验证相关配置",
+    "_verify_messages_comment": "答题成功后的提示消息，支持在 server_override 中按服务器覆盖",
+    "verify_messages": {
+        "buffer_success_zh": "\n✅ 已添加缓冲区身份组\n服务器当前处于缓冲准入模式，您可浏览资源区，但无法在服务器内发言\n您将在缓冲区等待8天，之后会自动转移到可正常发言的身份组。",
+        "buffer_success_en": "\n✅ Buffer role added\nThe server is currently in buffer access mode, you can browse the resource area, but you cannot speak in the server.\nYou will wait 8 days in the buffer zone, after which you will be automatically transferred to the normal speaking role.",
+        "upper_buffer_success_zh": "\n✅ 已添加缓冲区身份组\n服务器当前处于缓冲准入模式，您可浏览资源区，但无法在答疑频道外发言\n您将在缓冲区等待3天，之后会自动转移到可正常发言的身份组。",
+        "upper_buffer_success_en": "\n✅ Buffer role added\nThe server is currently in buffer access mode, you can browse the resource area, but you can only speak in the slow-speed restricted answer channel.\nYou will wait 3 days in the buffer zone before being transferred to the normal speaking role.",
+        "verified_success_zh": "\n✅ 已添加已验证身份组",
+        "verified_success_en": "\n✅ Verified role added"
+    },
     "quiz_punish_whitelist": [
         123456789012345678,
         123456789012345679
