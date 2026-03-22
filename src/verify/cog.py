@@ -17,6 +17,16 @@ from src.utils.config_helper import get_config_value, get_config_for_guild
 from src.verify.database import VerifyDatabase
 
 
+DEFAULT_VERIFY_MESSAGES = {
+    "buffer_success_zh": "\n✅ 已添加缓冲区身份组\n服务器当前处于缓冲准入模式，您可浏览资源区，但无法在服务器内发言\n您将在缓冲区等待8天，之后会自动转移到可正常发言的身份组。\n如果想要提前离开缓冲区，并获取答疑区发言权限，可以前往https://discord.com/channels/1134557553011998840/1400260572070547666 进行进阶答题",
+    "buffer_success_en": "\n✅ Buffer role added\nThe server is currently in buffer access mode, you can browse the resource area, but you cannot speak in the server.\nYou will wait 8 days in the buffer zone, after which you will be automatically transferred to the normal speaking role.\nIf you want to leave the buffer zone early, and get the support channel speaking permission, you can go to https://discord.com/channels/1134557553011998840/1400260572070547666 to take the advanced quiz",
+    "upper_buffer_success_zh": "\n✅ 已添加缓冲区身份组\n服务器当前处于缓冲准入模式，您可浏览资源区，但无法在答疑频道外发言\n您将在缓冲区等待3天，之后会自动转移到可正常发言的身份组。",
+    "upper_buffer_success_en": "\n✅ Buffer role added\nThe server is currently in buffer access mode, you can browse the resource area, but you can only speak in the slow-speed restricted answer channel.\nThe server will transfer buffer status users to the normal speaking identity group at the appropriate time.\nIf you want to leave the buffer zone early, and get the support channel speaking permission, you can go to https://discord.com/channels/1134557553011998840/1400260572070547666 to take the advanced quiz",
+    "verified_success_zh": "\n✅ 已添加已验证身份组",
+    "verified_success_en": "\n✅ Verified role added",
+}
+
+
 class VerifyCommands(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -53,6 +63,24 @@ class VerifyCommands(commands.Cog):
     def get_guild_config(self, key: str, guild_id: Optional[int] = None, default=None):
         """获取服务器特定配置值"""
         return get_config_value(key, guild_id, default)
+
+    def _get_verify_message(self, guild_id: int, key: str, language: str) -> str:
+        """从配置文件获取验证消息，支持服务器特定覆盖"""
+        verify_messages = self.get_guild_config("verify_messages", guild_id, {})
+        lang_key = f"{key}_zh" if language == "zh_cn" else f"{key}_en"
+        return verify_messages.get(lang_key, DEFAULT_VERIFY_MESSAGES.get(lang_key, ""))
+
+    @staticmethod
+    def _format_timedelta(td: datetime.timedelta) -> str:
+        """格式化时间差为可读字符串"""
+        days = td.days
+        hours = td.seconds // 3600
+        minutes = (td.seconds % 3600) // 60
+        if days > 0:
+            return f"{days}天 {hours}小时 {minutes}分钟"
+        elif hours > 0:
+            return f"{hours}小时 {minutes}分钟"
+        return f"{minutes}分钟"
 
     def _load_questions(self):
         """加载题目库"""
@@ -325,6 +353,7 @@ class VerifyCommands(commands.Cog):
         # 注册持久化按钮视图
         self.bot.add_view(VerifyButtonView(self, "zh_cn"))
         self.bot.add_view(VerifyButtonView(self, "en_us"))
+        self.bot.add_view(StatusCheckButtonView(self))
         # 启动自动升级任务
         self.auto_upgrade_task = asyncio.create_task(self._auto_upgrade_task())
         if self.logger:
@@ -620,6 +649,161 @@ class VerifyCommands(commands.Cog):
         
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    @verify.command(name="创建状态查询按钮", description="在当前频道创建一个状态查询按钮，用户可自助查看缓冲区剩余时间")
+    @is_admin()
+    async def create_status_button(self, interaction: discord.Interaction):
+        """在当前频道创建状态查询按钮"""
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("❌ 只能在服务器中使用此命令", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        embed = discord.Embed(
+            title="📋 验证状态自助查询",
+            description="点击下方按钮可查看您的缓冲区剩余时间。\n如果您已满足升级条件，系统将自动为您升级。",
+            color=discord.Color.blue()
+        )
+        view = StatusCheckButtonView(self)
+        await interaction.channel.send(embed=embed, view=view)
+        await interaction.followup.send("✅ 已在当前频道创建状态查询按钮", ephemeral=True)
+        if self.logger:
+            self.logger.info(f"用户 {interaction.user} 在 {interaction.channel.mention} 创建了状态查询按钮")
+
+    async def _handle_status_check(self, interaction: discord.Interaction):
+        """处理状态查询按钮点击 - 显示用户缓冲区状态，满足条件则自动升级"""
+        guild = interaction.guild
+        member = interaction.user
+
+        if not guild or not member:
+            await interaction.response.send_message("❌ 系统错误", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        user_data = await self._get_user_data_async(guild.id, member.id)
+        last_success = user_data.get("last_success")
+
+        buffer_role_id = self.get_guild_config("buffer_role_id", guild.id)
+        verified_role_id = self.get_guild_config("verified_role_id", guild.id)
+        upper_buffer_role_id = self.get_guild_config("upper_buffer_role_id", guild.id)
+
+        buffer_role = guild.get_role(int(buffer_role_id)) if buffer_role_id and str(buffer_role_id) != "请填入缓冲区身份组ID" else None
+        verified_role = guild.get_role(int(verified_role_id)) if verified_role_id and str(verified_role_id) != "请填入已验证身份组ID" else None
+        upper_buffer_role = guild.get_role(int(upper_buffer_role_id)) if upper_buffer_role_id else None
+
+        embed = discord.Embed(title="📋 我的验证状态", color=discord.Color.blue())
+
+        role_status = []
+        if verified_role and verified_role in member.roles:
+            role_status.append(f"✅ {verified_role.name}")
+        if upper_buffer_role and upper_buffer_role in member.roles:
+            role_status.append(f"🟡 {upper_buffer_role.name}（高级缓冲区）")
+        if buffer_role and buffer_role in member.roles:
+            role_status.append(f"🟠 {buffer_role.name}（缓冲区）")
+
+        if role_status:
+            embed.add_field(name="🎭 当前身份组", value="\n".join(role_status), inline=False)
+        else:
+            embed.add_field(name="🎭 当前身份组", value="无相关身份组", inline=False)
+
+        upgraded = False
+
+        if last_success:
+            try:
+                success_time = datetime.datetime.fromisoformat(last_success)
+                current_time = datetime.datetime.now(datetime.timezone.utc)
+                time_since_success = current_time - success_time
+
+                unix_timestamp = int(success_time.timestamp())
+                success_time_str = f"<t:{unix_timestamp}:F> (<t:{unix_timestamp}:R>)"
+                embed.add_field(name="⏰ 最后答题成功时间", value=success_time_str, inline=False)
+
+                buffer_threshold = datetime.timedelta(days=8)
+                upper_buffer_threshold = datetime.timedelta(days=3)
+
+                is_in_buffer = buffer_role and buffer_role in member.roles
+                is_in_upper_buffer = upper_buffer_role and upper_buffer_role in member.roles
+
+                if is_in_upper_buffer:
+                    if time_since_success >= upper_buffer_threshold:
+                        embed.add_field(name="🟡 高级缓冲区（3天）", value="✅ 已满足升级条件，正在升级...", inline=False)
+                        upgraded = await self._try_self_upgrade(guild, member, verified_role, buffer_role, upper_buffer_role, embed)
+                    else:
+                        remaining_str = self._format_timedelta(upper_buffer_threshold - time_since_success)
+                        embed.add_field(name="🟡 高级缓冲区剩余时间（3天）", value=remaining_str, inline=False)
+
+                elif is_in_buffer:
+                    if time_since_success >= buffer_threshold:
+                        embed.add_field(name="🟠 缓冲区（8天）", value="✅ 已满足升级条件，正在升级...", inline=False)
+                        upgraded = await self._try_self_upgrade(guild, member, verified_role, buffer_role, upper_buffer_role, embed)
+                    else:
+                        remaining_str = self._format_timedelta(buffer_threshold - time_since_success)
+                        embed.add_field(name="🟠 缓冲区剩余时间（8天）", value=remaining_str, inline=False)
+
+                else:
+                    if time_since_success >= buffer_threshold:
+                        embed.add_field(name="🟠 缓冲区（8天）", value="✅ 已达到条件", inline=True)
+                    else:
+                        remaining_str = self._format_timedelta(buffer_threshold - time_since_success)
+                        embed.add_field(name="🟠 缓冲区剩余时间（8天）", value=remaining_str, inline=True)
+
+                    if time_since_success >= upper_buffer_threshold:
+                        embed.add_field(name="🟡 高级缓冲区（3天）", value="✅ 已达到条件", inline=True)
+                    else:
+                        remaining_str = self._format_timedelta(upper_buffer_threshold - time_since_success)
+                        embed.add_field(name="🟡 高级缓冲区剩余时间（3天）", value=remaining_str, inline=True)
+
+                if not upgraded:
+                    elapsed_str = self._format_timedelta(time_since_success)
+                    embed.add_field(name="📅 距离答题成功已过", value=elapsed_str, inline=False)
+
+            except Exception as e:
+                embed.add_field(name="⚠️ 错误", value=f"解析时间失败: {e}", inline=False)
+        else:
+            embed.add_field(name="⏰ 答题记录", value="暂无答题成功记录", inline=False)
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    async def _try_self_upgrade(
+        self,
+        guild: discord.Guild,
+        member: discord.Member,
+        verified_role: Optional[discord.Role],
+        buffer_role: Optional[discord.Role],
+        upper_buffer_role: Optional[discord.Role],
+        embed: discord.Embed,
+    ) -> bool:
+        """尝试自助升级用户，返回是否升级成功"""
+        try:
+            sync_cog = self.bot.get_cog("ServerSyncCommands")
+            if sync_cog:
+                if verified_role and verified_role not in member.roles:
+                    await sync_cog.sync_add_role(guild, member, verified_role, "自助状态查询升级：缓冲区期满")
+                if buffer_role and buffer_role in member.roles:
+                    await sync_cog.sync_remove_role(guild, member, buffer_role, "自助状态查询升级：缓冲区期满")
+                if upper_buffer_role and upper_buffer_role in member.roles:
+                    await sync_cog.sync_remove_role(guild, member, upper_buffer_role, "自助状态查询升级：缓冲区期满")
+            else:
+                if verified_role and verified_role not in member.roles:
+                    await member.add_roles(verified_role, reason="自助状态查询升级：缓冲区期满")
+                if buffer_role and buffer_role in member.roles:
+                    await member.remove_roles(buffer_role, reason="自助状态查询升级：缓冲区期满")
+                if upper_buffer_role and upper_buffer_role in member.roles:
+                    await member.remove_roles(upper_buffer_role, reason="自助状态查询升级：缓冲区期满")
+
+            embed.add_field(name="🎉 升级成功", value="恭喜！您已从缓冲区升级为正式成员！", inline=False)
+            embed.color = discord.Color.green()
+            if self.logger:
+                self.logger.info(f"自助状态查询升级: {member} (ID: {member.id}) 在服务器 {guild.name}")
+            return True
+        except discord.Forbidden:
+            embed.add_field(name="⚠️ 升级失败", value="机器人无权限修改身份组，请联系管理员", inline=False)
+        except Exception as e:
+            embed.add_field(name="⚠️ 升级失败", value=f"升级时出错: {e}", inline=False)
+        return False
+
     @verify.command(name="手动升级检查", description="立即执行一次自动升级检查")
     @is_admin()
     async def manual_upgrade_check(self, interaction: discord.Interaction):
@@ -758,7 +942,7 @@ class VerifyCommands(commands.Cog):
                                 await sync_cog.sync_add_role(guild, user, upper_buffer_role, "答题验证通过")
                             else:
                                 await user.add_roles(upper_buffer_role, reason="答题验证通过")
-                            success_msg += "\n✅ 已添加缓冲区身份组\n服务器当前处于缓冲准入模式，您可浏览资源区，但无法在答疑频道外发言\n您将在缓冲区等待3天，之后会自动转移到可正常发言的身份组。" if language == "zh_cn" else "\n✅ Buffer role added\nThe server is currently in buffer access mode, you can browse the resource area, but you can only speak in the slow-speed restricted answer channel.\nThe server will transfer buffer status users to the normal speaking identity group at the appropriate time.\nIf you want to leave the buffer zone early, and get the support channel speaking permission, you can go to https://discord.com/channels/1134557553011998840/1400260572070547666 to take the advanced quiz"
+                            success_msg += self._get_verify_message(guild.id, "upper_buffer_success", language)
                     else:
                         role = guild.get_role(int(buffer_role_id))
                         if role:
@@ -768,7 +952,7 @@ class VerifyCommands(commands.Cog):
                                 await sync_cog.sync_add_role(guild, user, role, "答题验证通过")
                             else:
                                 await user.add_roles(role, reason="答题验证通过")
-                            success_msg += "\n✅ 已添加缓冲区身份组\n服务器当前处于缓冲准入模式，您可浏览资源区，但无法在服务器内发言\n您将在缓冲区等待8天，之后会自动转移到可正常发言的身份组。\n如果想要提前离开缓冲区，并获取答疑区发言权限，可以前往https://discord.com/channels/1134557553011998840/1400260572070547666 进行进阶答题" if language == "zh_cn" else "\n✅ Buffer role added\nThe server is currently in buffer access mode, you can browse the resource area, but you cannot speak in the server.\nYou will wait 8 days in the buffer zone, after which you will be automatically transferred to the normal speaking role.\nIf you want to leave the buffer zone early, and get the support channel speaking permission, you can go to https://discord.com/channels/1134557553011998840/1400260572070547666 to take the advanced quiz"
+                            success_msg += self._get_verify_message(guild.id, "buffer_success", language)
                 else:
                     role = guild.get_role(int(verified_role_id))
                     if role:
@@ -778,7 +962,7 @@ class VerifyCommands(commands.Cog):
                             await sync_cog.sync_add_role(guild, user, role, "答题验证通过")
                         else:
                             await user.add_roles(role, reason="答题验证通过")
-                        success_msg += "\n✅ 已添加已验证身份组" if language == "zh_cn" else "\n✅ Verified role added"
+                        success_msg += self._get_verify_message(guild.id, "verified_success", language)
             except discord.Forbidden:
                 error_msg = "\n⚠️ 无法添加身份组，请联系管理员" if language == "zh_cn" else "\n⚠️ Cannot add role, please contact administrators"
                 success_msg += error_msg
@@ -894,7 +1078,7 @@ class VerifyCommands(commands.Cog):
                                 await sync_cog.sync_add_role(guild, user, upper_buffer_role, "答题验证通过")
                             else:
                                 await user.add_roles(upper_buffer_role, reason="答题验证通过")
-                            success_msg += "\n✅ 已添加缓冲区身份组\n服务器当前处于缓冲准入模式，您可浏览资源区，但无法在答疑频道外发言\n您将在缓冲区等待3天，之后会自动转移到可正常发言的身份组。" if language == "zh_cn" else "\n✅ Buffer role added\nThe server is currently in buffer access mode, you can browse the resource area, but you can only speak in the slow-speed restricted answer channel.\nThe server will transfer buffer status users to the normal speaking identity group at the appropriate time.\nIf you want to leave the buffer zone early, and get the support channel speaking permission, you can go to https://discord.com/channels/1134557553011998840/1400260572070547666 to take the advanced quiz"
+                            success_msg += self._get_verify_message(guild.id, "upper_buffer_success", language)
 
                     else:
                         role = guild.get_role(int(buffer_role_id))
@@ -905,7 +1089,7 @@ class VerifyCommands(commands.Cog):
                                 await sync_cog.sync_add_role(guild, user, role, "答题验证通过")
                             else:
                                 await user.add_roles(role, reason="答题验证通过")
-                            success_msg += "\n✅ 已添加缓冲区身份组\n服务器当前处于缓冲准入模式，您可浏览资源区，但无法在服务器内发言\n您将在缓冲区等待8天，之后会自动转移到可正常发言的身份组。\n如果想要提前离开缓冲区，并获取答疑区发言权限，可以前往https://discord.com/channels/1134557553011998840/1400260572070547666 进行进阶答题" if language == "zh_cn" else "\n✅ Buffer role added\nThe server is currently in buffer access mode, you can browse the resource area, but you cannot speak in the server.\nYou will wait 8 days in the buffer zone, after which you will be automatically transferred to the normal speaking role.\nIf you want to leave the buffer zone early, and get the support channel speaking permission, you can go to https://discord.com/channels/1134557553011998840/1400260572070547666 to take the advanced quiz"
+                            success_msg += self._get_verify_message(guild.id, "buffer_success", language)
                 else:
                     role = guild.get_role(int(verified_role_id))
                     if role:
@@ -915,7 +1099,7 @@ class VerifyCommands(commands.Cog):
                             await sync_cog.sync_add_role(guild, user, role, "答题验证通过")
                         else:
                             await user.add_roles(role, reason="答题验证通过")
-                        success_msg += "\n✅ 已添加已验证身份组" if language == "zh_cn" else "\n✅ Verified role added"
+                        success_msg += self._get_verify_message(guild.id, "verified_success", language)
             except discord.Forbidden:
                 error_msg = "\n⚠️ 无法添加身份组，请联系管理员" if language == "zh_cn" else "\n⚠️ Cannot add role, please contact administrators"
                 success_msg += error_msg
@@ -993,7 +1177,7 @@ class VerifyCommands(commands.Cog):
         
         if buffer_role_id and buffer_role_id != "请填入缓冲区身份组ID":
             buffer_role = guild.get_role(int(buffer_role_id))
-            if buffer_role and buffer_role in user.roles and not (upper_buffer_role_id and upper_buffer_role_id != "请填入高级缓冲区身份组ID" and guild.get_role(int(upper_buffer_role_id)) and guild.get_role(int(upper_buffer_role_id)) in user.roles):
+            if buffer_role and buffer_role in user.roles:
                 already_msg = "您已拥有相关身份组，无需重复验证" if language == "zh_cn" else "You already have the required role, no need to verify again."
                 await interaction.response.send_message(f"❌ {already_msg}", ephemeral=True)
                 return
@@ -1712,6 +1896,24 @@ class VerifyButtonView(discord.ui.View):
 
     async def _start_quiz_callback(self, interaction: discord.Interaction):
         await self.cog.start_quiz(interaction, self.language)
+
+
+class StatusCheckButtonView(discord.ui.View):
+    """状态查询按钮视图（持久化）"""
+    def __init__(self, cog: VerifyCommands):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+        button = discord.ui.Button(
+            label="📋 查看我的状态",
+            style=discord.ButtonStyle.primary,
+            custom_id="verify:check_status"
+        )
+        button.callback = self._check_status_callback
+        self.add_item(button)
+
+    async def _check_status_callback(self, interaction: discord.Interaction):
+        await self.cog._handle_status_check(interaction)
 
 
 async def setup(bot):
