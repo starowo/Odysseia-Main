@@ -411,7 +411,92 @@ class ThreadSelfManage(commands.Cog):
         # 删除指定反应
         try:
             # 获取反应对象
-            reaction_obj = discord.utils.get(message.reactions, emoji=reaction)
+            # 1. 精确匹配：str(emoji) == reaction（支持 <:name:id> 和 Unicode emoji）
+            reaction_obj = discord.utils.find(
+                lambda r: str(r.emoji) == reaction, message.reactions
+            )
+            # 2. 名称匹配（大小写不敏感）：支持 :name: 或直接输入 name
+            if reaction_obj is None:
+                clean_name = reaction.strip(':')
+                matched = [
+                    r for r in message.reactions
+                    if hasattr(r.emoji, 'name') and r.emoji.name.lower() == clean_name.lower()
+                ]
+                if len(matched) == 1:
+                    reaction_obj = matched[0]
+                elif len(matched) > 1:
+                    # 多个同名 emoji，用下拉菜单让用户选择
+                    options = []
+                    for i, m in enumerate(matched):
+                        emoji_id = m.emoji.id if hasattr(m.emoji, 'id') else '?'
+                        options.append(discord.SelectOption(
+                            label=f"{m.emoji.name}（{m.count} 个反应）",
+                            description=f"ID: {emoji_id}",
+                            value=str(i),
+                            emoji=m.emoji if not (hasattr(m.emoji, 'id') and m.emoji.id) else None,
+                        ))
+                    options.append(discord.SelectOption(
+                        label="全部删除",
+                        description=f"删除所有 {len(matched)} 个同名反应",
+                        value="all",
+                        emoji="🗑️",
+                    ))
+
+                    select = discord.ui.Select(
+                        placeholder=f"找到 {len(matched)} 个同名反应，请选择要删除的…",
+                        options=options,
+                        min_values=1,
+                        max_values=1,
+                    )
+                    result_indices = []
+
+                    async def select_callback(select_interaction: discord.Interaction):
+                        await select_interaction.response.defer()
+                        result_indices.append(select.values[0])
+                        view.stop()
+
+                    select.callback = select_callback
+                    view = discord.ui.View(timeout=60)
+                    view.add_item(select)
+
+                    embed = discord.Embed(
+                        title="删除消息反应",
+                        description="\n".join(
+                            f"{i+1}. {str(m.emoji)}（{m.count} 个反应）"
+                            for i, m in enumerate(matched)
+                        ),
+                        colour=discord.Colour.orange(),
+                    )
+                    embed.set_footer(text="请在下拉菜单中选择要删除的反应")
+                    await interaction.edit_original_response(embed=embed, view=view)
+                    await view.wait()
+
+                    if not result_indices:
+                        await interaction.edit_original_response(
+                            content="⏱ 超时未选择，操作已取消。", embed=None, view=None
+                        )
+                        return
+
+                    choice = result_indices[0]
+                    if choice == "all":
+                        for m in matched:
+                            await message.clear_reaction(m.emoji)
+                        await interaction.edit_original_response(
+                            content=f"已删除消息的 {len(matched)} 个 {clean_name} 反应",
+                            embed=None, view=None,
+                        )
+                    else:
+                        target = matched[int(choice)]
+                        await message.clear_reaction(target.emoji)
+                        await interaction.edit_original_response(
+                            content=f"已删除消息的 {str(target.emoji)} 反应",
+                            embed=None, view=None,
+                        )
+                    return
+
+            if reaction_obj is None:
+                await interaction.edit_original_response(content="找不到指定的反应，请确认反应是否存在")
+                return
             # 获取反应数量，若太多则二次确认
             reaction_count = reaction_obj.count
             if reaction_count > 20:
@@ -425,11 +510,11 @@ class ThreadSelfManage(commands.Cog):
                 if not confirmed:
                     return
 
-            await message.clear_reaction(reaction_obj)
+            await message.clear_reaction(reaction_obj.emoji)
             await interaction.edit_original_response(content=f"已删除消息的 {reaction} 反应")
             return
 
-        except discord.HTTPException:
+        except Exception:
             await interaction.edit_original_response(content="删除反应失败，请确认反应是否存在")
 
     # ---- 删除单条消息 ----
