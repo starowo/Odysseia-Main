@@ -343,12 +343,18 @@ class AnnounceModal(ui.Modal, title="全体通知"):
 
 
 class TitleModal(ui.Modal, title="修改标题"):
-    new_title = ui.TextInput(label="新标题", style=discord.TextStyle.short, max_length=100)
-
     def __init__(self, cog: ThreadSelfManage, thread: discord.Thread):
         super().__init__()
         self.cog = cog
         self.thread = thread
+        current = (thread.name or "")[:100]
+        self.new_title = ui.TextInput(
+            label="新标题",
+            style=discord.TextStyle.short,
+            max_length=100,
+            default=current,
+        )
+        self.add_item(self.new_title)
 
     async def on_submit(self, interaction: discord.Interaction):
         if not isinstance(interaction.channel, discord.Thread):
@@ -460,7 +466,7 @@ class ForumWelcomeView(ui.View):
         msg = interaction.message
         forum_add_optout(interaction.user.id)
         await interaction.response.send_message(
-            "已记录：之后您在任何服务器发布的新论坛帖都不会再显示此欢迎提示。",
+            "已记录：之后您发布的新帖不会再显示此欢迎提示。",
             ephemeral=True,
         )
         try:
