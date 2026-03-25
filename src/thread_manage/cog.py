@@ -9,6 +9,17 @@ from src.utils import dm
 from src.utils.confirm_view import confirm_view
 from src.thread_manage.thread_clear import clear_thread_members
 from src.thread_manage.auto_clear import AutoClearManager
+from src.thread_manage.self_manage_ui import (
+    ForumWelcomeView,
+    SLOWMODE_OPTIONS,
+    SelfManageMainMenuView,
+    SlowModeSubView,
+    TagEditView,
+    ThreadMuteModal,
+    forum_user_opted_out,
+    schedule_delete_message,
+    wait_menu_confirm_on_message,
+)
 from typing import Optional
 import re
 from datetime import datetime, timedelta
@@ -159,15 +170,362 @@ class ThreadSelfManage(commands.Cog):
         """注册右键菜单命令，若已存在则先移除再添加（支持热重载）"""
         self.bot.tree.remove_command("删除消息", type=discord.AppCommandType.message)
         self.bot.tree.remove_command("标注/取消标注", type=discord.AppCommandType.message)
+        self.bot.tree.remove_command("子区禁言", type=discord.AppCommandType.user)
+        self.bot.tree.remove_command("子区解除禁言", type=discord.AppCommandType.user)
 
         self.ctx_delete_message = app_commands.ContextMenu(name="删除消息", callback=self.delete_message_context_menu)
         self.bot.tree.add_command(self.ctx_delete_message)
         self.ctx_pin_operations = app_commands.ContextMenu(name="标注/取消标注", callback=self.pin_operations_context_menu)
         self.bot.tree.add_command(self.ctx_pin_operations)
+        self.ctx_thread_mute = app_commands.ContextMenu(name="子区禁言", callback=self.thread_mute_user_context_menu)
+        self.bot.tree.add_command(self.ctx_thread_mute)
+        self.ctx_thread_unmute = app_commands.ContextMenu(name="子区解除禁言", callback=self.thread_unmute_user_context_menu)
+        self.bot.tree.add_command(self.ctx_thread_unmute)
 
     async def cog_unload(self):
         self.bot.tree.remove_command("删除消息", type=discord.AppCommandType.message)
         self.bot.tree.remove_command("标注/取消标注", type=discord.AppCommandType.message)
+        self.bot.tree.remove_command("子区禁言", type=discord.AppCommandType.user)
+        self.bot.tree.remove_command("子区解除禁言", type=discord.AppCommandType.user)
+
+    @commands.Cog.listener()
+    async def on_thread_create(self, thread: discord.Thread):
+        """论坛新帖创建时发送自助管理提示（公开消息，10 分钟后删除）。"""
+        try:
+            if thread.owner_id is None:
+                return
+            parent = thread.parent
+            if not isinstance(parent, discord.ForumChannel):
+                return
+            if forum_user_opted_out(thread.owner_id):
+                return
+            owner = thread.guild.get_member(thread.owner_id)
+            if owner and owner.bot:
+                return
+            embed = discord.Embed(
+                description=(
+                    "欢迎使用自助管理系统，您可以随时在帖内输入`/自助管理 菜单`打开功能菜单辅助管理您的帖子"
+                ),
+                colour=discord.Colour.blue(),
+            )
+            embed.set_footer(text="本消息将在10分钟后自动删除")
+            view = ForumWelcomeView()
+            msg = await thread.send(embed=embed, view=view)
+            asyncio.create_task(schedule_delete_message(msg, 600))
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"论坛欢迎消息发送失败: {e}")
+
+    @self_manage.command(name="菜单", description="打开自助管理图形菜单（下拉选择功能）")
+    async def self_manage_menu(self, interaction: discord.Interaction):
+        channel = interaction.channel
+        if not isinstance(channel, discord.Thread):
+            await interaction.response.send_message("此指令仅在子区内有效", ephemeral=True)
+            return
+        if not await self.can_manage_thread(interaction, channel):
+            await interaction.response.send_message("不能在他人子区内使用此指令", ephemeral=True)
+            return
+        embed = discord.Embed(
+            title="自助管理菜单",
+            description="请在下拉列表中选择要执行的操作。",
+            colour=discord.Colour.blue(),
+        )
+        await interaction.response.send_message(
+            embed=embed,
+            view=SelfManageMainMenuView(self, channel),
+            ephemeral=True,
+        )
+
+    async def menu_run_lock(self, interaction: discord.Interaction, channel: discord.Thread):
+        if channel.locked:
+            await interaction.edit_original_response(content="此子区已经被锁定。", embed=None, view=None)
+            return
+        msg = await interaction.original_response()
+        lock_msg = f"确定要锁定子区 **{channel.name}** 吗？锁定后其他人将无法发言。"
+        ok1 = await wait_menu_confirm_on_message(
+            msg,
+            interaction.user.id,
+            title="锁定子区",
+            description=lock_msg,
+            colour=discord.Colour.orange(),
+        )
+        if not ok1:
+            return
+        try:
+            lock_notice = (
+                f"🔒 **子区已锁定**\n\n"
+                f"由 {interaction.user.mention} 锁定于 {discord.utils.format_dt(datetime.now())}"
+            )
+            await channel.send(lock_notice)
+            await interaction.followup.send(
+                f"可使用 `/自助管理 解锁子区 {channel.id}` 解锁子区。",
+                ephemeral=True,
+            )
+            await channel.edit(locked=True, archived=True)
+            await interaction.followup.send("✅ 子区已锁定", ephemeral=True)
+            await msg.edit(
+                embed=discord.Embed(title="完成", description="已锁定并归档。", colour=discord.Colour.green()),
+                view=None,
+            )
+        except discord.HTTPException as e:
+            await interaction.followup.send(f"❌ 锁定失败: {str(e)}", ephemeral=True)
+            try:
+                await msg.edit(content=f"❌ 锁定失败: {str(e)}", embed=None, view=None)
+            except Exception:
+                pass
+
+    async def menu_run_delete_thread(self, interaction: discord.Interaction, channel: discord.Thread):
+        if interaction.user.id != channel.owner_id:
+            await interaction.edit_original_response(content="只有子区所有者可以删除子区。", embed=None, view=None)
+            return
+        msg = await interaction.original_response()
+        ok1 = await wait_menu_confirm_on_message(
+            msg,
+            interaction.user.id,
+            title="删除子区（1/2）",
+            description=(
+                f"⚠️ **危险操作** ⚠️\n\n确定要删除子区 **{channel.name}** 吗？\n\n"
+                "**此操作不可逆，将删除所有消息和历史记录！**"
+            ),
+            colour=discord.Colour.red(),
+        )
+        if not ok1:
+            return
+        ok2 = await wait_menu_confirm_on_message(
+            msg,
+            interaction.user.id,
+            title="删除子区（2/2）",
+            description=(
+                f"⚠️ **再次确认** ⚠️\n\n真的确定要删除子区 **{channel.name}** 吗？\n\n"
+                "**此操作不可逆！**"
+            ),
+            colour=discord.Colour.red(),
+        )
+        if not ok2:
+            return
+        await asyncio.sleep(0.5)
+        try:
+            await interaction.followup.send("✅ 子区已删除", ephemeral=True)
+        except Exception:
+            pass
+        try:
+            await channel.delete()
+        except discord.HTTPException as e:
+            try:
+                await interaction.followup.send(f"❌ 删除失败: {str(e)}", ephemeral=True)
+            except Exception:
+                pass
+
+    async def apply_slowmode_from_menu(self, interaction: discord.Interaction, channel: discord.Thread, seconds: int):
+        label = next((n for n, s in SLOWMODE_OPTIONS if s == seconds), str(seconds))
+        try:
+            await channel.edit(slowmode_delay=seconds)
+        except discord.HTTPException as e:
+            await interaction.response.send_message(f"❌ 设置失败: {str(e)}", ephemeral=True)
+            return
+        try:
+            if seconds == 0:
+                await channel.send(
+                    f"⏱️ **慢速模式已关闭**\n\n由 {interaction.user.mention} 设置于 {discord.utils.format_dt(datetime.now())}"
+                )
+            else:
+                await channel.send(
+                    f"⏱️ **慢速模式已设置为 {label}**\n\n由 {interaction.user.mention} 设置于 {discord.utils.format_dt(datetime.now())}"
+                )
+        except discord.HTTPException:
+            pass
+
+        embed = discord.Embed(
+            title="慢速模式",
+            description=f"✅ 已应用：**{label}**",
+            colour=discord.Colour.green(),
+        )
+        await interaction.response.edit_message(embed=embed, view=SlowModeSubView(self, channel))
+
+    async def apply_announce_from_modal(self, interaction: discord.Interaction, channel: discord.Thread, text: str):
+        await interaction.response.defer(ephemeral=True)
+        await channel.send(
+            f"@everyone \n{text}\n> -# 这是一条由贴主发送的子区内通知\n> -# 如果不想再收到此类通知，取消关注本贴即可"
+        )
+        await interaction.followup.send("已通知所有在本贴内的成员", ephemeral=True)
+
+    async def apply_title_from_modal(self, interaction: discord.Interaction, channel: discord.Thread, new_title: str):
+        new_title = new_title.strip()
+        if len(new_title) > 100:
+            await interaction.response.send_message("❌ 标题长度不能超过100字符", ephemeral=True)
+            return
+        if not new_title:
+            await interaction.response.send_message("❌ 标题不能为空", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        old_title = channel.name
+        try:
+            await channel.edit(name=new_title)
+            await interaction.followup.send(f"✅ 子区标题已更新为：**{new_title}**", ephemeral=True)
+            title_notice = (
+                f"📝 **子区标题已更新**\n\n"
+                f"**旧标题：** {old_title}\n"
+                f"**新标题：** {new_title}\n\n"
+                f"由 {interaction.user.mention} 更新于 {discord.utils.format_dt(datetime.now())}"
+            )
+            await channel.send(title_notice)
+        except discord.HTTPException as e:
+            await interaction.followup.send(f"❌ 编辑标题失败: {str(e)}", ephemeral=True)
+
+    async def toggle_forum_tag(
+        self,
+        interaction: discord.Interaction,
+        thread: discord.Thread,
+        tag_id: int,
+        tag_name: str,
+    ):
+        parent = thread.parent
+        if not isinstance(parent, discord.ForumChannel):
+            await interaction.response.send_message("此功能仅在论坛频道的子区内有效", ephemeral=True)
+            return
+        if not await self.can_manage_thread(interaction, thread):
+            await interaction.response.send_message("不能在他人子区内使用此指令", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            fresh = await interaction.guild.fetch_channel(thread.id)
+        except Exception:
+            fresh = thread
+        if not isinstance(fresh, discord.Thread):
+            await interaction.followup.send("无法获取子区。", ephemeral=True)
+            return
+        target_tag = discord.utils.get(parent.available_tags, id=tag_id)
+        if not target_tag:
+            await interaction.followup.send(f"❌ 找不到标签 **{tag_name}**", ephemeral=True)
+            return
+        current_tags = list(fresh.applied_tags)
+        if target_tag in current_tags:
+            new_tags = [t for t in current_tags if t.id != tag_id]
+            action_word = "移除"
+        else:
+            if len(current_tags) >= 5:
+                await interaction.followup.send("❌ 子区最多只能有5个标签", ephemeral=True)
+                return
+            new_tags = current_tags + [target_tag]
+            action_word = "添加"
+        try:
+            await fresh.edit(applied_tags=new_tags)
+            await interaction.followup.send(f"✅ 已{action_word}标签：**{target_tag.name}**", ephemeral=True)
+        except discord.HTTPException as e:
+            await interaction.followup.send(f"❌ 操作失败: {str(e)}", ephemeral=True)
+            return
+        try:
+            fresh = await interaction.guild.fetch_channel(fresh.id)
+        except Exception:
+            pass
+        if not isinstance(fresh, discord.Thread):
+            return
+        view = TagEditView(self, fresh)
+        view._build_buttons(parent, fresh)
+        applied = ", ".join(t.name for t in fresh.applied_tags) or "（无）"
+        embed = discord.Embed(
+            title="编辑标签",
+            description=(
+                "点击下方标签可添加或移除（每帖最多 5 个标签）。\n"
+                f"**当前标签：** {applied}"
+            ),
+            colour=discord.Colour.green(),
+        )
+        try:
+            await interaction.edit_original_response(embed=embed, view=view)
+        except Exception:
+            pass
+
+    async def thread_mute_user_context_menu(self, interaction: discord.Interaction, member: discord.Member):
+        channel = interaction.channel
+        if not isinstance(channel, discord.Thread):
+            await interaction.response.send_message("此指令仅在子区内有效", ephemeral=True)
+            return
+        if not await self.can_manage_thread(interaction, channel):
+            await interaction.response.send_message("不能在他人子区内使用此指令", ephemeral=True)
+            return
+        if member.bot:
+            await interaction.response.send_message("❌ 不能禁言机器人", ephemeral=True)
+            return
+        if member.id == interaction.user.id:
+            await interaction.response.send_message("无法禁言自己", ephemeral=True)
+            return
+        try:
+            config = getattr(self.bot, "config", {})
+            for admin_role_id in config.get("admins", []):
+                role = interaction.guild.get_role(int(admin_role_id))
+                if role and role in member.roles:
+                    await interaction.response.send_message("无法禁言管理组成员", ephemeral=True)
+                    return
+        except Exception:
+            pass
+        await interaction.response.send_modal(ThreadMuteModal(self, channel, member))
+
+    async def apply_ctx_mute_from_modal(
+        self,
+        interaction: discord.Interaction,
+        channel: discord.Thread,
+        member: discord.Member,
+        duration: str,
+        reason: str,
+    ):
+        await interaction.response.defer(ephemeral=True)
+        duration = (duration or "").strip()
+        reason = (reason or "").strip() or None
+        if duration:
+            sec, human = self._parse_time(duration)
+            if sec < 0:
+                await interaction.followup.send("❌ 无效时长，请使用 m/h/d 结尾", ephemeral=True)
+                return
+            until = datetime.now() + timedelta(seconds=sec)
+            muted_until = until.isoformat()
+        else:
+            muted_until = -1
+            human = "永久"
+        embed = discord.Embed(
+            title="🔒 子区禁言",
+            description=f"👤 {member.mention} 已被禁言",
+            color=discord.Color.red(),
+            timestamp=datetime.now(),
+        )
+        embed.add_field(name="原因", value=reason if reason else "无", inline=True)
+        embed.add_field(name="时长", value=duration if duration else "永久", inline=True)
+        embed.add_field(name="执行者", value=interaction.user.mention, inline=True)
+        await channel.send(embed=embed)
+        rec = self._get_mute_record(channel.guild.id, channel.id, member.id)
+        rec["muted_until"] = muted_until
+        self._save_mute_record(channel.guild.id, channel.id, member.id, rec)
+        msg = f"✅ 已在子区禁言 {member.mention}"
+        if duration:
+            msg += f" 持续 {human}"
+        await interaction.followup.send(msg, ephemeral=True)
+
+    async def thread_unmute_user_context_menu(self, interaction: discord.Interaction, member: discord.Member):
+        channel = interaction.channel
+        if not isinstance(channel, discord.Thread):
+            await interaction.response.send_message("此指令仅在子区内有效", ephemeral=True)
+            return
+        if not await self.can_manage_thread(interaction, channel):
+            await interaction.response.send_message("只有子区所有者或管理员可执行此操作", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        data_dir = pathlib.Path("data") / "thread_mute" / str(channel.guild.id) / str(channel.id)
+        file_path = data_dir / f"{member.id}.json"
+        if file_path.exists():
+            file_path.unlink()
+            key = (channel.guild.id, channel.id, member.id)
+            self._mute_cache.pop(key, None)
+            self._save_mute_record(channel.guild.id, channel.id, member.id, None)
+            embed = discord.Embed(
+                title="🔒 子区禁言",
+                description=f"👤 {member.mention} 已被解除禁言",
+                color=discord.Color.green(),
+                timestamp=datetime.now(),
+            )
+            await channel.send(embed=embed)
+            await interaction.followup.send(f"✅ 已解除 {member.mention} 的子区禁言", ephemeral=True)
+        else:
+            await interaction.followup.send("该成员未被禁言", ephemeral=True)
 
     @self_manage.command(name="清理子区", description="清理子区内不活跃成员")
     @app_commands.describe(threshold="阈值(默认900，最低800)")
@@ -597,11 +955,15 @@ class ThreadSelfManage(commands.Cog):
             
             # 在子区内发送锁定通知
             await channel.send(lock_notice)
-            
-            # 通知操作者
-            await interaction.followup.send("✅ 子区已锁定", ephemeral=True)
+
+            await interaction.followup.send(
+                f"可使用 `/自助管理 解锁子区 {channel.id}` 解锁子区。",
+                ephemeral=True,
+            )
 
             await channel.edit(locked=True, archived=True)
+
+            await interaction.followup.send("✅ 子区已锁定", ephemeral=True)
 
         except discord.HTTPException as e:
             await interaction.followup.send(f"❌ 锁定失败: {str(e)}", ephemeral=True)
@@ -661,14 +1023,9 @@ class ThreadSelfManage(commands.Cog):
     @self_manage.command(name="慢速模式", description="设置发言间隔时间")
     @app_commands.describe(option="选择发言间隔时间")
     @app_commands.rename(option="时间")
-    @app_commands.choices(option=[
-        app_commands.Choice(name="无", value=0),
-        app_commands.Choice(name="5秒", value=5),
-        app_commands.Choice(name="10秒", value=10),
-        app_commands.Choice(name="15秒", value=15),
-        app_commands.Choice(name="30秒", value=30),
-        app_commands.Choice(name="1分钟", value=60),
-    ])
+    @app_commands.choices(
+        option=[app_commands.Choice(name=name, value=sec) for name, sec in SLOWMODE_OPTIONS]
+    )
     async def set_slowmode(self, interaction: discord.Interaction, option: app_commands.Choice[int]):
         # 验证是否在子区内
         channel = interaction.channel
@@ -835,10 +1192,10 @@ class ThreadSelfManage(commands.Cog):
         
         if message.pinned:
             await message.unpin(reason=f"由 {interaction.user} 取消标注")
-            await interaction.response.send_message("✅ 已取消标注", ephemeral=True)
+            await interaction.followup.send("✅ 已取消标注", ephemeral=True)
         else:
             await message.pin(reason=f"由 {interaction.user} 标注")
-            await interaction.response.send_message("✅ 已标注", ephemeral=True)
+            await interaction.followup.send("✅ 已标注", ephemeral=True)
 
     # ---- 编辑标签 ----
     @self_manage.command(name="编辑标签", description="编辑子区标签")
@@ -1433,3 +1790,4 @@ class ThreadSelfManage(commands.Cog):
             embed.add_field(name="协管成员", value="当前没有协管", inline=False)
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
