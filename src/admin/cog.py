@@ -634,6 +634,7 @@ class AdminCommands(commands.Cog):
                 description=message,
                 color=discord.Color.blue()
             )
+            embed.set_footer(text=f"来自服务器: {guild.name}")
             if img:
                 embed.set_image(url=img.url)
             await dm.send_dm(guild=guild, user=member, embed=embed)
@@ -740,18 +741,21 @@ class AdminCommands(commands.Cog):
         await interaction.followup.send(f"✅ 已禁言 {member.mention} ({mute_time_str})。处罚ID: `{record_id}`", ephemeral=True)
 
         # 私聊通知
+        guild_name = guild.name
         if duration.total_seconds() > 0:
             try:
-                # await member.send(embed=discord.Embed(title="🔇 禁言处罚", description=f"您因 {reason} 被禁言 {mute_time_str}。请注意遵守社区规则。"))
-                await dm.send_dm(member.guild, member, embed=discord.Embed(title="🔇 禁言处罚", description=f"您因 {reason} 被禁言 {mute_time_str}。请注意遵守社区规则。"))
+                dm_embed = discord.Embed(title="🔇 禁言处罚", description=f"您在 **{guild_name}** 因 **{reason}** 被禁言 {mute_time_str}。请注意遵守社区规则。")
+                dm_embed.set_footer(text=f"来自服务器: {guild_name}")
+                await dm.send_dm(member.guild, member, embed=dm_embed)
             except discord.Forbidden:
                 pass
             except Exception as e:
                 self.logger.error(f"禁言处罚私聊通知失败: {e}")
         elif warn > 0:
             try:
-                # await member.send(embed=discord.Embed(title="⚠️ 警告处罚", description=f"您因 {reason} 被警告 {warn} 天。请注意遵守社区规则。"))
-                await dm.send_dm(member.guild, member, embed=discord.Embed(title="⚠️ 警告处罚", description=f"您因 {reason} 被警告 {warn} 天。请注意遵守社区规则。"))
+                dm_embed = discord.Embed(title="⚠️ 警告处罚", description=f"您在 **{guild_name}** 因 **{reason}** 被警告 {warn} 天。请注意遵守社区规则。")
+                dm_embed.set_footer(text=f"来自服务器: {guild_name}")
+                await dm.send_dm(member.guild, member, embed=dm_embed)
             except discord.Forbidden:
                 pass
             except Exception as e:
@@ -804,12 +808,12 @@ class AdminCommands(commands.Cog):
 
         # 私聊通知
         try:
-            # await member.send(embed=discord.Embed(title="👋 移出服务器", description=f"您因 {reason} 被踢出服务器。如有异议，请联系管理组成员。"))
-            await dm.send_dm(member.guild, member, embed=discord.Embed(title="👋 移出服务器", description=f"您因 {reason} 被踢出服务器。如有异议，请联系管理组成员。"))
+            kick_embed = discord.Embed(title="👋 移出服务器", description=f"您因 **{reason}** 被踢出 **{guild.name}**。如有异议，请联系管理组成员。")
+            kick_embed.set_footer(text=f"来自服务器: {guild.name}")
+            await dm.send_dm(member.guild, member, embed=kick_embed)
         except discord.Forbidden:
             pass
         except Exception:
-            # 发送私聊失败，继续执行
             pass
         
         # 执行踢出
@@ -940,12 +944,12 @@ class AdminCommands(commands.Cog):
         # 私聊通知（仅当能获取到用户对象时）
         if target_user is not None:
             try:
-                # await target_user.send(embed=discord.Embed(title="⛔ 永久封禁", description=f"您因 {reason} 被永久封禁。如有异议，请联系管理组成员。"))
-                await dm.send_dm(target_user.guild, target_user, embed=discord.Embed(title="⛔ 永久封禁", description=f"您因 {reason} 被永久封禁。如有异议，请联系管理组成员。"))
+                ban_embed = discord.Embed(title="⛔ 永久封禁", description=f"您因 **{reason}** 被 **{guild.name}** 永久封禁。如有异议，请联系管理组成员。")
+                ban_embed.set_footer(text=f"来自服务器: {guild.name}")
+                await dm.send_dm(target_user.guild, target_user, embed=ban_embed)
             except discord.Forbidden:
                 pass
             except Exception:
-                # 发送私聊失败，继续执行
                 pass
         
         # 执行封禁
@@ -1296,12 +1300,12 @@ class AdminCommands(commands.Cog):
         try:
             embed = discord.Embed(title="⚠️ 永封审查通知", color=discord.Color.dark_red())
             embed.description = (
-                f"您因 **{reason or '未提供原因'}** 被置于为期 {check_days} 天的永封审查流程中。\n\n"
+                f"您在 **{guild.name}** 因 **{reason or '未提供原因'}** 被置于为期 {check_days} 天的永封审查流程中。\n\n"
                 f"请在专属申诉帖 {appeal_thread.mention} 中发言以进行申诉。\n"
                 f"如果 {check_days} 天后此审查未被撤销，系统将自动对您执行永久封禁。"
             )
             embed.add_field(name="审查到期时间", value=f"<t:{int(expires_at.timestamp())}:F>", inline=False)
-            embed.set_footer(text=f"审查ID: {record_id}")
+            embed.set_footer(text=f"审查ID: {record_id} | 来自服务器: {guild.name}")
             if attachment:
                 if attachment.content_type and attachment.content_type.startswith("image/"):
                     embed.add_field(name="附件", value="", inline=False)
@@ -1470,8 +1474,8 @@ class AdminCommands(commands.Cog):
             embed = discord.Embed(title="✅ 永封审查已撤销", color=discord.Color.green())
             appeal_thread_id = record.get("appeal_thread_id")
             appeal_thread_mention = f"<#{appeal_thread_id}>" if appeal_thread_id else ""
-            embed.description = f"您好，关于您的永封审查已被撤销。\n\n**撤销原因** :\n\n{reason}\n\n申诉帖 : {appeal_thread_mention}"
-            embed.set_footer(text=f"审查ID: {punish_id}")
+            embed.description = f"您好，您在 **{guild.name}** 的永封审查已被撤销。\n\n**撤销原因** :\n\n{reason}\n\n申诉帖 : {appeal_thread_mention}"
+            embed.set_footer(text=f"审查ID: {punish_id} | 来自服务器: {guild.name}")
             if attachment:
                 if attachment.content_type and attachment.content_type.startswith("image/"):
                     embed.add_field(name="附件", value="", inline=False)
@@ -2221,7 +2225,9 @@ class AdminCommands(commands.Cog):
 
                 # 私聊通知
                 try:
-                    await dm.send_dm(member.guild, member, embed=discord.Embed(title="🔴 答题处罚", description=f"您因 {reason} 被要求重新答题。请重新阅读规则并注意遵守。"))
+                    exam_embed = discord.Embed(title="🔴 答题处罚", description=f"您在 **{guild.name}** 因 **{reason}** 被要求重新答题。请重新阅读规则并注意遵守。")
+                    exam_embed.set_footer(text=f"来自服务器: {guild.name}")
+                    await dm.send_dm(member.guild, member, embed=exam_embed)
                 except discord.Forbidden:
                     pass
                 except Exception as e:
@@ -2372,18 +2378,21 @@ class AdminCommands(commands.Cog):
         await interaction.followup.send(f"✅ 已禁言 {member.mention} ({mute_time_str})。处罚ID: `{record_id}`", ephemeral=True)
 
         # 私聊通知
+        guild_name = guild.name
         if duration.total_seconds() > 0:
             try:
-                # await member.send(embed=discord.Embed(title="🔇 禁言处罚", description=f"您因 {reason} 被禁言 {mute_time_str}。请注意遵守社区规则。"))
-                await dm.send_dm(member.guild, member, embed=discord.Embed(title="🔇 禁言处罚", description=f"您因 {reason} 被禁言 {mute_time_str}。请注意遵守社区规则。"))
+                dm_embed = discord.Embed(title="🔇 禁言处罚", description=f"您在 **{guild_name}** 因 **{reason}** 被禁言 {mute_time_str}。请注意遵守社区规则。")
+                dm_embed.set_footer(text=f"来自服务器: {guild_name}")
+                await dm.send_dm(member.guild, member, embed=dm_embed)
             except discord.Forbidden:
                 pass
             except Exception as e:
                 self.logger.error(f"禁言处罚私聊通知失败: {e}")
         elif warn > 0:
             try:
-                # await member.send(embed=discord.Embed(title="⚠️ 警告处罚", description=f"您因 {reason} 被警告 {warn} 天。请注意遵守社区规则。"))
-                await dm.send_dm(member.guild, member, embed=discord.Embed(title="⚠️ 警告处罚", description=f"您因 {reason} 被警告 {warn} 天。请注意遵守社区规则。"))
+                dm_embed = discord.Embed(title="⚠️ 警告处罚", description=f"您在 **{guild_name}** 因 **{reason}** 被警告 {warn} 天。请注意遵守社区规则。")
+                dm_embed.set_footer(text=f"来自服务器: {guild_name}")
+                await dm.send_dm(member.guild, member, embed=dm_embed)
             except discord.Forbidden:
                 pass
             except Exception as e:

@@ -153,14 +153,21 @@ class ThreadSelfManage(commands.Cog):
             disabled_count = len(self.auto_clear_manager.disabled_threads)
             self.logger.info(f"自动清理管理器已初始化，共 {disabled_count} 个子区被禁用自动清理")
 
+        self._register_context_menus()
+
+    def _register_context_menus(self):
+        """注册右键菜单命令，若已存在则先移除再添加（支持热重载）"""
+        self.bot.tree.remove_command("删除消息", type=discord.AppCommandType.message)
+        self.bot.tree.remove_command("标注/取消标注", type=discord.AppCommandType.message)
+
         self.ctx_delete_message = app_commands.ContextMenu(name="删除消息", callback=self.delete_message_context_menu)
         self.bot.tree.add_command(self.ctx_delete_message)
         self.ctx_pin_operations = app_commands.ContextMenu(name="标注/取消标注", callback=self.pin_operations_context_menu)
         self.bot.tree.add_command(self.ctx_pin_operations)
 
-    async def on_disable(self):
-        self.bot.tree.remove_command(self.delete_message_context_menu)
-        self.bot.tree.remove_command(self.pin_operations_context_menu)
+    async def cog_unload(self):
+        self.bot.tree.remove_command("删除消息", type=discord.AppCommandType.message)
+        self.bot.tree.remove_command("标注/取消标注", type=discord.AppCommandType.message)
 
     @self_manage.command(name="清理子区", description="清理子区内不活跃成员")
     @app_commands.describe(threshold="阈值(默认900，最低800)")

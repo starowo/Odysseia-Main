@@ -8,6 +8,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from src.utils.confirm_view import confirm_view, confirm_view_embed
+from src.utils.auth import is_admin_member
 
 
 class TemporaryMessageView(discord.ui.View):
@@ -126,28 +127,6 @@ class MiscCommands(commands.Cog):
             await asyncio.gather(*self.temp_message_tasks, return_exceptions=True)
         self.temp_message_tasks.clear()
 
-    # 权限检查装饰器
-    def is_admin():
-        async def predicate(interaction: discord.Interaction):
-            try:
-                guild = interaction.guild
-                if not guild:
-                    return False
-                    
-                cog = interaction.client.get_cog("MiscCommands")
-                if not cog:
-                    return False
-                config = getattr(cog, 'config', {})
-                for admin in config.get('admins', []):
-                    role = guild.get_role(admin)
-                    if role:
-                        if role in interaction.user.roles:
-                            return True
-                return False
-            except Exception:
-                return False
-        return app_commands.check(predicate)
-
     @property
     def config(self):
         """读取配置文件并缓存，只有在文件修改后重新加载"""
@@ -164,6 +143,16 @@ class MiscCommands(commands.Cog):
                 self.logger.error(f"加载配置文件失败: {e}")
             return {}
 
+    def _is_thread_muted(self, interaction: discord.Interaction) -> bool:
+        """检查用户是否在当前子区被禁言"""
+        channel = interaction.channel
+        if not isinstance(channel, discord.Thread):
+            return False
+        thread_cog = self.bot.get_cog("ThreadSelfManage")
+        if not thread_cog:
+            return False
+        return thread_cog._is_thread_muted(interaction.guild.id, channel.id, interaction.user.id)
+
     @app_commands.command(name="临时消息", description="发送临时消息，指定时长后自动删除")
     @app_commands.describe(
         文字="消息内容（可选，但文字和图片至少要有一个）",
@@ -177,6 +166,10 @@ class MiscCommands(commands.Cog):
         文字: str = None,
         图片: discord.Attachment = None
     ):
+        if self._is_thread_muted(interaction):
+            await interaction.response.send_message("❌ 您在当前子区已被禁言，无法使用此功能", ephemeral=True)
+            return
+
         # 验证参数
         if not 文字 and not 图片:
             await interaction.response.send_message("❌ 文字和图片至少要有一个！", ephemeral=True)
@@ -266,32 +259,73 @@ class MiscCommands(commands.Cog):
         )
         await interaction.edit_original_response(embed=success_embed, view=None)
 
-    @app_commands.command(name="发送通知", description="发送公告通知，使用粉色 embed")
-    
+    ANNOUNCE_COOLDOWN_SECONDS = 120
+
+    @app_commands.command(name="发送通知", description="发送自定义通知到当前频道")
     @app_commands.describe(
         title="标题",
         content="内容",
+        color="Embed 颜色",
         image="图片附件",
         thumbnail="缩略图（可选）"
     )
-    @app_commands.rename(title="标题", content="内容", image="图片", thumbnail="缩略图")
+    @app_commands.rename(title="标题", content="内容", color="颜色", image="图片", thumbnail="缩略图")
+    @app_commands.choices(color=[
+        app_commands.Choice(name="粉色", value="pink"),
+        app_commands.Choice(name="红色", value="red"),
+        app_commands.Choice(name="橙色", value="orange"),
+        app_commands.Choice(name="黄色", value="yellow"),
+        app_commands.Choice(name="绿色", value="green"),
+        app_commands.Choice(name="蓝色", value="blue"),
+        app_commands.Choice(name="紫色", value="purple"),
+        app_commands.Choice(name="白色", value="white"),
+    ])
     async def announce(
         self,
         interaction: discord.Interaction,
         title: str,
         content: str,
+        color: app_commands.Choice[str] = None,
         image: discord.Attachment = None,
         thumbnail: discord.Attachment = None
     ):
-        # 获取用户与时间
+        if self._is_thread_muted(interaction):
+            await interaction.response.send_message("❌ 您在当前子区已被禁言，无法使用此功能", ephemeral=True)
+            return
+
+        # 冷却检查（管理员豁免）
+        user_id = interaction.user.id
+        if not is_admin_member(interaction.user):
+            now_utc = datetime.datetime.now(datetime.timezone.utc)
+            last_use = self.announce_cooldowns.get(user_id)
+            if last_use:
+                elapsed = (now_utc - last_use).total_seconds()
+                if elapsed < self.ANNOUNCE_COOLDOWN_SECONDS:
+                    remaining = int(self.ANNOUNCE_COOLDOWN_SECONDS - elapsed)
+                    await interaction.response.send_message(
+                        f"❌ 发送通知冷却中，请等待 {remaining} 秒后再试", ephemeral=True
+                    )
+                    return
+
+        color_map = {
+            "pink": discord.Color.pink(),
+            "red": discord.Color.red(),
+            "orange": discord.Color.orange(),
+            "yellow": discord.Color.yellow(),
+            "green": discord.Color.green(),
+            "blue": discord.Color.blue(),
+            "purple": discord.Color.purple(),
+            "white": discord.Color.from_rgb(255, 255, 255),
+        }
+        chosen_color = color_map.get(color.value, discord.Color.pink()) if color else discord.Color.pink()
+
         user = interaction.user
         now = datetime.datetime.now(datetime.timezone.utc)
 
-        # 构造粉色 embed
         embed = discord.Embed(
             title=title,
             description=content,
-            color=discord.Color.pink(),
+            color=chosen_color,
             timestamp=now
         )
         embed.set_footer(text=user.display_name, icon_url=user.display_avatar.url)
@@ -300,13 +334,11 @@ class MiscCommands(commands.Cog):
         if thumbnail:
             embed.set_thumbnail(url=thumbnail.url)
 
-        # 预览通知 Embed
         await interaction.response.defer(ephemeral=True)
 
         confirm_embed = embed.copy()
         confirm_embed.set_footer(text="通知预览，点击按钮确认发送")
 
-        # 确认是否发送
         confirmed = await confirm_view_embed(
             interaction,
             embed=confirm_embed,
@@ -316,6 +348,8 @@ class MiscCommands(commands.Cog):
         if not confirmed:
             return
 
-        # 发送通知至频道
         await interaction.channel.send(embed=embed)
+
+        # 记录冷却时间
+        self.announce_cooldowns[user_id] = datetime.datetime.now(datetime.timezone.utc)
 
