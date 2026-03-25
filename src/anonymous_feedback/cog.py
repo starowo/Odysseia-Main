@@ -316,8 +316,14 @@ class AnonymousFeedbackCog(commands.Cog):
         match = re.match(r'https://discord\.com/channels/(\d+)/(\d+)/(\d+)', url)
         return (int(match.group(1)), int(match.group(2)), int(match.group(3))) if match else None
     
-    def _check_user_permissions(self, cookie: str, thread_id: int, guild_id: int) -> tuple[bool, str]:
+    def _check_user_permissions(self, cookie: str, thread_id: int, guild_id: int, user_id: int = None) -> tuple[bool, str]:
         """检查用户权限，返回(是否允许, 错误消息)"""
+        # 检查子区禁言
+        if user_id:
+            thread_cog = self.bot.get_cog("ThreadSelfManage")
+            if thread_cog and thread_cog._is_thread_muted(guild_id, thread_id, user_id):
+                return False, "❌ 您在当前子区已被禁言，无法使用匿名反馈功能"
+
         # 检查用户是否被全局封禁
         with sqlite3.connect(self.db_path) as conn:
             user_data = conn.execute('SELECT is_banned, warning_count, user_id FROM users WHERE user_cookie = ?', (cookie,)).fetchone()
@@ -718,7 +724,7 @@ class AnonymousFeedbackCog(commands.Cog):
         cookie = self._register_user(interaction.user.id, guild_id)
         
         # 检查用户权限
-        is_allowed, error_msg = self._check_user_permissions(cookie, thread_id, guild_id)
+        is_allowed, error_msg = self._check_user_permissions(cookie, thread_id, guild_id, interaction.user.id)
         if not is_allowed:
             await interaction.followup.send(error_msg, ephemeral=True)
             return
