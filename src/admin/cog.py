@@ -1921,8 +1921,8 @@ class AdminCommands(commands.Cog):
         except Exception as e:
             await interaction.followup.send(f"❌ 归档失败: {e}", ephemeral=True)
 
-    @thread_manage_group.command(name="pin", description="置顶")
-    @app_commands.describe(thread="要置顶的子区（留空则为当前子区）")
+    @thread_manage_group.command(name="置顶", description="将论坛帖子设为置顶帖")
+    @app_commands.describe(thread="要置顶的论坛帖子（留空则为当前帖子）")
     @app_commands.rename(thread="子区")
     @is_admin()
     async def pin_in_thread_admin(
@@ -1936,20 +1936,28 @@ class AdminCommands(commands.Cog):
         if not isinstance(thread, discord.Thread):
             await interaction.followup.send("❌ 请指定一个子区", ephemeral=True)
             return
+        if not isinstance(thread.parent, discord.ForumChannel):
+            await interaction.followup.send("❌ 仅论坛频道中的帖子支持设为置顶帖", ephemeral=True)
+            return
+        if getattr(thread.flags, "pinned", False):
+            await interaction.followup.send("该帖子已经是置顶帖", ephemeral=True)
+            return
         try:
-            await thread.pin(reason=f"管理员置顶 by {interaction.user}")
+            await thread.edit(pinned=True, reason=f"管理员置顶 by {interaction.user}")
 
             # 记录日志（使用服务器特定配置）
             moderation_log_channel_id = self.get_guild_config("moderation_log_channel_id", interaction.guild.id, 0)
             moderation_log_channel = interaction.guild.get_channel_or_thread(int(moderation_log_channel_id)) if moderation_log_channel_id else None
             if moderation_log_channel:
-                await moderation_log_channel.send(embed=discord.Embed(title="🔴 子区管理", description=f"管理员 {interaction.user.mention} 在 {thread.mention} 置顶了子区。"))
+                await moderation_log_channel.send(embed=discord.Embed(title="🔴 子区管理", description=f"管理员 {interaction.user.mention} 将 {thread.mention} 设为了置顶帖。"))
 
-            await interaction.followup.send("✅ 已置顶线程", ephemeral=True)
+            await interaction.followup.send("✅ 已将帖子设为置顶帖", ephemeral=True)
         except Exception as e:
-            await interaction.followup.send(f"❌ 置顶失败: {e}", ephemeral=True)
+            await interaction.followup.send(f"❌ 置顶帖子失败: {e}", ephemeral=True)
 
-    @thread_manage_group.command(name="unpin", description="取消置顶")
+    @thread_manage_group.command(name="取消置顶", description="取消论坛帖子的置顶状态")
+    @app_commands.describe(thread="要取消置顶的论坛帖子（留空则为当前帖子）")
+    @app_commands.rename(thread="子区")
     @is_admin()
     async def unpin_in_thread_admin(
         self,
@@ -1962,18 +1970,24 @@ class AdminCommands(commands.Cog):
         if not isinstance(thread, discord.Thread):
             await interaction.followup.send("❌ 请指定一个子区", ephemeral=True)
             return
+        if not isinstance(thread.parent, discord.ForumChannel):
+            await interaction.followup.send("❌ 仅论坛频道中的帖子支持取消置顶", ephemeral=True)
+            return
+        if not getattr(thread.flags, "pinned", False):
+            await interaction.followup.send("该帖子当前不是置顶帖", ephemeral=True)
+            return
         try:
-            await thread.unpin(reason=f"管理员取消置顶 by {interaction.user}")
+            await thread.edit(pinned=False, reason=f"管理员取消置顶 by {interaction.user}")
 
             # 记录日志（使用服务器特定配置）
             moderation_log_channel_id = self.get_guild_config("moderation_log_channel_id", interaction.guild.id, 0)
             moderation_log_channel = interaction.guild.get_channel_or_thread(int(moderation_log_channel_id)) if moderation_log_channel_id else None
             if moderation_log_channel:
-                await moderation_log_channel.send(embed=discord.Embed(title="🔴 子区管理", description=f"管理员 {interaction.user.mention} 在 {thread.mention} 取消了置顶。"))
+                await moderation_log_channel.send(embed=discord.Embed(title="🔴 子区管理", description=f"管理员 {interaction.user.mention} 取消了 {thread.mention} 的置顶状态。"))
 
-            await interaction.followup.send("✅ 已取消置顶", ephemeral=True)
+            await interaction.followup.send("✅ 已取消帖子置顶", ephemeral=True)
         except Exception as e:
-            await interaction.followup.send(f"❌ 取消置顶失败: {e}", ephemeral=True)
+            await interaction.followup.send(f"❌ 取消帖子置顶失败: {e}", ephemeral=True)
 
     @thread_manage_group.command(name="删帖", description="删除线程")
     @app_commands.describe(thread="要删除的子区（留空则为当前子区）")
