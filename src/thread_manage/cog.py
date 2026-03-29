@@ -1876,3 +1876,7 @@ class ThreadSelfManage(commands.Cog):
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(ThreadSelfManage(bot))
+
