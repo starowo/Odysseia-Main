@@ -582,11 +582,10 @@ class ThreadSelfManage(commands.Cog):
         if not confirmed:
             return
         
-        # 再次检测是否正在清理
+        # 再次检测是否正在清理（此时 interaction 已 defer，需用 edit_original_response）
         if self.auto_clear_manager.is_clearing_active(channel.id):
-            await interaction.response.send_message(
-                "❌ 该子区已经在清理中，请等待清理完成", 
-                ephemeral=True
+            await interaction.edit_original_response(
+                content="❌ 该子区已经在清理中，请等待清理完成"
             )
             return
 
@@ -1479,9 +1478,9 @@ class ThreadSelfManage(commands.Cog):
         if not isinstance(channel, discord.Thread):
             return
             
-        # 检查是否需要自动清理
+        # 检查是否需要自动清理（can_trigger_auto_clear 是纯同步检查，不消耗 API 配额）
         try:
-            if await self.auto_clear_manager.should_auto_clear(channel):
+            if self.auto_clear_manager.can_trigger_auto_clear(channel.id):
                 success = await self.auto_clear_manager.start_auto_clear(channel)
                 if success and self.logger:
                     self.logger.info(f"检测到满员子区，开始自动清理: {channel.name} (ID: {channel.id})")
