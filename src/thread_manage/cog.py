@@ -494,6 +494,7 @@ class ThreadSelfManage(commands.Cog):
         await channel.send(embed=embed)
         rec = self._get_mute_record(channel.guild.id, channel.id, member.id)
         rec["muted_until"] = muted_until
+        rec["violations"] = 0
         self._save_mute_record(channel.guild.id, channel.id, member.id, rec)
         msg = f"✅ 已在子区禁言 {member.mention}"
         if duration:
@@ -1458,7 +1459,12 @@ class ThreadSelfManage(commands.Cog):
             return True
         if mu:
             until = datetime.fromisoformat(mu)
-            return datetime.now() < until
+            if datetime.now() < until:
+                return True
+            rec["muted_until"] = None
+            rec["violations"] = 0
+            self._save_mute_record(guild_id, thread_id, user_id, rec)
+            return False
         return False
 
     def _increment_violations(self, guild_id: int, thread_id: int, user_id: int) -> int:
@@ -1614,6 +1620,7 @@ class ThreadSelfManage(commands.Cog):
 
         rec = self._get_mute_record(channel.guild.id, channel.id, member.id)
         rec['muted_until'] = muted_until
+        rec['violations'] = 0
         self._save_mute_record(channel.guild.id, channel.id, member.id, rec)
         msg = f"✅ 已在子区禁言 {member.mention}"
         if duration:
