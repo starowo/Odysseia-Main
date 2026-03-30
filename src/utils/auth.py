@@ -18,6 +18,25 @@ def _load_config():
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
 
+
+def _member_matches_config_ids(member: discord.Member, configured_ids: list[int]) -> bool:
+    """同时支持用户ID与身份组ID的权限匹配。"""
+    for raw_id in configured_ids:
+        try:
+            target_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+
+        if member.id == target_id:
+            return True
+
+        role = member.guild.get_role(target_id)
+        if role and role in member.roles:
+            return True
+
+    return False
+
+
 def is_senior_admin_member(member: discord.Member) -> bool:
     """检查成员是否为高级管理员（支持服务器特定配置）"""
     if not member.guild:
@@ -32,12 +51,7 @@ def is_senior_admin_member(member: discord.Member) -> bool:
     if not senior_admin_roles:
         return False
 
-    for role_id in senior_admin_roles:
-        role = member.guild.get_role(int(role_id))
-        if role and role in member.roles:
-            return True
-            
-    return False
+    return _member_matches_config_ids(member, senior_admin_roles)
 
 def is_admin_member(member: discord.Member) -> bool:
     """检查成员是否为管理员（支持服务器特定配置）"""
@@ -53,12 +67,7 @@ def is_admin_member(member: discord.Member) -> bool:
     if not admin_roles:
         return False
 
-    for role_id in admin_roles:
-        role = member.guild.get_role(int(role_id))
-        if role and role in member.roles:
-            return True
-        
-    return False
+    return _member_matches_config_ids(member, admin_roles)
 
 async def check_senior_admin_permission(interaction: discord.Interaction) -> bool:
     """检查用户是否为高级管理员"""

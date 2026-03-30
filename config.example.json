@@ -46,6 +46,10 @@
             "enabled": true,
             "description": "许可证功能"
         },
+        "thread_pin_watch": {
+            "enabled": true,
+            "description": "帖子置顶巡检功能"
+        },
         "banner": {
             "enabled": true,
             "description": "轮换通知功能"
