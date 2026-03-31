@@ -13,7 +13,7 @@ import pathlib
 import json
 
 from src.banner.database import BannerDatabase, BannerItem
-from src.banner.ui import ApplicationButton, ReviewView, ApplicationModal, RejectModal, BannerListView
+from src.banner.ui import ApplicationButton, ReviewView, ApplicationModal, RejectModal, BannerListView, _resolve_channel_or_thread
 from src.utils.auth import is_admin, is_admin_member
 from src.utils.config_helper import get_config_value
 
@@ -451,6 +451,72 @@ class BannerCommands(commands.Cog):
             embed.add_field(name="⌛ 等待列表详情", value=waitlist_text, inline=False)
         
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @banner.command(name="重发申请", description="将所有待审核的申请重新发送到审核频道（管理员专用）")
+    @is_admin()
+    async def resend_applications(self, interaction: discord.Interaction):
+        """重新发送所有待审核申请到审核频道"""
+        if not interaction.guild:
+            await interaction.response.send_message("❌ 此命令只能在服务器中使用", ephemeral=True)
+            return
+
+        config = get_config_value("banner_application", interaction.guild.id, {})
+        review_channel_id = config.get("review_channel_id")
+        if not review_channel_id:
+            await interaction.response.send_message("❌ 审核频道未配置", ephemeral=True)
+            return
+
+        review_channel = await _resolve_channel_or_thread(interaction.guild, review_channel_id)
+        if not review_channel:
+            await interaction.response.send_message("❌ 无法访问审核频道", ephemeral=True)
+            return
+
+        pending_apps = self.db.get_pending_applications(interaction.guild.id)
+        if not pending_apps:
+            await interaction.response.send_message("📭 当前没有待审核的申请", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        sent_count = 0
+        for app in pending_apps:
+            embed = discord.Embed(
+                title="🔄 重发：轮换通知申请",
+                description=f"申请ID: `{app.id}`",
+                color=discord.Color.blue(),
+                timestamp=datetime.datetime.utcnow()
+            )
+            embed.add_field(name="📝 标题", value=app.title, inline=False)
+            embed.add_field(name="📍 位置", value=app.location, inline=True)
+            embed.add_field(name="👤 申请者", value=f"<@{app.applicant_id}>", inline=True)
+
+            if app.description:
+                embed.add_field(name="📄 内容", value=app.description, inline=False)
+
+            if app.cover_image:
+                embed.set_image(url=app.cover_image)
+
+            try:
+                created_time = datetime.datetime.fromisoformat(app.created_at)
+                embed.add_field(
+                    name="📅 申请时间",
+                    value=created_time.strftime("%Y-%m-%d %H:%M:%S UTC"),
+                    inline=False
+                )
+            except Exception:
+                pass
+
+            view = ReviewView(app.id)
+            await review_channel.send(embed=embed, view=view)
+            sent_count += 1
+
+        await interaction.followup.send(
+            f"✅ 已将 {sent_count} 个待审核申请重新发送到审核频道",
+            ephemeral=True
+        )
+
+        if self.logger:
+            self.logger.info(f"[轮换通知] {interaction.user} 重发了 {sent_count} 个待审核申请")
 
     def _format_interval(self, seconds: int) -> str:
         """格式化时间间隔"""
