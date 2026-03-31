@@ -14,7 +14,7 @@ import json
 
 from src.banner.database import BannerDatabase, BannerItem
 from src.banner.ui import ApplicationButton, ReviewView, ApplicationModal, RejectModal, BannerListView
-from src.utils.auth import is_admin
+from src.utils.auth import is_admin, is_admin_member
 from src.utils.config_helper import get_config_value
 
 
@@ -399,7 +399,7 @@ class BannerCommands(commands.Cog):
             return
         
         # 检查管理员权限
-        if not is_admin(interaction.user, interaction.guild.id):
+        if not is_admin_member(interaction.user):
             await interaction.response.send_message("❌ 只有管理员可以使用此命令", ephemeral=True)
             return
         

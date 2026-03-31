@@ -14,6 +14,24 @@ from src.banner.database import BannerDatabase, BannerApplication, ApplicationSt
 from src.utils.config_helper import get_config_value
 
 
+async def _resolve_channel_or_thread(guild: discord.Guild, channel_id: int) -> Optional[discord.abc.Messageable]:
+    """获取频道或子区，如果是被archive的子区则自动取消archive"""
+    target = guild.get_channel_or_thread(channel_id)
+    if not target:
+        try:
+            target = await guild.fetch_channel(channel_id)
+        except discord.NotFound:
+            return None
+        except Exception:
+            return None
+    if isinstance(target, discord.Thread) and target.archived:
+        try:
+            await target.edit(archived=False)
+        except Exception:
+            return None
+    return target
+
+
 async def _send_audit_log(guild: discord.Guild, application: BannerApplication, 
                          action: str, reviewer: discord.Member, 
                          reason: Optional[str] = None) -> bool:
@@ -30,18 +48,10 @@ async def _send_audit_log(guild: discord.Guild, application: BannerApplication,
         # 确定目标位置
         target = None
         if audit_thread_id:
-            # 尝试获取线程
-            try:
-                target = guild.get_thread(audit_thread_id)
-                if not target:
-                    # 线程可能不在缓存中，尝试从频道获取
-                    target = guild.fetch_channel(audit_thread_id)
-            except:
-                pass
+            target = await _resolve_channel_or_thread(guild, audit_thread_id)
         
         if not target:
-            # 使用频道
-            target = guild.get_channel_or_thread(audit_channel_id)
+            target = await _resolve_channel_or_thread(guild, audit_channel_id)
         
         if not target:
             return False
@@ -247,7 +257,7 @@ class ApplicationModal(ui.Modal):
                 return
             
             # 发送到审核频道
-            review_channel = interaction.guild.get_channel_or_thread(review_channel_id)
+            review_channel = await _resolve_channel_or_thread(interaction.guild, review_channel_id)
             if not review_channel:
                 await interaction.response.send_message("❌ 审核频道无效", ephemeral=True)
                 return
@@ -502,7 +512,7 @@ class RejectModal(ui.Modal):
         if promoted:
             config = get_config_value("banner_application", interaction.guild.id, {})
             review_channel_id = config.get("review_channel_id")
-            review_channel = interaction.guild.get_channel_or_thread(review_channel_id)
+            review_channel = await _resolve_channel_or_thread(interaction.guild, review_channel_id) if review_channel_id else None
             
             if review_channel:
                 for app in promoted:
