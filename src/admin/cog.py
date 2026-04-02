@@ -9,6 +9,7 @@ import datetime
 import pathlib
 from typing import List, Tuple, Optional
 
+from src.utils import dm
 from src.utils.confirm_view import confirm_view
 from src.utils.auth import is_admin, is_senior_admin, check_admin_permission, is_admin_member, guild_only
 from src.utils.config_helper import get_config_value, get_config_for_guild
@@ -90,99 +91,6 @@ class ThreadDeleteApprovalView(discord.ui.View):
 
         self.stop()
 
-
-# ---- 持久组件：处罚申诉 ----
-class AppealModal(discord.ui.Modal, title="处罚申诉"):
-    """处罚申诉表单"""
-    appeal_reason = discord.ui.TextInput(
-        label="申诉理由",
-        style=discord.TextStyle.paragraph,
-        placeholder="请详细说明您的申诉理由...",
-        required=True,
-        max_length=1000,
-    )
-
-    def __init__(self, guild_id: int, punishment_type: str, original_message: discord.Message):
-        super().__init__()
-        self.guild_id = guild_id
-        self.punishment_type = punishment_type
-        self.original_message = original_message
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-
-        bot = interaction.client
-        guild = bot.get_guild(self.guild_id)
-        if not guild:
-            await interaction.followup.send("❌ 无法找到对应服务器")
-            return
-
-        appeal_channel_id = get_config_value("appeal_channel_id", self.guild_id, 0)
-        if not appeal_channel_id:
-            await interaction.followup.send("❌ 该服务器未配置申诉频道")
-            return
-
-        channel = guild.get_channel(int(appeal_channel_id))
-        if not channel:
-            await interaction.followup.send("❌ 申诉频道不存在或无法访问")
-            return
-
-        embed = discord.Embed(
-            title="📋 处罚申诉",
-            color=discord.Color.gold(),
-            timestamp=discord.utils.utcnow()
-        )
-        embed.add_field(name="用户", value=f"{interaction.user.mention} ({interaction.user})", inline=True)
-        embed.add_field(name="用户ID", value=str(interaction.user.id), inline=True)
-        embed.add_field(name="处罚类型", value=self.punishment_type, inline=True)
-        embed.add_field(name="申诉理由", value=self.appeal_reason.value, inline=False)
-        embed.set_thumbnail(url=interaction.user.display_avatar.url)
-
-        try:
-            await channel.send(embed=embed)
-        except Exception:
-            await interaction.followup.send("❌ 发送申诉失败，请稍后重试")
-            return
-
-        try:
-            await self.original_message.edit(content="✅ 您已提交申诉，请耐心等待管理组处理。", view=None)
-        except Exception:
-            await interaction.followup.send("✅ 您的申诉已提交，请耐心等待管理组处理。")
-
-
-class AppealButton(discord.ui.DynamicItem[discord.ui.Button], template=r'punishment_appeal:(?P<guild_id>\d+)'):
-    """处罚申诉按钮（持久，支持动态 guild_id）"""
-    def __init__(self, guild_id: int):
-        super().__init__(
-            discord.ui.Button(
-                label="📋 申诉",
-                style=discord.ButtonStyle.primary,
-                custom_id=f"punishment_appeal:{guild_id}",
-            )
-        )
-        self.guild_id = guild_id
-
-    @classmethod
-    async def from_custom_id(cls, interaction: discord.Interaction, item: discord.ui.Button, match):
-        return cls(guild_id=int(match['guild_id']))
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        return True
-
-    async def callback(self, interaction: discord.Interaction):
-        message = interaction.message
-        punishment_type = "未知处罚"
-        if message and message.embeds:
-            punishment_type = message.embeds[0].title or punishment_type
-
-        modal = AppealModal(
-            guild_id=self.guild_id,
-            punishment_type=punishment_type,
-            original_message=message,
-        )
-        await interaction.response.send_modal(modal)
-
-
 class AdminCommands(commands.Cog):
     def __init__(self, bot):
         self.bot: discord.Client = bot
@@ -196,7 +104,6 @@ class AdminCommands(commands.Cog):
     
     @commands.Cog.listener()
     async def on_ready(self):
-        self.bot.add_dynamic_items(AppealButton)
         if self.logger:
             self.logger.info("管理命令已加载")
         # 启动警告自动移除任务
@@ -380,17 +287,8 @@ class AdminCommands(commands.Cog):
     def get_guild_config(self, key: str, guild_id: Optional[int] = None, default=None):
         """获取服务器特定配置值"""
         return get_config_value(key, guild_id, default)
-
-    async def _send_punishment_dm(self, user, guild_id: int, embed: discord.Embed):
-        """发送处罚私聊通知，如配置了申诉频道则附带申诉按钮"""
-        appeal_channel_id = self.get_guild_config("appeal_channel_id", guild_id, 0)
-        if appeal_channel_id:
-            view = discord.ui.View(timeout=None)
-            view.add_item(AppealButton(guild_id=guild_id))
-            await user.send(embed=embed, view=view)
-        else:
-            await user.send(embed=embed)
-
+    
+    
     # ---- 工具函数：将字符串时间转换为数字时长 ----
     def _parse_time(self, time_str: str) -> tuple[int, str]:
         if time_str == "0":
@@ -739,7 +637,7 @@ class AdminCommands(commands.Cog):
             embed.set_footer(text=f"来自服务器: {guild.name}")
             if img:
                 embed.set_image(url=img.url)
-            await member.send(embed=embed)
+            await dm.send_dm(guild=guild, user=member, embed=embed)
             # 记录私聊日志（使用服务器特定配置）
             moderation_log_channel_id = self.get_guild_config("moderation_log_channel_id", guild.id, 0)
             if moderation_log_channel_id:
@@ -848,7 +746,7 @@ class AdminCommands(commands.Cog):
             try:
                 dm_embed = discord.Embed(title="🔇 禁言处罚", description=f"您在 **{guild_name}** 因 **{reason}** 被禁言 {mute_time_str}。请注意遵守社区规则。")
                 dm_embed.set_footer(text=f"来自服务器: {guild_name}")
-                await self._send_punishment_dm(member, guild.id, dm_embed)
+                await dm.send_dm(member.guild, member, embed=dm_embed)
             except discord.Forbidden:
                 pass
             except Exception as e:
@@ -857,7 +755,7 @@ class AdminCommands(commands.Cog):
             try:
                 dm_embed = discord.Embed(title="⚠️ 警告处罚", description=f"您在 **{guild_name}** 因 **{reason}** 被警告 {warn} 天。请注意遵守社区规则。")
                 dm_embed.set_footer(text=f"来自服务器: {guild_name}")
-                await self._send_punishment_dm(member, guild.id, dm_embed)
+                await dm.send_dm(member.guild, member, embed=dm_embed)
             except discord.Forbidden:
                 pass
             except Exception as e:
@@ -912,7 +810,7 @@ class AdminCommands(commands.Cog):
         try:
             kick_embed = discord.Embed(title="👋 移出服务器", description=f"您因 **{reason}** 被踢出 **{guild.name}**。如有异议，请联系管理组成员。")
             kick_embed.set_footer(text=f"来自服务器: {guild.name}")
-            await member.send(embed=kick_embed)
+            await dm.send_dm(member.guild, member, embed=kick_embed)
         except discord.Forbidden:
             pass
         except Exception:
@@ -1046,9 +944,9 @@ class AdminCommands(commands.Cog):
         # 私聊通知（仅当能获取到用户对象时）
         if target_user is not None:
             try:
-                ban_embed = discord.Embed(title="⛔ 永久封禁", description=f"您因 **{reason}** 被 **{guild.name}** 永久封禁。")
+                ban_embed = discord.Embed(title="⛔ 永久封禁", description=f"您因 **{reason}** 被 **{guild.name}** 永久封禁。如有异议，请联系管理组成员。")
                 ban_embed.set_footer(text=f"来自服务器: {guild.name}")
-                await self._send_punishment_dm(target_user, guild.id, ban_embed)
+                await dm.send_dm(target_user.guild, target_user, embed=ban_embed)
             except discord.Forbidden:
                 pass
             except Exception:
@@ -2343,7 +2241,7 @@ class AdminCommands(commands.Cog):
                 try:
                     exam_embed = discord.Embed(title="🔴 答题处罚", description=f"您在 **{guild.name}** 因 **{reason}** 被要求重新答题。请重新阅读规则并注意遵守。")
                     exam_embed.set_footer(text=f"来自服务器: {guild.name}")
-                    await member.send(embed=exam_embed)
+                    await dm.send_dm(member.guild, member, embed=exam_embed)
                 except discord.Forbidden:
                     pass
                 except Exception as e:
@@ -2499,7 +2397,7 @@ class AdminCommands(commands.Cog):
             try:
                 dm_embed = discord.Embed(title="🔇 禁言处罚", description=f"您在 **{guild_name}** 因 **{reason}** 被禁言 {mute_time_str}。请注意遵守社区规则。")
                 dm_embed.set_footer(text=f"来自服务器: {guild_name}")
-                await self._send_punishment_dm(member, guild.id, dm_embed)
+                await dm.send_dm(member.guild, member, embed=dm_embed)
             except discord.Forbidden:
                 pass
             except Exception as e:
@@ -2508,7 +2406,7 @@ class AdminCommands(commands.Cog):
             try:
                 dm_embed = discord.Embed(title="⚠️ 警告处罚", description=f"您在 **{guild_name}** 因 **{reason}** 被警告 {warn} 天。请注意遵守社区规则。")
                 dm_embed.set_footer(text=f"来自服务器: {guild_name}")
-                await self._send_punishment_dm(member, guild.id, dm_embed)
+                await dm.send_dm(member.guild, member, embed=dm_embed)
             except discord.Forbidden:
                 pass
             except Exception as e:
@@ -2558,7 +2456,7 @@ class AdminCommands(commands.Cog):
             return
 
         preset_message = f"# 公益站审核通知\n✅ 恭喜你通过类脑DeepThink公益站审核\n站点地址：{site}\n请勿在任何地方传播此站点！"
-        await member.send(content=preset_message)
+        await dm.send_dm(interaction.guild, member, message=preset_message)
 
         # 记录日志（使用服务器特定配置）
         moderation_log_channel_id = self.get_guild_config("moderation_log_channel_id", interaction.guild.id, 0)
