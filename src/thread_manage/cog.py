@@ -209,7 +209,7 @@ class ThreadSelfManage(commands.Cog):
                 colour=discord.Colour.blue(),
             )
             embed.set_footer(text="本消息将在10分钟后自动删除")
-            view = ForumWelcomeView()
+            view = ForumWelcomeView(thread.owner_id)
             msg = await thread.send(embed=embed, view=view)
             asyncio.create_task(schedule_delete_message(msg, 600))
         except Exception as e:

@@ -438,8 +438,15 @@ class TagEditView(ui.View):
 
 
 class ForumWelcomeView(ui.View):
-    def __init__(self):
+    def __init__(self, owner_id: int):
         super().__init__(timeout=600)
+        self._owner_id = owner_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self._owner_id:
+            await interaction.response.send_message("只有本帖贴主可以操作这条提示。", ephemeral=True)
+            return False
+        return True
 
     async def _delete_welcome_after_defer(self, interaction: discord.Interaction) -> None:
         """在已对交互 defer 后，删除带按钮的频道原消息。"""
@@ -464,7 +471,7 @@ class ForumWelcomeView(ui.View):
         self.stop()
         self.clear_items()
         msg = interaction.message
-        forum_add_optout(interaction.user.id)
+        forum_add_optout(self._owner_id)
         await interaction.response.send_message(
             "已记录：之后您发布的新帖不会再显示此欢迎提示。",
             ephemeral=True,
