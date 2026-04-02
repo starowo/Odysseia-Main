@@ -2,13 +2,14 @@ import asyncio
 import json
 import pathlib
 from datetime import datetime, timedelta
-from typing import Dict, Optional, Set
+from typing import Dict, Optional, Set, Tuple
 import discord
 from discord.ext import commands
 
 from .thread_clear import clear_thread_members
 
 _CHECK_COOLDOWN_SECONDS = 300
+_POST_CLEAR_COOLDOWN_SECONDS = 60
 _TASK_TIMEOUT_SECONDS = 1800
 
 
@@ -38,8 +39,9 @@ class AutoClearManager:
         self.manual_clearing: Set[int] = set()
         self.disabled_threads: Set[int] = set()
 
-        # {thread_id: last_check_time} — 避免对同一子区频繁调用 fetch_members
-        self._check_cooldowns: Dict[int, datetime] = {}
+        # {thread_id: (last_check_time, cooldown_seconds)}
+        # 清理成功后使用短冷却，普通检查使用默认冷却
+        self._check_cooldowns: Dict[int, Tuple[datetime, int]] = {}
 
         self._log_update_task: Optional[asyncio.Task] = None
         self._log_message: Optional[discord.Message] = None
@@ -131,9 +133,11 @@ class AutoClearManager:
             return False
         if self.is_clearing_active(thread_id):
             return False
-        last_check = self._check_cooldowns.get(thread_id)
-        if last_check and (datetime.now() - last_check).total_seconds() < _CHECK_COOLDOWN_SECONDS:
-            return False
+        entry = self._check_cooldowns.get(thread_id)
+        if entry:
+            last_check, cooldown = entry
+            if (datetime.now() - last_check).total_seconds() < cooldown:
+                return False
         return True
 
     def cleanup_stale_tasks(self):
@@ -153,8 +157,8 @@ class AutoClearManager:
                     self.logger.warning(f"强制清理过期任务: {task.thread_name} (ID: {tid})")
 
         expired_cooldowns = [
-            tid for tid, t in self._check_cooldowns.items()
-            if (now - t).total_seconds() > _CHECK_COOLDOWN_SECONDS * 2
+            tid for tid, (t, cd) in self._check_cooldowns.items()
+            if (now - t).total_seconds() > cd * 2
         ]
         for tid in expired_cooldowns:
             del self._check_cooldowns[tid]
@@ -176,7 +180,7 @@ class AutoClearManager:
 
         task = AutoClearTask(channel.id, channel.name)
         self.active_tasks[channel.id] = task
-        self._check_cooldowns[channel.id] = datetime.now()
+        self._check_cooldowns[channel.id] = (datetime.now(), _CHECK_COOLDOWN_SECONDS)
 
         # ── 异步阶段：检查成员数 ──
         try:
@@ -267,8 +271,8 @@ class AutoClearManager:
             if self.logger:
                 self.logger.error(f"自动清理失败: {channel.name} (ID: {channel.id}) - {e}")
         finally:
-            # 刷新冷却，避免刚清理完又立刻重新检查
-            self._check_cooldowns[task.thread_id] = datetime.now()
+            cooldown = _POST_CLEAR_COOLDOWN_SECONDS if task.status == "完成" else _CHECK_COOLDOWN_SECONDS
+            self._check_cooldowns[task.thread_id] = (datetime.now(), cooldown)
             # 短暂保留任务记录供日志面板展示完成状态
             try:
                 await asyncio.sleep(30)
