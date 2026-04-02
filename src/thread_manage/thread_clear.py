@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, List, Callable, Awaitable, Optional
+from typing import Dict, List, Callable, Awaitable, Optional, Tuple
 
 import discord
 from discord.ext import commands
 
 # 本文件实现：
-#   1. 统计子区内聊天记录（分批每次 100 条）
+#   1. 统计子区内聊天记录（分批每次 100 条），同时记录成员最后活跃时间
 #   2. 将统计结果缓存到 data/thread_cache/{thread_id}.json，下次运行时仅增量统计
-#   3. 根据阈值移除未发言成员，若仍超阈值则移除发言最少成员
+#   3. 根据阈值移除未发言成员，若仍超阈值则按活跃度移除：
+#      - 有 last_active 时间戳的成员：按最后活跃时间升序（最久未活跃优先移除）
+#      - 无 last_active 的旧数据成员：按发言数量升序（最少优先移除），优先于有时间戳的成员
 #   4. 不移除贴主和机器人账号
 #
 # 公开函数：
@@ -25,30 +27,34 @@ async def _update_message_cache(
     channel: discord.Thread,
     logger=None,
     progress_cb: Optional[Callable[[int, int, Optional[discord.Member], str], Awaitable[None]]] = None,
-) -> Dict[int, int]:
-    """增量统计子区消息数并返回 {user_id: msg_count} 字典"""
+) -> Tuple[Dict[int, int], Dict[int, str]]:
+    """增量统计子区消息并返回 (message_counts, last_active) 元组。
+
+    message_counts : {user_id: msg_count}
+    last_active    : {user_id: ISO 时间戳字符串}  — 成员最后发言时间
+                     旧缓存中不存在此字段时为空 dict，后续增量拉取逐步填充。
+    """
 
     cache_path = _CACHE_DIR / f"{channel.id}.json"
 
-    # 读取历史缓存
     last_id: int = None
     message_counts: Dict[int, int] = {}
+    last_active: Dict[int, str] = {}
 
     if cache_path.exists():
         try:
             with cache_path.open("r", encoding="utf-8") as fp:
                 cache = json.load(fp)
             last_id = cache.get("last_id")
-            # 把 key 转回 int
             message_counts = {int(k): v for k, v in cache.get("message_counts", {}).items()}
+            last_active = {int(k): v for k, v in cache.get("last_active", {}).items()}
         except Exception as e:
             if logger:
                 logger.warning(f"读取缓存 {cache_path} 失败，将重新统计：{e}")
-            # 若损坏则重建
             last_id = None
             message_counts = {}
+            last_active = {}
 
-    # 开始增量拉取，分批每次 100 条
     after_obj = discord.Object(id=last_id) if last_id else None
 
     processed = 0
@@ -62,36 +68,32 @@ async def _update_message_cache(
                 m async for m in channel.history(limit=100, after=after_obj, oldest_first=True)
             ]
         except discord.HTTPException as e:
-            # 网络或权限异常，直接返回已有统计
             if logger:
                 logger.warning(f"拉取子区 {channel.id} 历史消息失败：{e}")
             break
 
         if not fetched:
-            break  # 没有更多消息
+            break
 
-        # 处理批次
         for msg in fetched:
             author = msg.author
-            # 机器人消息不计入活跃度
             if author.bot:
                 continue
             uid = author.id
             message_counts[uid] = message_counts.get(uid, 0) + 1
+            last_active[uid] = msg.created_at.isoformat()
 
-        # 为下一次迭代设置 after，对应本批次最后一条（时间最晚）
         after_obj = discord.Object(id=fetched[-1].id)
-        last_id = fetched[-1].id  # 记录最新消息 ID
+        last_id = fetched[-1].id
 
-        # 进度回调
         if progress_cb:
             processed += len(fetched)
             await progress_cb(processed, 0, None, "stat_progress")
 
-    # 保存缓存（key 转 str 以便 JSON）
     cache_data = {
         "last_id": last_id,
         "message_counts": {str(k): v for k, v in message_counts.items()},
+        "last_active": {str(k): v for k, v in last_active.items()},
     }
     try:
         with cache_path.open("w", encoding="utf-8") as fp:
@@ -100,11 +102,10 @@ async def _update_message_cache(
         if logger:
             logger.error(f"写入缓存 {cache_path} 失败：{e}")
 
-    # 完成回调
     if progress_cb:
         await progress_cb(processed, 0, None, "stat_done")
 
-    return message_counts
+    return message_counts, last_active
 
 # 主功能函数
 async def clear_thread_members(
@@ -140,7 +141,7 @@ async def clear_thread_members(
     """
 
     # 先确保有最新活跃度统计
-    message_counts = await _update_message_cache(channel, logger, progress_cb=progress_cb)
+    message_counts, last_active = await _update_message_cache(channel, logger, progress_cb=progress_cb)
 
     # 当前成员列表
     members: List[discord.Member] = await channel.fetch_members()
@@ -172,14 +173,20 @@ async def clear_thread_members(
         to_remove.append(m)
         current_count -= 1
 
-    # 如仍超过阈值，移除发言最少的成员
+    # 如仍超过阈值，按活跃度移除成员
+    # 渐进策略：有 last_active 时间戳的按时间排序，没有的按发言数量排序
     if current_count > threshold:
         active_candidates = [
             m for m in members if m.id not in protected_ids and m not in to_remove
         ]
-        # 按发言数升序排序（少 -> 多）
-        active_candidates.sort(key=lambda m: message_counts.get(m.id, 0))
-        for m in active_candidates:
+
+        no_timestamp = [m for m in active_candidates if m.id not in last_active]
+        has_timestamp = [m for m in active_candidates if m.id in last_active]
+
+        no_timestamp.sort(key=lambda m: message_counts.get(m.id, 0))
+        has_timestamp.sort(key=lambda m: last_active[m.id])
+
+        for m in no_timestamp + has_timestamp:
             if current_count <= threshold:
                 break
             to_remove.append(m)
