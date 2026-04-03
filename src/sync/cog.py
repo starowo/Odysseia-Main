@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import io
 import json
 import pathlib
 import time
@@ -355,7 +356,14 @@ class ServerSyncCommands(commands.Cog):
         await self._patch_role_colors_via_api(target_guild, result_role, colors_payload, reason)
         return result_role
 
-    async def _apply_punishment_in_guild(self, target_guild: discord.Guild, record: Dict, server_cfg: Dict) -> None:
+    async def _apply_punishment_in_guild(
+        self,
+        target_guild: discord.Guild,
+        record: Dict,
+        server_cfg: Dict,
+        img_bytes: bytes = None,
+        img_filename: str = None,
+    ) -> None:
         punishment_type = record.get("type")
         user_id = int(record["user_id"])
         reason = record.get("reason") or "同步处罚"
@@ -373,6 +381,7 @@ class ServerSyncCommands(commands.Cog):
                 if warned_role_id:
                     warned_role = target_guild.get_role(int(warned_role_id))
                     if warned_role:
+                        self._mark_guard(target_guild.id, user_id, warned_role.id, "add")
                         await user_obj.add_roles(warned_role, reason=f"同步处罚警告 {warn_days} 天")
         elif punishment_type == "ban":
             await target_guild.ban(discord.Object(id=user_id), reason=f"同步处罚: {reason}", delete_message_days=0)
@@ -399,10 +408,11 @@ class ServerSyncCommands(commands.Cog):
                 embed.add_field(name="用户", value=f"<@{user_id}> ({record.get('user_name', user_id)})", inline=True)
                 embed.add_field(name="原管理员", value=record.get("moderator_name", "系统"), inline=True)
                 embed.add_field(name="原因", value=reason, inline=False)
-                if record.get("img_url"):
-                    embed.set_image(url=record["img_url"])
                 embed.set_footer(text=f"处罚ID: {record['id']}")
-                await announce_channel.send(embed=embed)
+                img_file = discord.File(io.BytesIO(img_bytes), filename=img_filename) if img_bytes and img_filename else None
+                if img_file:
+                    embed.set_image(url=f"attachment://{img_filename}")
+                await announce_channel.send(embed=embed, file=img_file)
 
     def _get_warned_role_id(self, guild_id: int) -> Optional[int]:
         guild_configs = getattr(self.bot, "config", {}).get("guild_configs", {})
@@ -1628,6 +1638,15 @@ class ServerSyncCommands(commands.Cog):
                 self.logger.error("sync_punishment: 必须提供 member 或 user_id 参数")
             return
 
+        img_bytes = None
+        img_filename = None
+        if img:
+            try:
+                img_bytes = await img.read()
+                img_filename = img.filename
+            except Exception:
+                pass
+
         record = {
             "id": punishment_id or uuid.uuid4().hex[:8],
             "type": punishment_type,
@@ -1640,7 +1659,6 @@ class ServerSyncCommands(commands.Cog):
             "reason": reason,
             "duration": int(duration) if duration else None,
             "warn_days": int(warn_days or 0),
-            "img_url": img.url if img else None,
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
 
@@ -1654,7 +1672,10 @@ class ServerSyncCommands(commands.Cog):
             if not target_guild:
                 continue
             try:
-                await self._apply_punishment_in_guild(target_guild, record, target_server_cfg)
+                await self._apply_punishment_in_guild(
+                    target_guild, record, target_server_cfg,
+                    img_bytes=img_bytes, img_filename=img_filename,
+                )
             except discord.Forbidden:
                 if self.logger:
                     self.logger.warning(f"处罚同步权限不足: {target_guild.name}")
@@ -1717,6 +1738,7 @@ class ServerSyncCommands(commands.Cog):
                         if warned_role_id:
                             warned_role = guild.get_role(int(warned_role_id))
                             if warned_role and warned_role in user_obj.roles:
+                                self._mark_guard(guild.id, user_obj.id, warned_role.id, "remove")
                                 await user_obj.remove_roles(warned_role, reason="同步撤销处罚")
                 except discord.Forbidden:
                     pass

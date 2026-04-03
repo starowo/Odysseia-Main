@@ -1,4 +1,5 @@
 import asyncio
+import io
 import os
 from discord.ext import commands
 from discord import Attachment, app_commands, file
@@ -179,6 +180,9 @@ class AdminCommands(commands.Cog):
                                             warned_role_id = self.get_guild_config("warned_role_id", guild.id, 0)
                                             warned_role = guild.get_role(int(warned_role_id)) if warned_role_id else None
                                             if warned_role and warned_role in member.roles:
+                                                sync_cog = self.bot.get_cog("ServerSyncCommands")
+                                                if sync_cog:
+                                                    sync_cog._mark_guard(guild.id, member.id, warned_role.id, "remove")
                                                 await member.remove_roles(warned_role, reason=f"警告到期自动移除 by {self.bot.user}")
                                                 if self.logger:
                                                     self.logger.info(f"自动移除警告: 用户 {member} (ID: {user_id}) 在服务器 {guild.name}")
@@ -629,15 +633,22 @@ class AdminCommands(commands.Cog):
             await interaction.response.send_message("❌ 成员不存在", ephemeral=True)    
             return
         try:
+            img_bytes = None
+            img_filename = None
+            if img:
+                img_bytes = await img.read()
+                img_filename = img.filename
+
             embed = discord.Embed(
                 title="来自管理组的私聊消息",
                 description=message,
                 color=discord.Color.blue()
             )
             embed.set_footer(text=f"来自服务器: {guild.name}")
-            if img:
-                embed.set_image(url=img.url)
-            await dm.send_dm(guild=guild, user=member, embed=embed)
+            if img_bytes:
+                embed.set_image(url=f"attachment://{img_filename}")
+            await dm.send_dm(guild=guild, user=member, embed=embed,
+                             file=discord.File(io.BytesIO(img_bytes), filename=img_filename) if img_bytes else None)
             # 记录私聊日志（使用服务器特定配置）
             moderation_log_channel_id = self.get_guild_config("moderation_log_channel_id", guild.id, 0)
             if moderation_log_channel_id:
@@ -647,9 +658,12 @@ class AdminCommands(commands.Cog):
                     color=discord.Color.blue()
                 )
                 embed.add_field(name="消息内容", value=message)
-                if img:
-                    embed.set_image(url=img.url)
-                await interaction.guild.get_channel_or_thread(int(moderation_log_channel_id)).send(embed=embed)
+                if img_bytes:
+                    embed.set_image(url=f"attachment://{img_filename}")
+                await interaction.guild.get_channel_or_thread(int(moderation_log_channel_id)).send(
+                    embed=embed,
+                    file=discord.File(io.BytesIO(img_bytes), filename=img_filename) if img_bytes else None,
+                )
             await interaction.response.send_message("✅ 私聊发送成功", ephemeral=True)
         except discord.Forbidden:
             await interaction.response.send_message("❌ 无权限对该成员发送私聊", ephemeral=True)
@@ -699,6 +713,9 @@ class AdminCommands(commands.Cog):
             warned_role_id = self.get_guild_config("warned_role_id", guild.id, 0)
             warned_role = guild.get_role(int(warned_role_id)) if warned_role_id else None
             if warned_role and warn > 0:
+                sync_cog_ref = self.bot.get_cog("ServerSyncCommands")
+                if sync_cog_ref:
+                    sync_cog_ref._mark_guard(guild.id, member.id, warned_role.id, "add")
                 await member.add_roles(warned_role, reason=f"处罚附加警告 {warn} 天")
         except discord.Forbidden:
             await interaction.followup.send("❌ 无权限对该成员执行禁言", ephemeral=True)
@@ -773,6 +790,14 @@ class AdminCommands(commands.Cog):
         moderation_log_channel_id = self.get_guild_config("moderation_log_channel_id", guild.id, 0)
         moderation_log_channel = guild.get_channel_or_thread(int(moderation_log_channel_id)) if moderation_log_channel_id else None
         if announce_channel or moderation_log_channel:
+            img_bytes = None
+            img_filename = None
+            if img:
+                try:
+                    img_bytes = await img.read()
+                    img_filename = img.filename
+                except Exception:
+                    pass
             embed = discord.Embed(title="🔇 禁言处罚" if duration.total_seconds() > 0 else "⚠️ 警告处罚", color=discord.Color.orange())
             if duration.total_seconds() > 0:
                 embed.add_field(name="时长", value=mute_time_str)
@@ -782,13 +807,19 @@ class AdminCommands(commands.Cog):
             embed.add_field(name="原因", value=reason or "未提供", inline=False)
             if warn > 0:
                 embed.add_field(name="警告", value=f"{warn}天", inline=False)
-            if img:
-                embed.set_image(url=img.url)
+            if img_bytes:
+                embed.set_image(url=f"attachment://{img_filename}")
             embed.set_footer(text=f"处罚ID: {record_id}")
             if announce_channel:
-                await announce_channel.send(embed=embed)
+                await announce_channel.send(
+                    embed=embed,
+                    file=discord.File(io.BytesIO(img_bytes), filename=img_filename) if img_bytes else None,
+                )
             if moderation_log_channel:
-                await moderation_log_channel.send(embed=embed)
+                await moderation_log_channel.send(
+                    embed=embed,
+                    file=discord.File(io.BytesIO(img_bytes), filename=img_filename) if img_bytes else None,
+                )
 
     # ---- 踢出 ----
     @admin.command(name="踢出", description="踢出成员并公示")
@@ -858,18 +889,32 @@ class AdminCommands(commands.Cog):
         moderation_log_channel_id = self.get_guild_config("moderation_log_channel_id", guild.id, 0)
         moderation_log_channel = guild.get_channel_or_thread(int(moderation_log_channel_id)) if moderation_log_channel_id else None
         if announce_channel or moderation_log_channel:
+            img_bytes = None
+            img_filename = None
+            if img:
+                try:
+                    img_bytes = await img.read()
+                    img_filename = img.filename
+                except Exception:
+                    pass
             embed = discord.Embed(title="👋 移出服务器", color=discord.Color.orange())
             embed.add_field(name="成员", value=f"{member.mention} ({member.id})")
             embed.add_field(name="管理员", value=interaction.user.mention)
             embed.set_thumbnail(url=member.display_avatar.url)
             embed.add_field(name="原因", value=reason or "未提供", inline=False)
-            if img:
-                embed.set_image(url=img.url)
+            if img_bytes:
+                embed.set_image(url=f"attachment://{img_filename}")
             embed.set_footer(text=f"处罚ID: {record_id}")
             if announce_channel:
-                await announce_channel.send(embed=embed)
+                await announce_channel.send(
+                    embed=embed,
+                    file=discord.File(io.BytesIO(img_bytes), filename=img_filename) if img_bytes else None,
+                )
             if moderation_log_channel:
-                await moderation_log_channel.send(embed=embed)
+                await moderation_log_channel.send(
+                    embed=embed,
+                    file=discord.File(io.BytesIO(img_bytes), filename=img_filename) if img_bytes else None,
+                )
 
     # ---- 永封 ----
     @admin.command(name="永封", description="永久封禁成员并公示")
@@ -999,19 +1044,33 @@ class AdminCommands(commands.Cog):
         moderation_log_channel_id = self.get_guild_config("moderation_log_channel_id", guild.id, 0)
         moderation_log_channel = guild.get_channel_or_thread(int(moderation_log_channel_id)) if moderation_log_channel_id else None
         if announce_channel or moderation_log_channel:
+            img_bytes = None
+            img_filename = None
+            if img:
+                try:
+                    img_bytes = await img.read()
+                    img_filename = img.filename
+                except Exception:
+                    pass
             embed = discord.Embed(title="⛔ 永久封禁", color=discord.Color.red())
             embed.add_field(name="成员", value=f"{target_user_name} ({target_user_id})")
             embed.add_field(name="管理员", value=interaction.user.mention)
             if target_user_avatar:
                 embed.set_thumbnail(url=target_user_avatar)
             embed.add_field(name="原因", value=reason or "未提供", inline=False)
-            if img:
-                embed.set_image(url=img.url)
+            if img_bytes:
+                embed.set_image(url=f"attachment://{img_filename}")
             embed.set_footer(text=f"处罚ID: {record_id}")
             if announce_channel:
-                await announce_channel.send(embed=embed)
+                await announce_channel.send(
+                    embed=embed,
+                    file=discord.File(io.BytesIO(img_bytes), filename=img_filename) if img_bytes else None,
+                )
             if moderation_log_channel:
-                await moderation_log_channel.send(embed=embed)
+                await moderation_log_channel.send(
+                    embed=embed,
+                    file=discord.File(io.BytesIO(img_bytes), filename=img_filename) if img_bytes else None,
+                )
 
     # ---- 批量永封 ----
     @admin.command(name="批量永封", description="批量永久封禁多个用户（使用逗号分隔的用户ID）")
@@ -1295,7 +1354,19 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(f"❌ 操作失败，已自动回滚。错误: {e}", ephemeral=True)
             return
 
-        # 4. 私信通知
+        # 4. 预读附件字节（避免 embed 内嵌 URL 过期）
+        att_bytes = None
+        att_filename = None
+        att_is_image = False
+        if attachment:
+            try:
+                att_bytes = await attachment.read()
+                att_filename = attachment.filename
+                att_is_image = bool(attachment.content_type and attachment.content_type.startswith("image/"))
+            except Exception:
+                pass
+
+        # 5. 私信通知
         dm_failed = False
         try:
             embed = discord.Embed(title="⚠️ 永封审查通知", color=discord.Color.dark_red())
@@ -1306,19 +1377,21 @@ class AdminCommands(commands.Cog):
             )
             embed.add_field(name="审查到期时间", value=f"<t:{int(expires_at.timestamp())}:F>", inline=False)
             embed.set_footer(text=f"审查ID: {record_id} | 来自服务器: {guild.name}")
-            if attachment:
-                if attachment.content_type and attachment.content_type.startswith("image/"):
-                    embed.add_field(name="附件", value="", inline=False)
-                    embed.set_image(url=attachment.url)
-                else:
-                    embed.add_field(name="附件", value=f"[{attachment.filename}]({attachment.url})", inline=False)
-            await member.send(embed=embed)
+            dm_file = None
+            if att_bytes and att_is_image:
+                embed.add_field(name="附件", value="", inline=False)
+                embed.set_image(url=f"attachment://{att_filename}")
+                dm_file = discord.File(io.BytesIO(att_bytes), filename=att_filename)
+            elif att_bytes and att_filename:
+                embed.add_field(name="附件", value=att_filename, inline=False)
+                dm_file = discord.File(io.BytesIO(att_bytes), filename=att_filename)
+            await member.send(embed=embed, file=dm_file)
         except Exception as e:
             if self.logger:
                 self.logger.warning(f"发送撤销审查私信失败: {e}")
             dm_failed = True
 
-        # 5. 公示（使用服务器特定配置）
+        # 6. 公示（使用服务器特定配置）
         announce_channel_id = self.get_guild_config("punish_announce_channel_id", guild.id, 0)
         announce_channel = guild.get_channel(int(announce_channel_id)) if announce_channel_id else None
         moderation_log_channel_id = self.get_guild_config("moderation_log_channel_id", guild.id, 0)
@@ -1331,17 +1404,22 @@ class AdminCommands(commands.Cog):
             embed.add_field(name="到期时间", value=f"<t:{int(expires_at.timestamp())}:F>", inline=False)
             embed.add_field(name="原因", value=reason or "未提供", inline=False)
             embed.add_field(name="申诉帖", value=f"{appeal_thread.mention}", inline=False)
-            if attachment:
-                if attachment.content_type and attachment.content_type.startswith("image/"):
-                    embed.add_field(name="附件", value="", inline=False)
-                    embed.set_image(url=attachment.url)
-                else:
-                    embed.add_field(name="附件", value=f"[{attachment.filename}]({attachment.url})", inline=False)
+            if att_bytes and att_is_image:
+                embed.add_field(name="附件", value="", inline=False)
+                embed.set_image(url=f"attachment://{att_filename}")
+            elif att_bytes and att_filename:
+                embed.add_field(name="附件", value=att_filename, inline=False)
             embed.set_footer(text=f"审查ID: {record_id}")
             if announce_channel:
-                await announce_channel.send(embed=embed)
+                await announce_channel.send(
+                    embed=embed,
+                    file=discord.File(io.BytesIO(att_bytes), filename=att_filename) if att_bytes else None,
+                )
             if moderation_log_channel:
-                await moderation_log_channel.send(embed=embed)
+                await moderation_log_channel.send(
+                    embed=embed,
+                    file=discord.File(io.BytesIO(att_bytes), filename=att_filename) if att_bytes else None,
+                )
 
         # 6. 发送给管理员的消息
         success_message = f"✅ 已启动对 {member.mention} 的永封审查。审查ID: `{record_id}`"
@@ -1384,6 +1462,9 @@ class AdminCommands(commands.Cog):
                         warned_role_id = self.get_guild_config("warned_role_id", guild.id, 0)
                         warned_role = guild.get_role(int(warned_role_id)) if warned_role_id else None
                         if warned_role:
+                            sync_cog_ref = self.bot.get_cog("ServerSyncCommands")
+                            if sync_cog_ref:
+                                sync_cog_ref._mark_guard(guild.id, user_obj.id, warned_role.id, "remove")
                             await user_obj.remove_roles(warned_role, reason=f"撤销处罚附加警告 {record['warn']} 天")
                 except discord.Forbidden:
                     await interaction.followup.send("❌ 无权限解除禁言", ephemeral=True)
@@ -1468,6 +1549,18 @@ class AdminCommands(commands.Cog):
             path.unlink(missing_ok=True)
             return
 
+        # 预读附件字节
+        att_bytes = None
+        att_filename = None
+        att_is_image = False
+        if attachment:
+            try:
+                att_bytes = await attachment.read()
+                att_filename = attachment.filename
+                att_is_image = bool(attachment.content_type and attachment.content_type.startswith("image/"))
+            except Exception:
+                pass
+
         # 私信通知
         dm_failed = False
         try:
@@ -1476,13 +1569,15 @@ class AdminCommands(commands.Cog):
             appeal_thread_mention = f"<#{appeal_thread_id}>" if appeal_thread_id else ""
             embed.description = f"您好，您在 **{guild.name}** 的永封审查已被撤销。\n\n**撤销原因** :\n\n{reason}\n\n申诉帖 : {appeal_thread_mention}"
             embed.set_footer(text=f"审查ID: {punish_id} | 来自服务器: {guild.name}")
-            if attachment:
-                if attachment.content_type and attachment.content_type.startswith("image/"):
-                    embed.add_field(name="附件", value="", inline=False)
-                    embed.set_image(url=attachment.url)
-                else:
-                    embed.add_field(name="附件", value=f"[{attachment.filename}]({attachment.url})", inline=False)
-            await member.send(embed=embed)
+            dm_file = None
+            if att_bytes and att_is_image:
+                embed.add_field(name="附件", value="", inline=False)
+                embed.set_image(url=f"attachment://{att_filename}")
+                dm_file = discord.File(io.BytesIO(att_bytes), filename=att_filename)
+            elif att_bytes and att_filename:
+                embed.add_field(name="附件", value=att_filename, inline=False)
+                dm_file = discord.File(io.BytesIO(att_bytes), filename=att_filename)
+            await member.send(embed=embed, file=dm_file)
         except Exception as e:
             if self.logger:
                 self.logger.warning(f"发送撤销审查私信失败: {e}")
@@ -1534,13 +1629,15 @@ class AdminCommands(commands.Cog):
             if appeal_thread_id:
                 embed.add_field(name="申诉帖", value=f"<#{appeal_thread_id}>", inline=False)
             embed.set_footer(text=f"审查ID: {punish_id}")
-            if attachment:
-                if attachment.content_type and attachment.content_type.startswith("image/"):
-                    embed.add_field(name="附件", value="", inline=False)
-                    embed.set_image(url=attachment.url)
-                else:
-                    embed.add_field(name="附件", value=f"[{attachment.filename}]({attachment.url})", inline=False)
-            await announce_channel.send(embed=embed)
+            if att_bytes and att_is_image:
+                embed.add_field(name="附件", value="", inline=False)
+                embed.set_image(url=f"attachment://{att_filename}")
+            elif att_bytes and att_filename:
+                embed.add_field(name="附件", value=att_filename, inline=False)
+            await announce_channel.send(
+                embed=embed,
+                file=discord.File(io.BytesIO(att_bytes), filename=att_filename) if att_bytes else None,
+            )
 
     # ---- 频道管理 ----
     @admin.command(name="频道管理", description="编辑频道属性")
@@ -2336,6 +2433,9 @@ class AdminCommands(commands.Cog):
             warned_role_id = self.get_guild_config("warned_role_id", guild.id, 0)
             warned_role = guild.get_role(int(warned_role_id)) if warned_role_id else None
             if warned_role and warn > 0:
+                sync_cog_ref = self.bot.get_cog("ServerSyncCommands")
+                if sync_cog_ref:
+                    sync_cog_ref._mark_guard(guild.id, member.id, warned_role.id, "add")
                 await member.add_roles(warned_role, reason=f"答疑组禁言附加警告 {warn} 天")
         except discord.Forbidden:
             await interaction.followup.send("❌ 无权限对该成员执行禁言", ephemeral=True)
@@ -2349,21 +2449,6 @@ class AdminCommands(commands.Cog):
             "warn": warn,
             "duration": duration.total_seconds(),
         })
-
-        # 检查是否启用处罚同步
-        sync_cog = self.bot.get_cog("ServerSyncCommands")
-        if sync_cog:
-            await sync_cog.sync_punishment(
-                guild=guild,
-                punishment_type="mute",
-                member=member,
-                moderator=interaction.user,
-                reason=reason,
-                duration=int(duration.total_seconds()) if duration.total_seconds() > 0 else None,
-                warn_days=warn,
-                punishment_id=record_id,
-                img=img
-            )
 
         if warn > 0:
             self._save_warn_record(guild.id, {
@@ -2424,6 +2509,14 @@ class AdminCommands(commands.Cog):
         quiz_punish_log_channel_id = self.get_guild_config("quiz_punish_log_channel_id", guild.id, 0)
         quiz_punish_log_channel = guild.get_channel_or_thread(int(quiz_punish_log_channel_id)) if quiz_punish_log_channel_id else None
         if announce_channel or quiz_punish_log_channel:
+            img_bytes = None
+            img_filename = None
+            if img:
+                try:
+                    img_bytes = await img.read()
+                    img_filename = img.filename
+                except Exception:
+                    pass
             embed = discord.Embed(title="🔇 禁言处罚" if duration.total_seconds() > 0 else "⚠️ 警告处罚", color=discord.Color.orange())
             if duration.total_seconds() > 0:
                 embed.add_field(name="时长", value=mute_time_str)
@@ -2433,13 +2526,19 @@ class AdminCommands(commands.Cog):
             embed.add_field(name="原因", value=reason or "未提供", inline=False)
             if warn > 0:
                 embed.add_field(name="警告", value=f"{warn}天", inline=False)
-            if img:
-                embed.set_image(url=img.url)
+            if img_bytes:
+                embed.set_image(url=f"attachment://{img_filename}")
             embed.set_footer(text=f"处罚ID: {record_id}")
             if announce_channel:
-                await announce_channel.send(embed=embed)
+                await announce_channel.send(
+                    embed=embed,
+                    file=discord.File(io.BytesIO(img_bytes), filename=img_filename) if img_bytes else None,
+                )
             if quiz_punish_log_channel:
-                await quiz_punish_log_channel.send(embed=embed)
+                await quiz_punish_log_channel.send(
+                    embed=embed,
+                    file=discord.File(io.BytesIO(img_bytes), filename=img_filename) if img_bytes else None,
+                )
 
     # ---- 发送公益站地址 ----
     @app_commands.command(name="发送公益站地址", description="发送公益站地址")
