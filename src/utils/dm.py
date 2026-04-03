@@ -15,7 +15,7 @@ async def init_dm_bot(token: str):
     await dm_bot.connect()
     return dm_bot
 
-async def send_dm(guild: discord.Guild, user: discord.User, message: str = None, embed: discord.Embed = None):
+async def send_dm(guild: discord.Guild, user: discord.User, message: str = None, embed: discord.Embed = None, file: discord.File = None):
     # send dm using another bot
     if dm_bot is None:
         raise Exception("DM bot 未初始化")
@@ -31,4 +31,4 @@ async def send_dm(guild: discord.Guild, user: discord.User, message: str = None,
         raise Exception(f"无法在服务器 {guild.name} 中找到用户 {user.display_name}")
     
     # 发送私信
-    await member.send(content=message, embed=embed)
+    await member.send(content=message, embed=embed, file=file)
