@@ -2575,3 +2575,7 @@ class AdminCommands(commands.Cog):
             await moderation_log_channel.send(embed=discord.Embed(title="🔴 解散服务器", description=f"用户 {interaction.user.mention} 尝试解散服务器。"))
         await interaction.followup.send("❌ 权限不足", ephemeral=True)
         return
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(AdminCommands(bot))
