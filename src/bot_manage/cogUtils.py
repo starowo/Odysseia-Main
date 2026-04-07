@@ -15,6 +15,7 @@ import src.anonymous_feedback.cog as anonymous_feedback
 import src.sync.cog as sync
 import src.license.cog as license_auto
 import src.banner.cog as banner
+import src.track_welcome.cog as track_welcome
 
 # 模块管理
 class CogManager:
@@ -37,7 +38,8 @@ class CogManager:
             "anonymous_feedback": "src.anonymous_feedback.cog",
             "sync": "src.sync.cog",
             "license": "src.license.cog",
-            "banner": "src.banner.cog"
+            "banner": "src.banner.cog",
+            "track_welcome": "src.track_welcome.cog"
         }
         
         # Cog类名映射
@@ -51,7 +53,8 @@ class CogManager:
             "anonymous_feedback": "AnonymousFeedbackCog",
             "sync": "ServerSyncCommands",
             "license": "LicenseCog",
-            "banner": "BannerCommands"
+            "banner": "BannerCommands",
+            "track_welcome": "src.track_welcome.cog"
         }
         
         # 初始化Cog实例映射
@@ -65,7 +68,8 @@ class CogManager:
             "anonymous_feedback": anonymous_feedback.AnonymousFeedbackCog(bot),
             "sync": sync.ServerSyncCommands(bot),
             "license": license_auto.LicenseCog(bot),
-            "banner": banner.BannerCommands(bot)
+            "banner": banner.BannerCommands(bot),
+            "track_welcome": track_welcome.TRACK_WELCOME(bot)
         }
     
     async def load_all_enabled(self):
