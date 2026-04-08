@@ -32,6 +32,7 @@ def _message_plain_text(message: discord.Message) -> str:
 
 
 def _find_matches(text: str, keywords: Sequence[str]) -> List[str]:
+    """子串命中；正文与关键词均经 Unicode casefold，不区分大小写（优于 lower，兼容更多字符）。"""
     if not text or not keywords:
         return []
     folded = text.casefold()
@@ -53,7 +54,7 @@ class PostFilterCog(commands.Cog):
 
     post_filter = app_commands.Group(
         name="新帖违禁过滤",
-        description="联动验证记录，检查新验证用户楼主消息违禁词（管理员）",
+        description="联动验证记录，检查楼主消息违禁词；关键词子串匹配、不区分大小写（管理员）",
     )
 
     @commands.Cog.listener()
@@ -259,6 +260,7 @@ class PostFilterCog(commands.Cog):
         forums = cfg.get("forum_channel_ids") or []
         lines = [
             f"**启用:** {cfg.get('enabled')}",
+            f"**关键词匹配:** 子串、不区分大小写（Unicode casefold）",
             f"**验证窗口:** {cfg.get('verify_window_days')} 天",
             f"**扫描延迟:** {cfg.get('scan_delay_seconds')} 秒",
             f"**楼主消息条数:** {cfg.get('op_message_limit')}",
