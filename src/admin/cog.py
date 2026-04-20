@@ -174,7 +174,7 @@ class AdminCommands(commands.Cog):
                                 # 获取用户对象并移除警告身份组
                                 if user_id:
                                     try:
-                                        member = guild.get_member(user_id)
+                                        member = guild.get_member(user_id) or await guild.fetch_member(user_id)
                                         if member:
                                             # 使用服务器特定配置
                                             warned_role_id = self.get_guild_config("warned_role_id", guild.id, 0)
@@ -628,7 +628,7 @@ class AdminCommands(commands.Cog):
         img: discord.Attachment = None,
     ):
         guild = interaction.guild
-        member = interaction.guild.get_member(member.id)
+        member = interaction.guild.get_member(member.id) or await interaction.guild.fetch_member(member.id)
         if not member:
             await interaction.response.send_message("❌ 成员不存在", ephemeral=True)    
             return
@@ -1543,7 +1543,7 @@ class AdminCommands(commands.Cog):
             return
 
         user_id = record["user_id"]
-        member = guild.get_member(user_id)
+        member = guild.get_member(user_id) or await guild.fetch_member(user_id)
         if not member:
             await interaction.followup.send("❌ 成员已不在服务器中，无法恢复身份组。记录已清除。", ephemeral=True)
             path.unlink(missing_ok=True)

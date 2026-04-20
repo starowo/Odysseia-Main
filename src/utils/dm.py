@@ -26,7 +26,7 @@ async def send_dm(guild: discord.Guild, user: discord.User, message: str = None,
         raise Exception(f"DM bot 不在服务器 {guild.name} 中")
     
     # 获取用户在公会中的成员对象
-    member = dm_guild.get_member(user.id)
+    member = dm_guild.get_member(user.id) or await dm_guild.fetch_member(user.id)
     if member is None:
         raise Exception(f"无法在服务器 {guild.name} 中找到用户 {user.display_name}")
     
