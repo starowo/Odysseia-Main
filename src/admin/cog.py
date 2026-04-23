@@ -93,6 +93,9 @@ class ThreadDeleteApprovalView(discord.ui.View):
         self.stop()
 
 class AdminCommands(commands.Cog):
+    # 频道禁言持久化目录
+    CHANNEL_MUTE_DIR = pathlib.Path("data") / "channel_mutes"
+
     def __init__(self, bot):
         self.bot: discord.Client = bot
         self.logger = bot.logger
@@ -100,6 +103,11 @@ class AdminCommands(commands.Cog):
         # 初始化配置缓存
         self._config_cache = {}
         self._config_cache_mtime = None
+        # /解散服务器 娱乐指令 —— 按用户按天计数，用于分级禁言
+        # 结构: {(guild_id, user_id): {"date": "YYYY-MM-DD", "count": int}}
+        self._disband_counter: dict[tuple[int, int], dict] = {}
+        # 频道禁言恢复 task 引用，防止被 GC
+        self._channel_mute_tasks: dict[str, asyncio.Task] = {}
     
     admin = app_commands.Group(name="管理", description="管理员专用命令")
     
@@ -118,6 +126,9 @@ class AdminCommands(commands.Cog):
         
         # 初始化答题处罚记录
         self.quiz_punish_init_task = asyncio.create_task(self._quiz_punish_init())
+
+        # 恢复持久化的频道禁言
+        await self._recover_channel_mutes()
 
     async def on_disable(self):
         if self.auto_remove_warn_task and not self.auto_remove_warn_task.done():
@@ -293,6 +304,110 @@ class AdminCommands(commands.Cog):
         return get_config_value(key, guild_id, default)
     
     
+    # ---- 频道禁言持久化工具 ----
+    def _save_channel_mute(self, guild_id: int, channel_id: int, user_id: int, expires_at: datetime.datetime) -> str:
+        """保存频道禁言记录，返回记录文件名(不含扩展名)作为 key。"""
+        key = f"{guild_id}_{channel_id}_{user_id}"
+        self.CHANNEL_MUTE_DIR.mkdir(parents=True, exist_ok=True)
+        record = {
+            "guild_id": guild_id,
+            "channel_id": channel_id,
+            "user_id": user_id,
+            "expires_at": expires_at.isoformat(),
+        }
+        with open(self.CHANNEL_MUTE_DIR / f"{key}.json", "w", encoding="utf-8") as f:
+            json.dump(record, f, ensure_ascii=False, indent=2)
+        return key
+
+    def _delete_channel_mute(self, key: str):
+        """删除频道禁言持久化记录。"""
+        path = self.CHANNEL_MUTE_DIR / f"{key}.json"
+        path.unlink(missing_ok=True)
+        self._channel_mute_tasks.pop(key, None)
+
+    async def _restore_channel_mute(self, guild_id: int, channel_id: int, user_id: int, key: str):
+        """恢复频道的发言权限并清理记录文件。"""
+        try:
+            guild = self.bot.get_guild(guild_id)
+            if not guild:
+                return
+            channel = guild.get_channel(channel_id)
+            if not channel:
+                return
+            member = guild.get_member(user_id)
+            if not member:
+                # 用户已离开服务器，直接清理覆写
+                # 尝试用 Object 清理
+                try:
+                    await channel.set_permissions(
+                        discord.Object(id=user_id), overwrite=None,
+                        reason="解散服务器频道禁言到期自动恢复（用户已离开）",
+                    )
+                except Exception:
+                    pass
+                return
+            overwrite = channel.overwrites_for(member)
+            overwrite.send_messages = None
+            if overwrite.is_empty():
+                await channel.set_permissions(
+                    member, overwrite=None,
+                    reason="解散服务器频道禁言到期自动恢复",
+                )
+            else:
+                await channel.set_permissions(
+                    member, overwrite=overwrite,
+                    reason="解散服务器频道禁言到期自动恢复",
+                )
+            if self.logger:
+                self.logger.info(f"频道禁言已恢复: guild={guild_id} channel={channel_id} user={user_id}")
+        except Exception as e:
+            if self.logger:
+                self.logger.warning(f"频道禁言恢复失败: {e}")
+        finally:
+            self._delete_channel_mute(key)
+
+    def _schedule_channel_mute_restore(self, guild_id: int, channel_id: int, user_id: int, expires_at: datetime.datetime, key: str):
+        """创建一个延迟 task，到期后自动恢复频道权限。"""
+        async def _waiter():
+            delay = (expires_at - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+            if delay > 0:
+                await asyncio.sleep(delay)
+            await self._restore_channel_mute(guild_id, channel_id, user_id, key)
+
+        task = asyncio.create_task(_waiter())
+        self._channel_mute_tasks[key] = task
+
+    async def _recover_channel_mutes(self):
+        """bot 启动时恢复所有持久化的频道禁言。"""
+        if not self.CHANNEL_MUTE_DIR.exists():
+            return
+        now = datetime.datetime.now(datetime.timezone.utc)
+        recovered = 0
+        for file in list(self.CHANNEL_MUTE_DIR.glob("*.json")):
+            try:
+                with open(file, "r", encoding="utf-8") as f:
+                    record = json.load(f)
+                guild_id = record["guild_id"]
+                channel_id = record["channel_id"]
+                user_id = record["user_id"]
+                expires_at = datetime.datetime.fromisoformat(record["expires_at"])
+                key = file.stem
+
+                if now >= expires_at:
+                    # 已过期，立即恢复
+                    await self._restore_channel_mute(guild_id, channel_id, user_id, key)
+                else:
+                    # 未过期，重新调度
+                    self._schedule_channel_mute_restore(guild_id, channel_id, user_id, expires_at, key)
+                recovered += 1
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(f"恢复频道禁言记录失败: {file}, 错误: {e}")
+                # 损坏的记录文件直接删除
+                file.unlink(missing_ok=True)
+        if recovered and self.logger:
+            self.logger.info(f"频道禁言恢复完成: 处理了 {recovered} 条记录")
+
     # ---- 工具函数：将字符串时间转换为数字时长 ----
     def _parse_time(self, time_str: str) -> tuple[int, str]:
         if time_str == "0":
@@ -730,6 +845,21 @@ class AdminCommands(commands.Cog):
             "warn": warn,
             "duration": duration.total_seconds(),
         })
+
+        # 检查是否启用处罚同步
+        sync_cog = self.bot.get_cog("ServerSyncCommands")
+        if sync_cog:
+            await sync_cog.sync_punishment(
+                guild=guild,
+                punishment_type="mute",
+                member=member,
+                moderator=interaction.user,
+                reason=reason,
+                duration=int(duration.total_seconds()) if duration.total_seconds() > 0 else None,
+                warn_days=warn,
+                punishment_id=record_id,
+                img=img
+            )
 
         if warn > 0:
             self._save_warn_record(guild.id, {
@@ -2568,10 +2698,121 @@ class AdminCommands(commands.Cog):
     @app_commands.command(name="解散服务器", description="解散服务器")
     async def disband_server(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        user = interaction.user
+
         # Fake Command, but log the attempt to moderation log channel（使用服务器特定配置）
-        moderation_log_channel_id = self.get_guild_config("moderation_log_channel_id", interaction.guild.id, 0)
-        moderation_log_channel = interaction.guild.get_channel_or_thread(int(moderation_log_channel_id)) if moderation_log_channel_id else None
+        moderation_log_channel_id = self.get_guild_config("moderation_log_channel_id", guild.id, 0)
+        moderation_log_channel = guild.get_channel_or_thread(int(moderation_log_channel_id)) if moderation_log_channel_id else None
         if moderation_log_channel:
-            await moderation_log_channel.send(embed=discord.Embed(title="🔴 解散服务器", description=f"用户 {interaction.user.mention} 尝试解散服务器。"))
-        await interaction.followup.send("❌ 权限不足", ephemeral=True)
+            await moderation_log_channel.send(embed=discord.Embed(title="🔴 解散服务器", description=f"用户 {user.mention} 尝试解散服务器。"))
+
+        # ---- 分级禁言：按用户按天计数 ----
+        today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+        key = (guild.id, user.id)
+        record = self._disband_counter.get(key)
+        if record is None or record["date"] != today:
+            record = {"date": today, "count": 0}
+        record["count"] += 1
+        self._disband_counter[key] = record
+        count = record["count"]
+
+        # 阈值表：(次数, 处罚描述, 处罚动作)，从高到低匹配，只执行最高档
+        # 每个阈值只在 **恰好达到** 时触发一次，避免重复执行
+        punishment_applied = False
+        member = guild.get_member(user.id)
+
+        if count == 20 and member:
+            # 全服禁言 30 分钟
+            try:
+                await member.timeout(
+                    datetime.timedelta(minutes=30),
+                    reason="娱乐指令 /解散服务器 滥用（当日第20次触发）"
+                )
+                punishment_applied = True
+                if moderation_log_channel:
+                    await moderation_log_channel.send(
+                        embed=discord.Embed(
+                            title="🔇 解散服务器 — 自动全服禁言",
+                            description=f"用户 {user.mention} 当日第 {count} 次触发 /解散服务器，已被全服禁言 **30 分钟**。",
+                            color=discord.Color.red(),
+                        )
+                    )
+            except discord.Forbidden:
+                if self.logger:
+                    self.logger.warning(f"解散服务器自动禁言失败（无权限）: {user.id}")
+        elif count == 10 and member:
+            # 全服禁言 15 分钟
+            try:
+                await member.timeout(
+                    datetime.timedelta(minutes=15),
+                    reason="娱乐指令 /解散服务器 滥用（当日第10次触发）"
+                )
+                punishment_applied = True
+                if moderation_log_channel:
+                    await moderation_log_channel.send(
+                        embed=discord.Embed(
+                            title="🔇 解散服务器 — 自动全服禁言",
+                            description=f"用户 {user.mention} 当日第 {count} 次触发 /解散服务器，已被全服禁言 **15 分钟**。",
+                            color=discord.Color.orange(),
+                        )
+                    )
+            except discord.Forbidden:
+                if self.logger:
+                    self.logger.warning(f"解散服务器自动禁言失败（无权限）: {user.id}")
+        elif count == 5:
+            # 频道级禁言 5 分钟（仅在触发的频道设置权限覆写，持久化到磁盘）
+            channel = interaction.channel
+            # 获取顶层频道（如果在子区/线程内则取父频道）
+            target_channel = getattr(channel, "parent", channel) or channel
+            try:
+                overwrite = target_channel.overwrites_for(user)
+                overwrite.send_messages = False
+                await target_channel.set_permissions(
+                    user,
+                    overwrite=overwrite,
+                    reason="娱乐指令 /解散服务器 滥用（当日第5次触发，频道禁言5分钟）",
+                )
+                punishment_applied = True
+
+                # 持久化记录并调度恢复
+                expires_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=5)
+                key = self._save_channel_mute(guild.id, target_channel.id, user.id, expires_at)
+                self._schedule_channel_mute_restore(guild.id, target_channel.id, user.id, expires_at, key)
+
+                if moderation_log_channel:
+                    await moderation_log_channel.send(
+                        embed=discord.Embed(
+                            title="🔇 解散服务器 — 自动频道禁言",
+                            description=(
+                                f"用户 {user.mention} 当日第 {count} 次触发 /解散服务器，"
+                                f"已在 {target_channel.mention} 被禁言 **5 分钟**。"
+                            ),
+                            color=discord.Color.gold(),
+                        )
+                    )
+            except discord.Forbidden:
+                if self.logger:
+                    self.logger.warning(f"解散服务器频道禁言设置失败（无权限）: channel={target_channel.id}, user={user.id}")
+
+        if punishment_applied:
+            await interaction.followup.send(
+                f"❌ 权限不足\n\n⚠️ 您今天已经触发了 {count} 次该指令，已被自动处罚。请勿滥用。\n\n您已被标记为严重危害社区存续团伙成员。",
+                ephemeral=True,
+            )
+            # 在触发频道发送公开通知（Embed 样式）
+            try:
+                notice_embed = discord.Embed(
+                    title="⚠️ 自动处罚通知",
+                    description=f"{user.mention} 由于多次尝试解散服务器，已被禁言并标记为严重危害社区存续团伙成员。",
+                    color=discord.Color.from_rgb(255, 255, 153),  # 淡黄色
+                )
+                notice_embed.add_field(name="成员", value=f"{user.mention} ({user.id})")
+                notice_embed.add_field(name="今日触发次数", value=f"{count} 次")
+                notice_embed.set_thumbnail(url=user.display_avatar.url)
+                await interaction.channel.send(embed=notice_embed)
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+        else:
+            await interaction.followup.send("❌ 权限不足", ephemeral=True)
         return
