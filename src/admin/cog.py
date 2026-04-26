@@ -11,7 +11,7 @@ import pathlib
 from typing import List, Tuple, Optional
 
 from src.utils import dm
-from src.utils.confirm_view import confirm_view
+from src.utils.confirm_view import confirm_view, confirm_view_embed
 from src.utils.auth import is_admin, is_senior_admin, check_admin_permission, is_admin_member, guild_only
 from src.utils.config_helper import get_config_value, get_config_for_guild
 
@@ -306,6 +306,91 @@ class AdminCommands(commands.Cog):
             return int(time_str[:-1]) * 86400, time_str[:-1] + "天"
         else:
             return -1, "未知时间"
+
+    def _truncate_embed_value(self, value: str, limit: int = 1024) -> str:
+        """限制 embed field 内容长度，避免 Discord 拒绝发送。"""
+        if value is None:
+            value = "未提供"
+        value = str(value)
+        if len(value) <= limit:
+            return value
+        return value[:limit - 3] + "..."
+
+    def _format_target_identity(self, user) -> tuple[str, str, str]:
+        """返回用户的服务器昵称、账号名和头像 URL。"""
+        nickname = (
+            getattr(user, "display_name", None)
+            or getattr(user, "global_name", None)
+            or getattr(user, "name", None)
+            or str(user)
+        )
+        username = getattr(user, "name", None) or str(user)
+        discriminator = getattr(user, "discriminator", None)
+        if discriminator and discriminator != "0" and "#" not in username:
+            username = f"{username}#{discriminator}"
+
+        avatar = getattr(user, "display_avatar", None)
+        avatar_url = getattr(avatar, "url", None) if avatar else None
+        return nickname, username, avatar_url
+
+    def _build_punishment_confirm_embed(
+        self,
+        *,
+        title: str,
+        target,
+        target_id: int,
+        punishment_lines: List[str],
+        reason: Optional[str],
+        moderator,
+        colour: discord.Colour,
+        target_avatar_url: Optional[str] = None,
+        target_mention: Optional[str] = None,
+        attachment: Optional[discord.Attachment] = None,
+        timeout: int = 60,
+    ) -> discord.Embed:
+        nickname, username, avatar_url = self._format_target_identity(target)
+        avatar_url = target_avatar_url or avatar_url
+        mention = target_mention or getattr(target, "mention", f"<@{target_id}>")
+
+        embed = discord.Embed(
+            title=title,
+            description="请确认处罚信息无误，确认后将立即执行。",
+            colour=colour,
+            timestamp=datetime.datetime.now(datetime.timezone.utc),
+        )
+        embed.add_field(
+            name="Discord昵称",
+            value=self._truncate_embed_value(nickname),
+            inline=True,
+        )
+        embed.add_field(
+            name="名字",
+            value=self._truncate_embed_value(username),
+            inline=True,
+        )
+        embed.add_field(name="数字ID", value=f"`{target_id}`", inline=True)
+        embed.add_field(name="用户", value=mention, inline=False)
+        embed.add_field(
+            name="处罚内容",
+            value=self._truncate_embed_value("\n".join(punishment_lines)),
+            inline=False,
+        )
+        embed.add_field(
+            name="原因",
+            value=self._truncate_embed_value(reason or "未提供"),
+            inline=False,
+        )
+        embed.add_field(name="执行者", value=moderator.mention, inline=True)
+        if attachment:
+            embed.add_field(
+                name="公告图片",
+                value=self._truncate_embed_value(attachment.filename),
+                inline=True,
+            )
+        if avatar_url:
+            embed.set_thumbnail(url=avatar_url)
+        embed.set_footer(text=f"仅命令使用者可确认，按钮将在 {timeout} 秒后失效")
+        return embed
     
     # ---- 工具函数：发送处罚公告并保存记录 ----
     def _save_punish_record(self, guild_id: int, record: dict):
@@ -706,6 +791,32 @@ class AdminCommands(commands.Cog):
         if duration.total_seconds() <= 0 and warn <= 0:
             await interaction.followup.send("❌ 时长和警告天数不能同时为0", ephemeral=True)
             return
+
+        punishment_lines = []
+        if duration.total_seconds() > 0:
+            punishment_lines.append(f"禁言：{mute_time_str}")
+        else:
+            punishment_lines.append("禁言：不执行")
+        if warn > 0:
+            punishment_lines.append(f"警告：{warn}天")
+        else:
+            punishment_lines.append("警告：不执行")
+
+        confirm_embed = self._build_punishment_confirm_embed(
+            title="🔇 禁言处罚确认",
+            target=member,
+            target_id=member.id,
+            punishment_lines=punishment_lines,
+            reason=reason,
+            moderator=interaction.user,
+            colour=discord.Colour.orange(),
+            attachment=img,
+            timeout=60,
+        )
+        confirmed = await confirm_view_embed(interaction, embed=confirm_embed, timeout=60)
+        if not confirmed:
+            return
+
         try:
             if duration.total_seconds() > 0:
                 await member.timeout(duration, reason=reason or "管理员禁言")
@@ -942,6 +1053,10 @@ class AdminCommands(commands.Cog):
             await interaction.response.send_message("❌ 请只提供成员或用户ID中的一个", ephemeral=True)
             return
 
+        if delete_message_days < 0 or delete_message_days > 7:
+            await interaction.response.send_message("❌ 删除消息天数必须在0到7之间", ephemeral=True)
+            return
+
         await interaction.response.defer(ephemeral=True)
         
         # 确定要封禁的用户
@@ -985,6 +1100,26 @@ class AdminCommands(commands.Cog):
                 target_user_avatar = None
                 if self.logger:
                     self.logger.warning(f"无法获取用户信息 {target_user_id}: {e}")
+
+        confirm_embed = self._build_punishment_confirm_embed(
+            title="⛔ 永久封禁确认",
+            target=target_user or target_user_name,
+            target_id=target_user_id,
+            target_mention=target_user_mention,
+            target_avatar_url=target_user_avatar,
+            punishment_lines=[
+                "永久封禁：是",
+                f"删除消息天数：{delete_message_days}天",
+            ],
+            reason=reason,
+            moderator=interaction.user,
+            colour=discord.Colour.red(),
+            attachment=img,
+            timeout=60,
+        )
+        confirmed = await confirm_view_embed(interaction, embed=confirm_embed, timeout=60)
+        if not confirmed:
+            return
 
         # 私聊通知（仅当能获取到用户对象时）
         if target_user is not None:
@@ -1445,8 +1580,10 @@ class AdminCommands(commands.Cog):
             user_id = int(record["user_id"])
             user_obj = None
             user_mention = f"<@{user_id}>"  # 默认mention，防止获取用户失败
+            punishment_type_label = "处罚"
             
             if record["type"] == "mute":
+                punishment_type_label = "禁言/警告"
                 # 对于禁言，需要获取用户对象
                 try:
                     user_obj = guild.get_member(user_id) or await guild.fetch_member(user_id)
@@ -1471,6 +1608,7 @@ class AdminCommands(commands.Cog):
                     return
                     
             elif record["type"] == "ban":
+                punishment_type_label = "永久封禁"
                 # 对于封禁，直接使用user_id进行解封
                 try:
                     await guild.unban(discord.Object(id=user_id), reason="撤销处罚")
@@ -1497,10 +1635,23 @@ class AdminCommands(commands.Cog):
             except Exception:
                 pass
 
+            await interaction.followup.send(
+                f"✅ 已撤销 {user_mention} 的{punishment_type_label}。处罚ID: `{punish_id}`",
+                ephemeral=True,
+            )
+
             # 同步撤销处罚到其他服务器
             sync_cog = self.bot.get_cog("ServerSyncCommands")
             if sync_cog:
-                await sync_cog.sync_revoke_punishment(guild, punish_id, interaction.user, reason)
+                try:
+                    await sync_cog.sync_revoke_punishment(guild, punish_id, interaction.user, reason)
+                except Exception as e:
+                    if self.logger:
+                        self.logger.warning(f"同步撤销处罚失败: {e}")
+                    await interaction.followup.send(
+                        "⚠️ 本服务器处罚已撤销，但同步撤销到其他服务器时失败，请检查同步日志。",
+                        ephemeral=True,
+                    )
 
             # 公示（使用服务器特定配置）
             channel_id = self.get_guild_config("punish_announce_channel_id", guild.id, 0)
