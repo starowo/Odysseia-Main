@@ -1,4 +1,7 @@
+from typing import Optional
+
 import discord
+
 
 class ConfirmView(discord.ui.View):
     """带 ✅ / ❌ 的确认视图"""
@@ -7,7 +10,7 @@ class ConfirmView(discord.ui.View):
         super().__init__(timeout=timeout)
         self.original_interaction = original_interaction
         self.author = author
-        self.value: bool = None
+        self.value: Optional[bool] = None
 
     # 权限检查：只让author点击
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -23,11 +26,11 @@ class ConfirmView(discord.ui.View):
         label="确认", style=discord.ButtonStyle.success, custom_id="confirm_yes"
     )
     async def confirm(
-        self, button: discord.ui.Button, interaction: discord.Interaction
+        self, interaction: discord.Interaction, button: discord.ui.Button
     ):
         self.value = True
         self.disable_all_items()
-        await self.original_interaction.edit_original_response(view=self)
+        await interaction.response.edit_message(view=self)
         self.stop()
 
     # ❌ 按钮
@@ -35,11 +38,11 @@ class ConfirmView(discord.ui.View):
         label="取消", style=discord.ButtonStyle.danger, custom_id="confirm_no"
     )
     async def cancel(
-        self, button: discord.ui.Button, interaction: discord.Interaction
+        self, interaction: discord.Interaction, button: discord.ui.Button
     ):
         self.value = False
         self.disable_all_items()
-        await self.original_interaction.edit_original_response(view=self)
+        await interaction.response.edit_message(view=self)
         self.stop()
     
     def disable_all_items(self):
