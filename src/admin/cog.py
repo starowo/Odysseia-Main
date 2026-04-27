@@ -11,7 +11,7 @@ import pathlib
 from typing import List, Tuple, Optional
 
 from src.utils import dm
-from src.utils.confirm_view import confirm_view
+from src.utils.confirm_view import confirm_view, confirm_view_embed
 from src.utils.auth import is_admin, is_senior_admin, check_admin_permission, is_admin_member, guild_only
 from src.utils.config_helper import get_config_value, get_config_for_guild
 
@@ -985,6 +985,24 @@ class AdminCommands(commands.Cog):
                 target_user_avatar = None
                 if self.logger:
                     self.logger.warning(f"无法获取用户信息 {target_user_id}: {e}")
+
+        # 二次确认
+        confirm_embed = discord.Embed(
+            title="⛔ 永久封禁 - 确认",
+            description="确定要永久封禁此用户吗？此操作不可撤销。",
+            color=discord.Color.red()
+        )
+        if target_user_avatar:
+            confirm_embed.set_thumbnail(url=target_user_avatar)
+        if target_user is not None:
+            confirm_embed.add_field(name="昵称", value=target_user.display_name, inline=True)
+            confirm_embed.add_field(name="用户名", value=target_user.name, inline=True)
+            confirm_embed.add_field(name="用户ID", value=str(target_user.id), inline=True)
+        else:
+            confirm_embed.add_field(name="用户ID", value=str(target_user_id), inline=True)
+        confirm_embed.add_field(name="原因", value=reason or "未提供", inline=False)
+        if not await confirm_view_embed(interaction, confirm_embed, timeout=120):
+            return
 
         # 私聊通知（仅当能获取到用户对象时）
         if target_user is not None:
