@@ -1719,6 +1719,49 @@ class ThreadSelfManage(commands.Cog):
             
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    @self_manage.command(name="中断清理", description="中断当前子区正在执行的清理任务")
+    async def cancel_clear_task(self, interaction: discord.Interaction):
+        channel = interaction.channel
+        if not isinstance(channel, discord.Thread):
+            await interaction.response.send_message("此指令仅在子区内有效", ephemeral=True)
+            return
+        if not await self.can_manage_thread(interaction, channel):
+            await interaction.response.send_message("只有子区所有者或管理员可以执行此操作", ephemeral=True)
+            return
+
+        cancelled = self.auto_clear_manager.cancel_task(channel.id)
+        if cancelled:
+            await interaction.response.send_message("✅ 已中断当前清理任务", ephemeral=True)
+        else:
+            await interaction.response.send_message("⭕ 当前没有正在执行的清理任务", ephemeral=True)
+
+    @self_manage.command(name="重建清理", description="重建缓存并清理子区（仅统计最近消息，适用于数据量过大的老帖）")
+    @app_commands.describe(limit="统计的消息数量上限（默认10000，最小1000）")
+    @app_commands.rename(limit="消息上限")
+    async def rebuild_and_clear_thread(
+        self, interaction: discord.Interaction,
+        limit: app_commands.Range[int, 1000, 50000] = 10000,
+    ):
+        channel = interaction.channel
+        if not isinstance(channel, discord.Thread):
+            await interaction.response.send_message("此指令仅在子区内有效", ephemeral=True)
+            return
+        if not await self.can_manage_thread(interaction, channel):
+            await interaction.response.send_message("只有子区所有者或管理员可以执行此操作", ephemeral=True)
+            return
+
+        started = await self.auto_clear_manager.rebuild_and_clear(channel, limit)
+        if started:
+            await interaction.response.send_message(
+                f"✅ 已开始重建缓存并清理子区（统计最近 {limit} 条消息）\n进度可在自动清理日志频道查看",
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                "⚠️ 该子区已有清理任务正在执行，请先中断后再试",
+                ephemeral=True,
+            )
+
     @self_manage.command(name="授权协管", description="授予成员当前子区的协管权限")
     @app_commands.describe(member="要授予协管权限的成员")
     @app_commands.rename(member="成员")

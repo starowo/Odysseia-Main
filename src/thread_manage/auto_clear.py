@@ -7,7 +7,7 @@ import discord
 from discord.ext import commands
 
 from . import db
-from .thread_clear import clear_thread_members
+from .thread_clear import clear_thread_members, rebuild_thread_cache
 
 _CHECK_COOLDOWN_SECONDS = 300
 _POST_CLEAR_COOLDOWN_SECONDS = 60
@@ -162,6 +162,147 @@ class AutoClearManager:
         for tid in expired_cooldowns:
             del self._check_cooldowns[tid]
 
+    # ── 中断 / 重建 ─────────────────────────────────────
+
+    def cancel_task(self, thread_id: int) -> bool:
+        """中断指定子区的清理任务。返回 True 表示成功取消。"""
+        task = self.active_tasks.get(thread_id)
+        if task is None:
+            return False
+        if task._asyncio_task and not task._asyncio_task.done():
+            task._asyncio_task.cancel()
+        task.status = "已取消"
+        task.stage = "done"
+        task.error_msg = "被手动中断"
+        return True
+
+    async def rebuild_and_clear(self, channel: discord.Thread, limit: int = 10000) -> bool:
+        """重建缓存并执行清理。
+
+        1. 以当前最新消息为锚点写入 meta
+        2. 从新到旧统计最近 limit 条消息
+        3. 重写数据库缓存
+        4. 执行一次清理
+        返回 True 表示成功启动重建清理。
+        """
+        if self.is_clearing_active(channel.id):
+            return False
+
+        task = AutoClearTask(channel.id, channel.name)
+        self.active_tasks[channel.id] = task
+        self._check_cooldowns[channel.id] = (datetime.now(), _CHECK_COOLDOWN_SECONDS)
+
+        if self._log_update_task is None or self._log_update_task.done():
+            self._log_update_task = asyncio.create_task(self._log_update_loop())
+
+        task._asyncio_task = asyncio.create_task(
+            self._execute_rebuild_and_clear(channel, task, limit)
+        )
+        return True
+
+    async def _execute_rebuild_and_clear(self, channel: discord.Thread, task: AutoClearTask, limit: int):
+        """执行重建缓存并清理的完整流程。"""
+        try:
+            task.status = "重建缓存中"
+            task.stage = "rebuild"
+
+            async def rebuild_progress_cb(done: int, _total: int, _member, stage: str):
+                if stage == "stat_start":
+                    task.stage = "rebuild"
+                    task.status = "重建缓存中"
+                elif stage == "stat_progress":
+                    task.messages_processed = done
+                elif stage == "stat_done":
+                    task.messages_processed = done
+
+            # 重建缓存
+            await rebuild_thread_cache(
+                channel, limit,
+                logger=self.logger,
+                progress_cb=rebuild_progress_cb,
+            )
+
+            if self.logger:
+                self.logger.info(
+                    f"重建缓存完成: {channel.name} (ID: {channel.id}) - 统计 {task.messages_processed} 条消息"
+                )
+
+            # 执行清理
+            task.status = "正在执行"
+            task.stage = "clear"
+
+            async def clear_progress_cb(done: int, total: int, member, stage: str):
+                if stage == "start":
+                    task.stage = "clear"
+                    task.status = "清理中"
+                    task.progress = {"done": 0, "total": total}
+                elif stage == "progress":
+                    task.progress = {"done": done, "total": total}
+                elif stage == "done":
+                    task.stage = "done"
+                    task.status = "完成"
+
+            result = await asyncio.wait_for(
+                clear_thread_members(
+                    channel, 950, self.bot,
+                    logger=self.logger,
+                    progress_cb=clear_progress_cb,
+                ),
+                timeout=_TASK_TIMEOUT_SECONDS,
+            )
+
+            task.members_removed = result['removed_inactive'] + result['removed_active']
+            task.status = "完成"
+            task.stage = "done"
+
+            if self.logger:
+                self.logger.info(
+                    f"重建清理完成: {channel.name} (ID: {channel.id}) - "
+                    f"移除 {task.members_removed} 人，剩余 {result['final_count']} 人"
+                )
+
+            try:
+                summary_embed = discord.Embed(
+                    title="重建缓存并清理完成 ✅",
+                    colour=discord.Colour.green(),
+                    description=(
+                        f"📊 已统计最近 **{limit}** 条消息\n"
+                        f"🔹 已移除未发言成员：**{result['removed_inactive']}** 人\n"
+                        f"🔹 已移除低活跃成员：**{result['removed_active']}** 人\n"
+                        f"子区当前成员约为 **{result['final_count']}** 人"
+                    ),
+                    timestamp=datetime.now()
+                )
+                await channel.send("✅ 子区缓存已重建并完成清理", embed=summary_embed)
+            except Exception as e:
+                if self.logger:
+                    self.logger.warning(f"发送重建清理完成报告失败: {e}")
+
+        except asyncio.TimeoutError:
+            task.status = "失败"
+            task.stage = "done"
+            task.error_msg = f"超时（>{_TASK_TIMEOUT_SECONDS // 60}分钟）"
+            if self.logger:
+                self.logger.error(f"重建清理超时: {channel.name} (ID: {channel.id})")
+        except asyncio.CancelledError:
+            task.status = "已取消"
+            task.stage = "done"
+            task.error_msg = "被手动中断"
+        except Exception as e:
+            task.status = "失败"
+            task.stage = "done"
+            task.error_msg = str(e)
+            if self.logger:
+                self.logger.error(f"重建清理失败: {channel.name} (ID: {channel.id}) - {e}")
+        finally:
+            cooldown = _POST_CLEAR_COOLDOWN_SECONDS if task.status == "完成" else _CHECK_COOLDOWN_SECONDS
+            self._check_cooldowns[task.thread_id] = (datetime.now(), cooldown)
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                pass
+            self.active_tasks.pop(task.thread_id, None)
+
     # ── 核心流程 ─────────────────────────────────────────
 
     async def start_auto_clear(self, channel: discord.Thread) -> bool:
@@ -200,6 +341,7 @@ class AutoClearManager:
 
     async def _execute_auto_clear(self, channel: discord.Thread, task: AutoClearTask):
         """执行自动清理任务"""
+        _handled = False
         try:
             task.status = "正在执行"
             task.stage = "clear"
@@ -258,11 +400,23 @@ class AutoClearManager:
                     self.logger.warning(f"发送自动清理完成报告失败: {e}")
 
         except asyncio.TimeoutError:
+            _handled = True
             task.status = "失败"
             task.stage = "done"
-            task.error_msg = f"超时（>{_TASK_TIMEOUT_SECONDS // 60}分钟）"
+            task.error_msg = f"超时（>{_TASK_TIMEOUT_SECONDS // 60}分钟），自动触发重建"
             if self.logger:
-                self.logger.error(f"自动清理超时: {channel.name} (ID: {channel.id})")
+                self.logger.warning(
+                    f"自动清理超时: {channel.name} (ID: {channel.id})，数据量可能过大，自动触发重建清理"
+                )
+            # 超时通常意味着消息历史太长，自动重建缓存（仅最近 10000 条）后重试
+            self._check_cooldowns[task.thread_id] = (datetime.now(), _CHECK_COOLDOWN_SECONDS)
+            self.active_tasks.pop(task.thread_id, None)
+            try:
+                await self.rebuild_and_clear(channel)
+            except Exception as rebuild_err:
+                if self.logger:
+                    self.logger.error(f"超时后重建清理也失败: {channel.name} (ID: {channel.id}) - {rebuild_err}")
+            return
         except Exception as e:
             task.status = "失败"
             task.stage = "done"
@@ -270,14 +424,15 @@ class AutoClearManager:
             if self.logger:
                 self.logger.error(f"自动清理失败: {channel.name} (ID: {channel.id}) - {e}")
         finally:
-            cooldown = _POST_CLEAR_COOLDOWN_SECONDS if task.status == "完成" else _CHECK_COOLDOWN_SECONDS
-            self._check_cooldowns[task.thread_id] = (datetime.now(), cooldown)
-            # 短暂保留任务记录供日志面板展示完成状态
-            try:
-                await asyncio.sleep(30)
-            except asyncio.CancelledError:
-                pass
-            self.active_tasks.pop(task.thread_id, None)
+            if not _handled:
+                cooldown = _POST_CLEAR_COOLDOWN_SECONDS if task.status == "完成" else _CHECK_COOLDOWN_SECONDS
+                self._check_cooldowns[task.thread_id] = (datetime.now(), cooldown)
+                # 短暂保留任务记录供日志面板展示完成状态
+                try:
+                    await asyncio.sleep(30)
+                except asyncio.CancelledError:
+                    pass
+                self.active_tasks.pop(task.thread_id, None)
 
     # ── 日志频道 ─────────────────────────────────────────
 
@@ -373,7 +528,9 @@ class AutoClearManager:
                 duration = (datetime.now() - task.start_time).total_seconds()
                 duration_str = f"{int(duration//60)}分{int(duration%60)}秒"
 
-                if task.stage == "stat":
+                if task.stage == "rebuild":
+                    progress_desc = f"🔧 重建缓存: 已统计 {task.messages_processed} 条消息"
+                elif task.stage == "stat":
                     progress_desc = f"📊 统计阶段: 已处理 {task.messages_processed} 条消息"
                 elif task.stage == "clear":
                     if task.progress["total"] > 0:

@@ -17,6 +17,84 @@ from . import db
 #
 # 公开函数：
 #   clear_thread_members(channel, threshold, bot, logger=None) -> dict
+#   rebuild_thread_cache(channel, limit=10000, logger=None) -> (message_counts, last_active)
+
+MAX_REBUILD_MESSAGES = 10000
+
+
+async def rebuild_thread_cache(
+    channel: discord.Thread,
+    limit: int = MAX_REBUILD_MESSAGES,
+    logger=None,
+    progress_cb: Optional[Callable[[int, int, Optional[discord.Member], str], Awaitable[None]]] = None,
+) -> Tuple[Dict[int, int], Dict[int, str]]:
+    """重建线程消息缓存：以当前最新消息为锚点，仅统计最近 N 条消息。
+    适用于数据量过大的老帖，清理后后续可正常增量统计。
+    返回 (message_counts, last_active)。
+    """
+    message_counts: Dict[int, int] = {}
+    last_active: Dict[int, str] = {}
+
+    # 获取当前最新消息 ID 作为锚点
+    try:
+        newest_msg = await anext(channel.history(limit=1, oldest_first=False))
+        anchor_id = newest_msg.id
+    except (StopAsyncIteration, discord.HTTPException):
+        # 频道无消息，清空缓存即可
+        try:
+            await db.save_thread_cache(channel.id, None, {}, {})
+        except Exception as e:
+            if logger:
+                logger.error(f"清空缓存 thread_id={channel.id} 失败：{e}")
+        return message_counts, last_active
+
+    processed = 0
+    if progress_cb:
+        await progress_cb(0, 0, None, "stat_start")
+
+    before_obj = None
+    while processed < limit:
+        batch_limit = min(100, limit - processed)
+        try:
+            fetched: List[discord.Message] = [
+                m async for m in channel.history(limit=batch_limit, before=before_obj, oldest_first=False)
+            ]
+        except discord.HTTPException as e:
+            if logger:
+                logger.warning(f"重建缓存拉取消息失败 thread_id={channel.id}：{e}")
+            break
+
+        if not fetched:
+            break
+
+        for msg in fetched:
+            author = msg.author
+            if author.bot:
+                continue
+            uid = author.id
+            message_counts[uid] = message_counts.get(uid, 0) + 1
+            last_active[uid] = msg.created_at.isoformat()
+
+        before_obj = discord.Object(id=fetched[-1].id)
+        processed += len(fetched)
+
+        if progress_cb:
+            await progress_cb(processed, 0, None, "stat_progress")
+
+    try:
+        await db.save_thread_cache(channel.id, anchor_id, message_counts, last_active)
+    except Exception as e:
+        if logger:
+            logger.error(f"写入重建缓存 thread_id={channel.id} 失败：{e}")
+
+    if progress_cb:
+        await progress_cb(processed, 0, None, "stat_done")
+
+    if logger:
+        logger.info(f"重建缓存完成 thread_id={channel.id}：锚点={anchor_id}，统计 {processed} 条消息，{len(message_counts)} 个发言用户")
+
+    return message_counts, last_active
+
 
 # 工具函数
 async def _update_message_cache(
