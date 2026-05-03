@@ -281,7 +281,7 @@ class AutoClearManager:
 
     # ── 日志频道 ─────────────────────────────────────────
 
-    async def _get_log_channel(self) -> Optional[discord.TextChannel]:
+    async def _get_log_channel(self) -> Optional[discord.TextChannel | discord.Thread]:
         try:
             config = self.config
             logging_config = config.get('logging', {})
@@ -298,8 +298,8 @@ class AutoClearManager:
             if not guild:
                 return None
 
-            channel = guild.get_channel(channel_id)
-            return channel if isinstance(channel, discord.TextChannel) else None
+            channel = await guild.fetch_channel(channel_id)
+            return channel if isinstance(channel, discord.TextChannel) or isinstance(channel, discord.Thread) else None
         except Exception:
             return None
 
