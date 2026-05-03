@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import Dict, List, Callable, Awaitable, Optional, Tuple
 
 import discord
 from discord.ext import commands
 
+from . import db
+
 # 本文件实现：
 #   1. 统计子区内聊天记录（分批每次 100 条），同时记录成员最后活跃时间
-#   2. 将统计结果缓存到 data/thread_cache/{thread_id}.json，下次运行时仅增量统计
+#   2. 将统计结果缓存到 SQLite 数据库，下次运行时仅增量统计
 #   3. 根据阈值移除未发言成员，若仍超阈值则按活跃度移除：
 #      - 有 last_active 时间戳的成员：按最后活跃时间升序（最久未活跃优先移除）
 #      - 无 last_active 的旧数据成员：按发言数量升序（最少优先移除），优先于有时间戳的成员
@@ -17,10 +17,6 @@ from discord.ext import commands
 #
 # 公开函数：
 #   clear_thread_members(channel, threshold, bot, logger=None) -> dict
-
-# 缓存目录
-_CACHE_DIR = Path("data/thread_cache")
-_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 # 工具函数
 async def _update_message_cache(
@@ -35,25 +31,7 @@ async def _update_message_cache(
                      旧缓存中不存在此字段时为空 dict，后续增量拉取逐步填充。
     """
 
-    cache_path = _CACHE_DIR / f"{channel.id}.json"
-
-    last_id: int = None
-    message_counts: Dict[int, int] = {}
-    last_active: Dict[int, str] = {}
-
-    if cache_path.exists():
-        try:
-            with cache_path.open("r", encoding="utf-8") as fp:
-                cache = json.load(fp)
-            last_id = cache.get("last_id")
-            message_counts = {int(k): v for k, v in cache.get("message_counts", {}).items()}
-            last_active = {int(k): v for k, v in cache.get("last_active", {}).items()}
-        except Exception as e:
-            if logger:
-                logger.warning(f"读取缓存 {cache_path} 失败，将重新统计：{e}")
-            last_id = None
-            message_counts = {}
-            last_active = {}
+    last_id, message_counts, last_active = await db.load_thread_cache(channel.id)
 
     after_obj = discord.Object(id=last_id) if last_id else None
 
@@ -90,17 +68,11 @@ async def _update_message_cache(
             processed += len(fetched)
             await progress_cb(processed, 0, None, "stat_progress")
 
-    cache_data = {
-        "last_id": last_id,
-        "message_counts": {str(k): v for k, v in message_counts.items()},
-        "last_active": {str(k): v for k, v in last_active.items()},
-    }
     try:
-        with cache_path.open("w", encoding="utf-8") as fp:
-            json.dump(cache_data, fp, ensure_ascii=False, indent=2)
+        await db.save_thread_cache(channel.id, last_id, message_counts, last_active)
     except Exception as e:
         if logger:
-            logger.error(f"写入缓存 {cache_path} 失败：{e}")
+            logger.error(f"写入数据库缓存 thread_id={channel.id} 失败：{e}")
 
     if progress_cb:
         await progress_cb(processed, 0, None, "stat_done")

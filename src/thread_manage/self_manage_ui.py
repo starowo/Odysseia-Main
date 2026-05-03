@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import pathlib
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
@@ -32,67 +30,19 @@ SLOWMODE_OPTIONS: list[tuple[str, int]] = [
 ]
 
 
-def _forum_optout_dir() -> pathlib.Path:
-    d = pathlib.Path("data") / "forum_selfmanage_welcome_optout"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+async def forum_user_opted_out(user_id: int) -> bool:
+    """检查用户是否已 opt-out 论坛欢迎消息。"""
+    from src.thread_manage import db
+    users = await db.load_forum_optout()
+    return user_id in users
 
 
-def _forum_optout_global_path() -> pathlib.Path:
-    return _forum_optout_dir() / "opted_out_users.json"
-
-
-def _save_forum_optout(users: set[int]) -> None:
-    p = _forum_optout_global_path()
-    with open(p, "w", encoding="utf-8") as f:
-        json.dump({"users": sorted(users)}, f, ensure_ascii=False, indent=2)
-
-
-def _load_forum_optout() -> set[int]:
-    """全局「不再提醒」用户 ID；首次加载时会合并旧版按服务器拆分的 *.json 后写入单文件。"""
-    d = _forum_optout_dir()
-    path = _forum_optout_global_path()
-    marker = d / ".legacy_guild_optout_merged"
-    users: set[int] = set()
-    if path.exists():
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                users = {int(x) for x in json.load(f).get("users", [])}
-        except Exception:
-            users = set()
-    if not marker.exists():
-        for p in d.iterdir():
-            if not p.is_file() or p.suffix != ".json":
-                continue
-            if p.name == "opted_out_users.json":
-                continue
-            if not p.stem.isdigit():
-                continue
-            try:
-                with open(p, "r", encoding="utf-8") as f:
-                    users |= {int(x) for x in json.load(f).get("users", [])}
-            except Exception:
-                pass
-            try:
-                p.unlink()
-            except Exception:
-                pass
-        _save_forum_optout(users)
-        try:
-            marker.touch()
-        except Exception:
-            pass
-    return users
-
-
-def forum_user_opted_out(user_id: int) -> bool:
-    return user_id in _load_forum_optout()
-
-
-def forum_add_optout(user_id: int) -> None:
-    s = _load_forum_optout()
-    s.add(user_id)
-    _save_forum_optout(s)
+async def forum_add_optout(user_id: int) -> None:
+    """添加用户到论坛 opt-out 列表。"""
+    from src.thread_manage import db
+    users = await db.load_forum_optout()
+    users.add(user_id)
+    await db.save_forum_optout(users)
 
 
 MORE_FEATURES_HELP = (
@@ -471,7 +421,7 @@ class ForumWelcomeView(ui.View):
         self.stop()
         self.clear_items()
         msg = interaction.message
-        forum_add_optout(self._owner_id)
+        await forum_add_optout(self._owner_id)
         await interaction.response.send_message(
             "已记录：之后您发布的新帖不会再显示此欢迎提示。",
             ephemeral=True,

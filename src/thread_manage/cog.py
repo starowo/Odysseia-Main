@@ -20,6 +20,7 @@ from src.thread_manage.self_manage_ui import (
     schedule_delete_message,
     wait_menu_confirm_on_message,
 )
+from src.thread_manage import db
 from typing import Optional
 import re
 from datetime import datetime, timedelta
@@ -75,51 +76,32 @@ class ThreadSelfManage(commands.Cog):
         except Exception:
             return False
 
-    def _get_delegate_file_path(self, guild_id: int, thread_id: int) -> pathlib.Path:
-        data_dir = pathlib.Path("data") / "thread_delegates" / str(guild_id)
-        data_dir.mkdir(parents=True, exist_ok=True)
-        return data_dir / f"{thread_id}.json"
-
-    def _load_thread_delegates(self, guild_id: int, thread_id: int) -> set[int]:
-        file_path = self._get_delegate_file_path(guild_id, thread_id)
-        if not file_path.exists():
-            return set()
-
+    async def _load_thread_delegates(self, guild_id: int, thread_id: int) -> set[int]:
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            return {int(user_id) for user_id in data.get("delegates", [])}
+            return await db.load_thread_delegates(guild_id, thread_id)
         except Exception as e:
             if self.logger:
-                self.logger.error(f"读取子区协管配置失败: {file_path} - {e}")
+                self.logger.error(f"读取子区协管配置失败: guild={guild_id} thread={thread_id} - {e}")
             return set()
 
-    def _save_thread_delegates(self, guild_id: int, thread_id: int, delegates: set[int]):
-        file_path = self._get_delegate_file_path(guild_id, thread_id)
-
+    async def _save_thread_delegates(self, guild_id: int, thread_id: int, delegates: set[int]):
         try:
-            if not delegates:
-                if file_path.exists():
-                    file_path.unlink()
-                return
-
-            data = {"delegates": sorted(delegates)}
-            with open(file_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            await db.save_thread_delegates(guild_id, thread_id, delegates)
         except Exception as e:
             if self.logger:
-                self.logger.error(f"保存子区协管配置失败: {file_path} - {e}")
+                self.logger.error(f"保存子区协管配置失败: guild={guild_id} thread={thread_id} - {e}")
             raise
 
-    def can_manage_as_owner(self, user_id: int, channel: discord.Thread) -> bool:
+    async def can_manage_as_owner(self, user_id: int, channel: discord.Thread) -> bool:
         """检查用户是否拥有与贴主等效的自助管理权限（贴主或协管）"""
         if user_id == channel.owner_id:
             return True
-        return user_id in self._load_thread_delegates(channel.guild.id, channel.id)
+        delegates = await self._load_thread_delegates(channel.guild.id, channel.id)
+        return user_id in delegates
 
     async def can_manage_thread(self, interaction: discord.Interaction, channel: discord.Thread) -> bool:
         """检查用户是否可以管理该子区（子区所有者、协管或管理员）"""
-        if self.can_manage_as_owner(interaction.user.id, channel):
+        if await self.can_manage_as_owner(interaction.user.id, channel):
             return True
         return await self.is_admin(interaction)
 
@@ -129,40 +111,35 @@ class ThreadSelfManage(commands.Cog):
             return True
         return await self.is_admin(interaction)
 
-    def _load_mute_cache(self):
+    async def _load_mute_cache(self):
         """加载所有禁言记录到内存缓存"""
-        base = pathlib.Path("data") / "thread_mute"
-        if not base.exists():
-            return
-        for guild_dir in base.iterdir():
-            if not guild_dir.is_dir():
-                continue
-            for thread_dir in guild_dir.iterdir():
-                if not thread_dir.is_dir():
-                    continue
-                for file in thread_dir.glob("*.json"):
-                    try:
-                        user_id = int(file.stem)
-                        with open(file, 'r', encoding='utf-8') as f:
-                            record = json.load(f)
-                        key = (int(guild_dir.name), int(thread_dir.name), user_id)
-                        self._mute_cache[key] = record
-                    except Exception as e:
-                        if self.logger:
-                            self.logger.error(f"加载禁言缓存出错: {file} - {e}")
+        try:
+            self._mute_cache = await db.load_all_mutes()
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"加载禁言缓存出错: {e}")
+            self._mute_cache = {}
 
     @commands.Cog.listener()
     async def on_ready(self):
         if self.logger:
             self.logger.info("自助管理指令加载成功")
-        # 预加载禁言缓存
-        self._load_mute_cache()
-        if self.logger:
-            self.logger.info(f"已加载禁言缓存: 共 {len(self._mute_cache)} 条记录")
-        # 初始化自动清理管理器
+
+        # 初始化数据库并迁移旧 JSON 数据
+        db.set_logger(self.logger)
+        await db.init_db()
+        await db.migrate_from_json()
+
+        # 初始化自动清理管理器（加载禁用列表）
+        await self.auto_clear_manager.initialize()
         if self.logger:
             disabled_count = len(self.auto_clear_manager.disabled_threads)
             self.logger.info(f"自动清理管理器已初始化，共 {disabled_count} 个子区被禁用自动清理")
+
+        # 预加载禁言缓存
+        await self._load_mute_cache()
+        if self.logger:
+            self.logger.info(f"已加载禁言缓存: 共 {len(self._mute_cache)} 条记录")
 
         self._register_context_menus()
 
@@ -197,7 +174,7 @@ class ThreadSelfManage(commands.Cog):
             parent = thread.parent
             if not isinstance(parent, discord.ForumChannel):
                 return
-            if forum_user_opted_out(thread.owner_id):
+            if await forum_user_opted_out(thread.owner_id):
                 return
             owner = thread.guild.get_member(thread.owner_id)
             if owner and owner.bot:
@@ -495,7 +472,7 @@ class ThreadSelfManage(commands.Cog):
         rec = self._get_mute_record(channel.guild.id, channel.id, member.id)
         rec["muted_until"] = muted_until
         rec["violations"] = 0
-        self._save_mute_record(channel.guild.id, channel.id, member.id, rec)
+        await self._save_mute_record(channel.guild.id, channel.id, member.id, rec)
         msg = f"✅ 已在子区禁言 {member.mention}"
         if duration:
             msg += f" 持续 {human}"
@@ -510,13 +487,10 @@ class ThreadSelfManage(commands.Cog):
             await interaction.response.send_message("只有子区所有者或管理员可执行此操作", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True)
-        data_dir = pathlib.Path("data") / "thread_mute" / str(channel.guild.id) / str(channel.id)
-        file_path = data_dir / f"{member.id}.json"
-        if file_path.exists():
-            file_path.unlink()
-            key = (channel.guild.id, channel.id, member.id)
-            self._mute_cache.pop(key, None)
-            self._save_mute_record(channel.guild.id, channel.id, member.id, None)
+        key = (channel.guild.id, channel.id, member.id)
+        record = self._mute_cache.get(key)
+        if record and record.get("muted_until"):
+            await self._save_mute_record(channel.guild.id, channel.id, member.id, None)
             embed = discord.Embed(
                 title="🔒 子区禁言",
                 description=f"👤 {member.mention} 已被解除禁言",
@@ -1427,20 +1401,19 @@ class ThreadSelfManage(commands.Cog):
             self._mute_cache[key] = record
         return record
 
-    def _save_mute_record(self, guild_id: int, thread_id: int, user_id: int, record: dict):
+    async def _save_mute_record(self, guild_id: int, thread_id: int, user_id: int, record: dict):
         # 更新内存缓存
         key = (guild_id, thread_id, user_id)
-        self._mute_cache[key] = record
-        # 持久化到文件
-        data_dir = pathlib.Path("data") / "thread_mute" / str(guild_id) / str(thread_id)
-        data_dir.mkdir(parents=True, exist_ok=True)
-        file_path = data_dir / f"{user_id}.json"
-        if not record:
-            if file_path.exists():
-                file_path.unlink()
-            return
-        with open(file_path, 'w', encoding='utf-8') as f:
-            json.dump(record, f, ensure_ascii=False, indent=2)
+        if record:
+            self._mute_cache[key] = record
+        else:
+            self._mute_cache.pop(key, None)
+        # 持久化到数据库
+        try:
+            await db.save_mute_record(guild_id, thread_id, user_id, record if record else None)
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"保存禁言记录失败: {key} - {e}")
 
     def _parse_time(self, time_str: str) -> tuple[int, str]:
         if time_str.endswith("m"):
@@ -1452,7 +1425,7 @@ class ThreadSelfManage(commands.Cog):
         else:
             return -1, "未知时间"
 
-    def _is_thread_muted(self, guild_id: int, thread_id: int, user_id: int) -> bool:
+    async def _is_thread_muted(self, guild_id: int, thread_id: int, user_id: int) -> bool:
         rec = self._get_mute_record(guild_id, thread_id, user_id)
         mu = rec.get("muted_until")
         if mu == -1:
@@ -1463,14 +1436,14 @@ class ThreadSelfManage(commands.Cog):
                 return True
             rec["muted_until"] = None
             rec["violations"] = 0
-            self._save_mute_record(guild_id, thread_id, user_id, rec)
+            await self._save_mute_record(guild_id, thread_id, user_id, rec)
             return False
         return False
 
-    def _increment_violations(self, guild_id: int, thread_id: int, user_id: int) -> int:
+    async def _increment_violations(self, guild_id: int, thread_id: int, user_id: int) -> int:
         rec = self._get_mute_record(guild_id, thread_id, user_id)
         rec["violations"] = rec.get("violations", 0) + 1
-        self._save_mute_record(guild_id, thread_id, user_id, rec)
+        await self._save_mute_record(guild_id, thread_id, user_id, rec)
         return rec["violations"]
 
     @commands.Cog.listener()
@@ -1511,7 +1484,7 @@ class ThreadSelfManage(commands.Cog):
         if user.id == channel.owner_id:
             return
         # 检查是否在子区禁言
-        if self._is_thread_muted(guild.id, channel.id, user.id):
+        if await self._is_thread_muted(guild.id, channel.id, user.id):
             # 删除消息
             try:
                 await message.delete()
@@ -1537,7 +1510,7 @@ class ThreadSelfManage(commands.Cog):
             except:
                 pass
             # 记录违规并全服禁言
-            vcount = self._increment_violations(guild.id, channel.id, user.id)
+            vcount = await self._increment_violations(guild.id, channel.id, user.id)
             secs = 0
             if vcount >= 3:
                 secs, label = 10*60, '10分钟'
@@ -1559,7 +1532,7 @@ class ThreadSelfManage(commands.Cog):
         channel_id = payload.channel_id
         guild_id = payload.guild_id
         user_id = payload.user_id
-        if self._is_thread_muted(guild_id, channel_id, user_id):
+        if await self._is_thread_muted(guild_id, channel_id, user_id):
             message_id = payload.message_id
             try:
                 channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
@@ -1621,7 +1594,7 @@ class ThreadSelfManage(commands.Cog):
         rec = self._get_mute_record(channel.guild.id, channel.id, member.id)
         rec['muted_until'] = muted_until
         rec['violations'] = 0
-        self._save_mute_record(channel.guild.id, channel.id, member.id, rec)
+        await self._save_mute_record(channel.guild.id, channel.id, member.id, rec)
         msg = f"✅ 已在子区禁言 {member.mention}"
         if duration:
             msg += f" 持续 {human}"
@@ -1639,15 +1612,10 @@ class ThreadSelfManage(commands.Cog):
         if not await self.can_manage_thread(interaction, channel):
             await interaction.response.send_message("只有子区所有者或管理员可执行此操作", ephemeral=True)
             return
-        data_dir = pathlib.Path("data") / "thread_mute" / str(channel.guild.id) / str(channel.id)
-        data_dir.mkdir(parents=True, exist_ok=True)
-        file_path = data_dir / f"{member.id}.json"
-        if file_path.exists():
-            file_path.unlink()
-            # 清理缓存
-            key = (channel.guild.id, channel.id, member.id)
-            self._mute_cache.pop(key, None)
-            self._save_mute_record(channel.guild.id, channel.id, member.id, None)
+        key = (channel.guild.id, channel.id, member.id)
+        record = self._mute_cache.get(key)
+        if record and record.get("muted_until"):
+            await self._save_mute_record(channel.guild.id, channel.id, member.id, None)
             # 子区内公示
             embed = discord.Embed(
                 title="🔒 子区禁言",
@@ -1689,7 +1657,7 @@ class ThreadSelfManage(commands.Cog):
                 await interaction.response.send_message("❓ 该子区的自动清理功能已经开启", ephemeral=True)
                 return
                 
-            self.auto_clear_manager.enable_thread(thread_id)
+            await self.auto_clear_manager.enable_thread(thread_id)
             embed = discord.Embed(
                 title="✅ 自动清理已开启",
                 description=(
@@ -1709,7 +1677,7 @@ class ThreadSelfManage(commands.Cog):
                 await interaction.response.send_message("❓ 该子区的自动清理功能已经关闭", ephemeral=True)
                 return
                 
-            self.auto_clear_manager.disable_thread(thread_id)
+            await self.auto_clear_manager.disable_thread(thread_id)
             embed = discord.Embed(
                 title="🔴 自动清理已关闭",
                 description=f"已为子区 **{channel.name}** 关闭自动清理功能\n\n该子区将不会再自动执行清理任务",
@@ -1772,14 +1740,14 @@ class ThreadSelfManage(commands.Cog):
             await interaction.response.send_message("❌ 该成员已经是子区所有者，无需重复授权", ephemeral=True)
             return
 
-        delegates = self._load_thread_delegates(channel.guild.id, channel.id)
+        delegates = await self._load_thread_delegates(channel.guild.id, channel.id)
         if member.id in delegates:
             await interaction.response.send_message(f"❌ {member.mention} 已经是本子区协管", ephemeral=True)
             return
 
         delegates.add(member.id)
         try:
-            self._save_thread_delegates(channel.guild.id, channel.id, delegates)
+            await self._save_thread_delegates(channel.guild.id, channel.id, delegates)
         except Exception as e:
             await interaction.response.send_message(f"❌ 保存协管配置失败: {str(e)}", ephemeral=True)
             return
@@ -1833,14 +1801,14 @@ class ThreadSelfManage(commands.Cog):
             await interaction.response.send_message("❌ 不能移除子区所有者的权限", ephemeral=True)
             return
 
-        delegates = self._load_thread_delegates(channel.guild.id, channel.id)
+        delegates = await self._load_thread_delegates(channel.guild.id, channel.id)
         if target_id not in delegates:
             await interaction.response.send_message(f"❌ {target_display} 不是本子区协管", ephemeral=True)
             return
 
         delegates.remove(target_id)
         try:
-            self._save_thread_delegates(channel.guild.id, channel.id, delegates)
+            await self._save_thread_delegates(channel.guild.id, channel.id, delegates)
         except Exception as e:
             await interaction.response.send_message(f"❌ 保存协管配置失败: {str(e)}", ephemeral=True)
             return
@@ -1862,7 +1830,7 @@ class ThreadSelfManage(commands.Cog):
             await interaction.response.send_message("只有子区所有者、协管或管理员可以查看协管列表", ephemeral=True)
             return
 
-        delegates = sorted(self._load_thread_delegates(channel.guild.id, channel.id))
+        delegates = sorted(await self._load_thread_delegates(channel.guild.id, channel.id))
 
         embed = discord.Embed(
             title="👥 子区协管列表",

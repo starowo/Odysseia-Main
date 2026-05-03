@@ -6,6 +6,7 @@ from typing import Dict, Optional, Set, Tuple
 import discord
 from discord.ext import commands
 
+from . import db
 from .thread_clear import clear_thread_members
 
 _CHECK_COOLDOWN_SECONDS = 300
@@ -49,7 +50,14 @@ class AutoClearManager:
         self._config_cache = {}
         self._config_cache_mtime = None
 
-        self._load_disabled_threads()
+        self._initialized = False
+
+    async def initialize(self) -> None:
+        """异步初始化：加载禁用列表。在 on_ready 中调用。"""
+        if self._initialized:
+            return
+        self._initialized = True
+        self.disabled_threads = await self._load_disabled_threads()
 
     # ── 配置 ──────────────────────────────────────────────
 
@@ -71,26 +79,17 @@ class AutoClearManager:
 
     # ── 禁用列表 ─────────────────────────────────────────
 
-    def _load_disabled_threads(self):
+    async def _load_disabled_threads(self) -> set[int]:
         try:
-            path = pathlib.Path("data/auto_clear_disabled.json")
-            if path.exists():
-                with open(path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    self.disabled_threads = set(data.get('disabled_threads', []))
+            return await db.load_disabled_threads()
         except Exception as e:
             if self.logger:
                 self.logger.error(f"加载自动清理禁用列表失败: {e}")
-            self.disabled_threads = set()
+            return set()
 
-    def _save_disabled_threads(self):
+    async def _save_disabled_threads(self):
         try:
-            path = pathlib.Path("data")
-            path.mkdir(exist_ok=True)
-            path = path / "auto_clear_disabled.json"
-            data = {"disabled_threads": list(self.disabled_threads)}
-            with open(path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            await db.save_disabled_threads(self.disabled_threads)
         except Exception as e:
             if self.logger:
                 self.logger.error(f"保存自动清理禁用列表失败: {e}")
@@ -98,13 +97,13 @@ class AutoClearManager:
     def is_thread_disabled(self, thread_id: int) -> bool:
         return thread_id in self.disabled_threads
 
-    def disable_thread(self, thread_id: int):
+    async def disable_thread(self, thread_id: int):
         self.disabled_threads.add(thread_id)
-        self._save_disabled_threads()
+        await self._save_disabled_threads()
 
-    def enable_thread(self, thread_id: int):
+    async def enable_thread(self, thread_id: int):
         self.disabled_threads.discard(thread_id)
-        self._save_disabled_threads()
+        await self._save_disabled_threads()
 
     # ── 状态查询 ─────────────────────────────────────────
 
