@@ -193,6 +193,47 @@ class ThreadSelfManage(commands.Cog):
             if self.logger:
                 self.logger.error(f"论坛欢迎消息发送失败: {e}")
 
+    @commands.Cog.listener()
+    async def on_thread_update(self, before: discord.Thread, after: discord.Thread):
+        """当子区被锁定时，通过私信通知贴主。"""
+        try:
+            if before.locked or not after.locked:
+                return
+
+            owner_id = after.owner_id
+            if owner_id is None:
+                return
+
+            parent = after.parent
+            if not isinstance(parent, discord.ForumChannel):
+                return
+
+            owner = after.guild.get_member(owner_id)
+            if owner is None or owner.bot:
+                return
+
+            embed = discord.Embed(
+                title="🔒 您的帖子已被锁定",
+                description=(
+                    f"您发布的帖子 **{after.name}** 已被锁定，锁定后其他人将无法发言。\n\n"
+                    f"如需解锁，可使用 `/自助管理 解锁子区 {after.id}`。"
+                ),
+                colour=discord.Colour.orange(),
+            )
+            embed.add_field(name="帖子", value=after.mention, inline=True)
+            embed.add_field(
+                name="锁定时间",
+                value=discord.utils.format_dt(datetime.now()),
+                inline=True,
+            )
+            if after.guild.icon:
+                embed.set_footer(text=after.guild.name, icon_url=after.guild.icon.url)
+
+            await dm.send_dm(after.guild, owner, embed=embed)
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"锁帖通知私信发送失败: {e}")
+
     @self_manage.command(name="菜单", description="打开自助管理图形菜单（下拉选择功能）")
     async def self_manage_menu(self, interaction: discord.Interaction):
         channel = interaction.channel
