@@ -12,8 +12,17 @@ from typing import List, Tuple, Optional
 
 from src.utils import dm
 from src.utils.confirm_view import confirm_view, confirm_view_embed
-from src.utils.auth import is_admin, is_senior_admin, check_admin_permission, is_admin_member, guild_only
+from src.utils.auth import (
+    is_admin,
+    is_senior_admin,
+    check_admin_permission,
+    is_admin_member,
+    is_senior_admin_member,
+    guild_only,
+)
 from src.utils.config_helper import get_config_value, get_config_for_guild
+
+QA_PERMABAN_REASON = "有效答题处罚满 3 次"
 
 # ---- 持久视图：删除子区审批 ----
 class ThreadDeleteApprovalView(discord.ui.View):
@@ -2557,6 +2566,126 @@ class AdminCommands(commands.Cog):
                     embed=embed,
                     file=discord.File(io.BytesIO(img_bytes), filename=img_filename) if img_bytes else None,
                 )
+
+    # ---- 答疑组永封 ----
+    @app_commands.command(name="答疑组永封", description="答疑组专用永久封禁")
+    @app_commands.describe(member="要永久封禁的成员")
+    @app_commands.rename(member="成员")
+    @guild_only()
+    async def qa_ban(
+        self,
+        interaction,  # type: discord.Interaction
+        member: "discord.Member",
+    ):
+        guild = interaction.guild
+        reason = QA_PERMABAN_REASON
+
+        # 检查是否为答疑组（使用服务器特定配置）
+        qa_role_id = self.get_guild_config("qa_role_id", guild.id, 0)
+        if not qa_role_id:
+            await interaction.response.send_message("❌ 当前服务器未设置答疑组", ephemeral=True)
+            return
+        qa_role = guild.get_role(int(qa_role_id))
+        if not qa_role:
+            await interaction.response.send_message("❌ 答疑组角色不存在", ephemeral=True)
+            return
+        if qa_role not in interaction.user.roles:
+            await interaction.response.send_message("❌ 您不是答疑组成员", ephemeral=True)
+            return
+
+        if member.id == interaction.user.id:
+            await interaction.response.send_message("❌ 不能封禁自己", ephemeral=True)
+            return
+        if member.bot:
+            await interaction.response.send_message("❌ 不能封禁机器人", ephemeral=True)
+            return
+        if qa_role in member.roles:
+            await interaction.response.send_message("❌ 不能封禁答疑组成员", ephemeral=True)
+            return
+        if is_senior_admin_member(member):
+            await interaction.response.send_message("❌ 不能封禁高级管理组成员", ephemeral=True)
+            return
+        if is_admin_member(member):
+            await interaction.response.send_message("❌ 不能封禁管理组成员", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        confirm_embed = discord.Embed(
+            title="⛔ 永久封禁 - 确认",
+            description="确定要永久封禁此用户吗？此操作不可撤销。",
+            color=discord.Color.red()
+        )
+        confirm_embed.set_thumbnail(url=member.display_avatar.url)
+        confirm_embed.add_field(name="昵称", value=member.display_name, inline=True)
+        confirm_embed.add_field(name="用户名", value=member.name, inline=True)
+        confirm_embed.add_field(name="用户ID", value=str(member.id), inline=True)
+        confirm_embed.add_field(name="原因", value=reason, inline=False)
+        if not await confirm_view_embed(interaction, confirm_embed, timeout=120):
+            return
+
+        try:
+            await guild.ban(member, reason=reason, delete_message_days=0)
+        except discord.Forbidden:
+            await interaction.followup.send("❌ 无权限封禁该用户", ephemeral=True)
+            return
+        except discord.NotFound:
+            await interaction.followup.send("❌ 用户不存在或已被封禁", ephemeral=True)
+            return
+
+        record_id = self._save_punish_record(guild.id, {
+            "type": "ban",
+            "user_id": member.id,
+            "moderator_id": interaction.user.id,
+            "reason": reason,
+        })
+
+        sync_cog = self.bot.get_cog("ServerSyncCommands")
+        if sync_cog:
+            await sync_cog.sync_punishment(
+                guild=guild,
+                punishment_type="ban",
+                member=member,
+                moderator=interaction.user,
+                reason=reason,
+                punishment_id=record_id,
+            )
+
+        await interaction.followup.send(f"✅ 已永久封禁 {member}。处罚ID: `{record_id}`", ephemeral=True)
+
+        try:
+            ban_embed = discord.Embed(
+                title="⛔ 永久封禁",
+                description=f"您因 **{reason}** 被 **{guild.name}** 永久封禁。如有异议，请联系管理组成员。"
+            )
+            ban_embed.set_footer(text=f"来自服务器: {guild.name}")
+            await dm.send_dm(member.guild, member, embed=ban_embed)
+        except discord.Forbidden:
+            pass
+        except Exception:
+            pass
+
+        await interaction.followup.send(
+            embed=discord.Embed(title="⛔ 永久封禁", description=f"{member.mention} 因 {reason} 被永久封禁。请注意遵守社区规则。"),
+            ephemeral=False
+        )
+
+        # 公示频道 + 答疑处罚日志（使用服务器特定配置）
+        channel_id = self.get_guild_config("punish_announce_channel_id", guild.id, 0)
+        announce_channel = guild.get_channel(int(channel_id)) if channel_id else None
+        quiz_punish_log_channel_id = self.get_guild_config("quiz_punish_log_channel_id", guild.id, 0)
+        quiz_punish_log_channel = guild.get_channel_or_thread(int(quiz_punish_log_channel_id)) if quiz_punish_log_channel_id else None
+        if announce_channel or quiz_punish_log_channel:
+            embed = discord.Embed(title="⛔ 永久封禁", color=discord.Color.red())
+            embed.add_field(name="成员", value=f"{str(member)} ({member.id})")
+            embed.add_field(name="答疑组成员", value=interaction.user.mention)
+            embed.set_thumbnail(url=member.display_avatar.url)
+            embed.add_field(name="原因", value=reason, inline=False)
+            embed.set_footer(text=f"处罚ID: {record_id}")
+            if announce_channel:
+                await announce_channel.send(embed=embed)
+            if quiz_punish_log_channel:
+                await quiz_punish_log_channel.send(embed=embed)
 
     # ---- 发送公益站地址 ----
     @app_commands.command(name="发送公益站地址", description="发送公益站地址")
