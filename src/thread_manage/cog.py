@@ -7,6 +7,7 @@ from discord.ext import commands
 from discord import app_commands
 from src.utils import dm
 from src.utils.confirm_view import confirm_view
+from src.utils.config_helper import get_config_value
 from src.thread_manage.thread_clear import clear_thread_members
 from src.thread_manage.auto_clear import AutoClearManager
 from src.thread_manage.self_manage_ui import (
@@ -110,6 +111,41 @@ class ThreadSelfManage(commands.Cog):
         if interaction.user.id == channel.owner_id:
             return True
         return await self.is_admin(interaction)
+
+    def _is_configured_admin_member(self, member: discord.Member, key: str) -> bool:
+        guild = getattr(member, "guild", None)
+        if not guild:
+            return False
+
+        for configured_id in get_config_value(key, guild.id, []):
+            try:
+                configured_id = int(configured_id)
+            except (TypeError, ValueError):
+                continue
+
+            if member.id == configured_id:
+                return True
+
+            role = guild.get_role(configured_id)
+            if role and role in getattr(member, "roles", []):
+                return True
+
+        return False
+
+    def _is_protected_from_thread_mute(self, member: discord.Member) -> bool:
+        perms = getattr(member, "guild_permissions", None)
+        if perms and (
+            perms.administrator
+            or perms.manage_guild
+            or perms.manage_threads
+            or perms.moderate_members
+        ):
+            return True
+
+        return (
+            self._is_configured_admin_member(member, "admins")
+            or self._is_configured_admin_member(member, "senior_admins")
+        )
 
     async def _load_mute_cache(self):
         """加载所有禁言记录到内存缓存"""
@@ -468,6 +504,9 @@ class ThreadSelfManage(commands.Cog):
         if member.id == interaction.user.id:
             await interaction.response.send_message("无法禁言自己", ephemeral=True)
             return
+        if self._is_protected_from_thread_mute(member):
+            await interaction.response.send_message("无法禁言管理组成员", ephemeral=True)
+            return
         try:
             config = getattr(self.bot, "config", {})
             for admin_role_id in config.get("admins", []):
@@ -488,6 +527,9 @@ class ThreadSelfManage(commands.Cog):
         reason: str,
     ):
         await interaction.response.defer(ephemeral=True)
+        if self._is_protected_from_thread_mute(member):
+            await interaction.followup.send("无法禁言管理组成员", ephemeral=True)
+            return
         duration = (duration or "").strip()
         reason = (reason or "").strip() or None
         if duration:
@@ -1475,9 +1517,7 @@ class ThreadSelfManage(commands.Cog):
             until = datetime.fromisoformat(mu)
             if datetime.now() < until:
                 return True
-            rec["muted_until"] = None
-            rec["violations"] = 0
-            await self._save_mute_record(guild_id, thread_id, user_id, rec)
+            await self._save_mute_record(guild_id, thread_id, user_id, None)
             return False
         return False
 
@@ -1510,6 +1550,8 @@ class ThreadSelfManage(commands.Cog):
         
         guild = message.guild
         user = message.author
+        if self._is_protected_from_thread_mute(user):
+            return
         # 管理组豁免
         try:
             config = getattr(self.bot, 'config', {})
@@ -1594,6 +1636,9 @@ class ThreadSelfManage(commands.Cog):
             return
         if not await self.can_manage_thread(interaction, channel):
             await interaction.response.send_message("只有子区所有者或管理员可执行此操作", ephemeral=True)
+            return
+        if self._is_protected_from_thread_mute(member):
+            await interaction.response.send_message("无法禁言管理组成员", ephemeral=True)
             return
         # 管理组豁免
         try:

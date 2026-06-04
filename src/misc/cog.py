@@ -143,7 +143,7 @@ class MiscCommands(commands.Cog):
                 self.logger.error(f"加载配置文件失败: {e}")
             return {}
 
-    def _is_thread_muted(self, interaction: discord.Interaction) -> bool:
+    async def _is_thread_muted(self, interaction: discord.Interaction) -> bool:
         """检查用户是否在当前子区被禁言"""
         channel = interaction.channel
         if not isinstance(channel, discord.Thread):
@@ -151,7 +151,9 @@ class MiscCommands(commands.Cog):
         thread_cog = self.bot.get_cog("ThreadSelfManage")
         if not thread_cog:
             return False
-        return thread_cog._is_thread_muted(interaction.guild.id, channel.id, interaction.user.id)
+        if thread_cog._is_protected_from_thread_mute(interaction.user):
+            return False
+        return await thread_cog._is_thread_muted(interaction.guild.id, channel.id, interaction.user.id)
 
     @app_commands.command(name="临时消息", description="发送临时消息，指定时长后自动删除")
     @app_commands.describe(
@@ -166,7 +168,7 @@ class MiscCommands(commands.Cog):
         文字: str = None,
         图片: discord.Attachment = None
     ):
-        if self._is_thread_muted(interaction):
+        if await self._is_thread_muted(interaction):
             await interaction.response.send_message("❌ 您在当前子区已被禁言，无法使用此功能", ephemeral=True)
             return
 
@@ -289,7 +291,7 @@ class MiscCommands(commands.Cog):
         image: discord.Attachment = None,
         thumbnail: discord.Attachment = None
     ):
-        if self._is_thread_muted(interaction):
+        if await self._is_thread_muted(interaction):
             await interaction.response.send_message("❌ 您在当前子区已被禁言，无法使用此功能", ephemeral=True)
             return
 
