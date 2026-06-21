@@ -92,6 +92,8 @@ class ServerSyncCommands(commands.Cog):
             "server_groups": {},
             "servers": {},
             "role_mapping": {},
+            # 身份组映射键方案："main_role_id" 表示以主服身份组 ID 作为跨服别名键
+            "role_key_scheme": "main_role_id",
         }
 
     def _normalize_server_cfg(self, data: Dict) -> Tuple[Dict, bool]:
@@ -163,8 +165,85 @@ class ServerSyncCommands(commands.Cog):
                 group_cfg["main_server_id"] = next(iter(group_cfg["servers"]))
                 changed = True
 
+        # 一次性迁移：将“以身份组名称为键”的旧映射迁移为“以主服身份组 ID 为键”
+        if cfg.get("role_key_scheme") != "main_role_id":
+            self._migrate_role_keys_to_id(cfg)
+            cfg["role_key_scheme"] = "main_role_id"
+            changed = True
+
         self._refresh_legacy_views(cfg)
         return cfg, changed
+
+    def _migrate_role_keys_to_id(self, cfg: Dict) -> bool:
+        """将旧的“身份组名称 -> role_id”映射重写为“主服身份组ID -> 本服role_id”。
+
+        旧结构以身份组名称作为跨服别名键，多个同名身份组会互相覆盖。新方案以主服
+        身份组 ID（全局唯一且改名不变）作为别名键。迁移按主服现有映射建立
+        旧名称 -> 新别名(主服ID) 的对照，再据此重写各子服映射；无法锚定到主服身份组
+        的子服条目（主服没有对应同名映射）在旧逻辑下本就无法稳定联动，迁移时丢弃。
+        """
+        changed = False
+        for group_cfg in cfg.get("server_groups", {}).values():
+            if not isinstance(group_cfg, dict):
+                continue
+            servers = group_cfg.get("servers", {})
+            main_id = group_cfg.get("main_server_id")
+            main_cfg = servers.get(str(main_id)) if main_id is not None else None
+
+            # 1) 主服：名称键 -> str(role_id) 键，并建立 旧名称 -> 新别名 对照
+            oldname_to_alias: Dict[str, str] = {}
+            if isinstance(main_cfg, dict):
+                new_main_roles: Dict[str, int] = {}
+                for old_key, rid in main_cfg.get("roles", {}).items():
+                    try:
+                        rid_int = int(rid)
+                    except (TypeError, ValueError):
+                        continue
+                    alias = str(rid_int)
+                    new_main_roles[alias] = rid_int
+                    oldname_to_alias[str(old_key)] = alias
+                if main_cfg.get("roles") != new_main_roles:
+                    main_cfg["roles"] = new_main_roles
+                    changed = True
+
+            valid_aliases = set(oldname_to_alias.values())
+
+            # 2) 子服：用 旧名称->新别名 重写；已是有效 ID 键的保留；无法锚定的丢弃
+            for gid, scfg in servers.items():
+                if not isinstance(scfg, dict):
+                    continue
+                if main_id is not None and str(gid) == str(main_id):
+                    continue
+                old_roles = scfg.get("roles", {})
+                new_roles: Dict[str, int] = {}
+                for old_key, rid in old_roles.items():
+                    try:
+                        rid_int = int(rid)
+                    except (TypeError, ValueError):
+                        continue
+                    key_str = str(old_key)
+                    if key_str in valid_aliases:
+                        target_alias = key_str
+                    else:
+                        target_alias = oldname_to_alias.get(key_str)
+                        if target_alias is None:
+                            changed = True  # 丢弃无法锚定到主服身份组的旧条目
+                            continue
+                    # 多个旧条目（不同名称）锚定到同一别名且本服 role_id 不同：
+                    # 保留首次写入，不静默被后者覆盖丢失，并告警
+                    if target_alias in new_roles and new_roles[target_alias] != rid_int:
+                        if self.logger:
+                            self.logger.warning(
+                                f"同步配置迁移冲突：子服 {gid} 旧键 '{key_str}' 与既有条目均锚定到别名 "
+                                f"{target_alias}，保留 {new_roles[target_alias]}，丢弃 {rid_int}"
+                            )
+                        changed = True
+                        continue
+                    new_roles[target_alias] = rid_int
+                if old_roles != new_roles:
+                    scfg["roles"] = new_roles
+                    changed = True
+        return changed
 
     def _refresh_legacy_views(self, cfg: Dict) -> None:
         legacy_servers = {}
@@ -226,12 +305,74 @@ class ServerSyncCommands(commands.Cog):
         return server_cfg
 
     def _get_role_alias_for_source(self, source_server_cfg: Dict, role: discord.Role) -> Optional[str]:
+        # 别名键为主服身份组 ID；仅按本服 role_id 命中映射值反查别名，绝不按名称兜底，
+        # 以免多个同名身份组被误判为同一别名。
         for alias, role_id in source_server_cfg.get("roles", {}).items():
-            if int(role_id) == role.id:
-                return alias
-        if role.name in source_server_cfg.get("roles", {}):
-            return role.name
+            try:
+                # 防止手工误改/旧迁移残留的非数字值抛 ValueError 中断整条传播
+                if int(role_id) == role.id:
+                    return alias
+            except (TypeError, ValueError):
+                if self.logger:
+                    self.logger.warning(f"同步映射存在非法 role_id 值，已跳过: alias={alias}, value={role_id!r}")
+                continue
         return None
+
+    def _resolve_main_alias(
+        self,
+        token: str,
+        main_guild: Optional[discord.Guild],
+        main_server_cfg: Dict,
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """把用户输入（主服身份组名称或 ID）解析为规范别名（主服身份组 ID 字符串）。
+
+        返回 (alias, error_message)；成功时 error_message 为 None。
+        名称存在多个同名主服身份组时不静默选取，而是返回错误并列出候选 ID。
+        """
+        token = (token or "").strip()
+        if not token:
+            return None, "映射名称不能为空"
+        main_roles = main_server_cfg.get("roles", {})
+
+        # 第一步：把输入解析为候选别名（主服身份组 ID 字符串）
+        alias: Optional[str] = None
+        if token in main_roles:
+            alias = token
+        elif token.isdigit():
+            alias = token
+        else:
+            # 按名称匹配主服身份组（需主服可用）
+            if not main_guild:
+                return None, "无法访问主服务器，无法按名称解析，请改用主服身份组 ID"
+            matches = [
+                r for r in main_guild.roles
+                if r.name == token and not r.is_default() and not r.managed
+            ]
+            if len(matches) == 0:
+                return None, f"主服中找不到名为 `{token}` 的身份组"
+            if len(matches) > 1:
+                ids = "、".join(str(r.id) for r in matches)
+                return None, (
+                    f"主服中有 **{len(matches)}** 个名为 `{token}` 的身份组，"
+                    f"请改用具体身份组 ID 指定：{ids}"
+                )
+            alias = str(matches[0].id)
+
+        # 第二步：校验该身份组在主服仍存在（主服可达时）；否则别名是残留的悬空映射
+        if main_guild is not None:
+            if not main_guild.get_role(int(alias)):
+                return None, f"主服中找不到 ID 为 `{alias}` 的身份组（可能是残留的失效映射）"
+        elif alias not in main_roles:
+            # 主服不可达且该别名未登记，无从校验，拒绝写入
+            return None, "无法访问主服务器，无法校验该身份组，请改用已登记的主服身份组 ID"
+
+        # 第三步：要求该别名已登记为主服同步源，保证主→子方向能联动
+        if alias not in main_roles:
+            return None, (
+                f"主服身份组 `{alias}` 尚未登记为同步源，"
+                "请先在主服执行「一键写入主服映射」或用 `/同步管理 身份组` 登记"
+            )
+        return alias, None
 
     async def _safe_fetch_member(self, guild: discord.Guild, user_id: int) -> Optional[discord.Member]:
         member = guild.get_member(user_id)
@@ -320,12 +461,24 @@ class ServerSyncCommands(commands.Cog):
         source_role: discord.Role,
         target_guild: discord.Guild,
         existing_role_id: Optional[int] = None,
+        claimed_role_ids: Optional[set] = None,
     ) -> Optional[discord.Role]:
         existing: Optional[discord.Role] = None
         if existing_role_id:
             existing = target_guild.get_role(existing_role_id)
         if not existing:
-            existing = discord.utils.get(target_guild.roles, name=source_role.name)
+            # 无显式映射时才按名称兜底，且仅在目标服存在“唯一”同名身份组时复用，
+            # 避免在多个同名身份组中误改其一；存在歧义则新建。
+            # 同时排除已被其它别名映射占用的身份组，防止一个本服身份组被两个主服别名
+            # 同时认领（多对一），否则删除其一会连带破坏另一个别名的联动。
+            same_named = [
+                r for r in target_guild.roles
+                if r.name == source_role.name
+                and not r.is_default() and not r.managed
+                and (not claimed_role_ids or r.id not in claimed_role_ids)
+            ]
+            if len(same_named) == 1:
+                existing = same_named[0]
 
         icon_bytes = await self._read_role_icon(source_role)
         colors_payload = self._role_colors_payload(source_role)
@@ -854,7 +1007,8 @@ class ServerSyncCommands(commands.Cog):
             return
 
         main_server_cfg = group_cfg["servers"].get(guild_id, {})
-        main_server_cfg.setdefault("roles", {})[role.name] = role.id
+        alias = str(role.id)
+        main_server_cfg.setdefault("roles", {})[alias] = role.id
 
         for sub_guild_id, sub_server_cfg in group_cfg["servers"].items():
             if sub_guild_id == guild_id:
@@ -863,10 +1017,15 @@ class ServerSyncCommands(commands.Cog):
             if not sub_guild or not self._bot_can_manage_roles(sub_guild):
                 continue
             try:
-                new_role = await self._upsert_role_from_main(role, sub_guild)
+                claimed = {
+                    v for k, v in sub_server_cfg.get("roles", {}).items() if k != alias
+                }
+                new_role = await self._upsert_role_from_main(
+                    role, sub_guild, claimed_role_ids=claimed
+                )
                 if new_role:
                     self._mark_role_event_guard(sub_guild.id, new_role.id, "create")
-                    sub_server_cfg.setdefault("roles", {})[role.name] = new_role.id
+                    sub_server_cfg.setdefault("roles", {})[alias] = new_role.id
             except Exception as e:
                 if self.logger:
                     self.logger.error(f"监听同步创建身份组失败 {sub_guild.name}/{role.name}: {e}")
@@ -895,18 +1054,10 @@ class ServerSyncCommands(commands.Cog):
             return
 
         main_server_cfg = group_cfg["servers"].get(guild_id, {})
-        old_alias = None
-        for alias, rid in list(main_server_cfg.get("roles", {}).items()):
-            if int(rid) == before.id:
-                old_alias = alias
-                break
-
-        if not old_alias:
+        # 别名键为主服身份组 ID，改名不改 ID，因此别名稳定、无需任何改键操作。
+        alias = str(after.id)
+        if alias not in main_server_cfg.get("roles", {}):
             return
-
-        if before.name != after.name:
-            main_server_cfg["roles"].pop(old_alias, None)
-            main_server_cfg["roles"][after.name] = after.id
 
         for sub_guild_id, sub_server_cfg in group_cfg["servers"].items():
             if sub_guild_id == guild_id:
@@ -914,18 +1065,20 @@ class ServerSyncCommands(commands.Cog):
             sub_guild = self.bot.get_guild(int(sub_guild_id))
             if not sub_guild or not self._bot_can_manage_roles(sub_guild):
                 continue
-            target_role_id = sub_server_cfg.get("roles", {}).get(old_alias)
+            target_role_id = sub_server_cfg.get("roles", {}).get(alias)
             if not target_role_id:
                 continue
             try:
+                claimed = {
+                    v for k, v in sub_server_cfg.get("roles", {}).items() if k != alias
+                }
                 updated_role = await self._upsert_role_from_main(
-                    after, sub_guild, existing_role_id=int(target_role_id)
+                    after, sub_guild, existing_role_id=int(target_role_id),
+                    claimed_role_ids=claimed,
                 )
                 if updated_role:
                     self._mark_role_event_guard(sub_guild.id, updated_role.id, "update")
-                    if before.name != after.name:
-                        sub_server_cfg["roles"].pop(old_alias, None)
-                    sub_server_cfg["roles"][after.name] = updated_role.id
+                    sub_server_cfg["roles"][alias] = updated_role.id
             except Exception as e:
                 if self.logger:
                     self.logger.error(f"监听同步更新身份组失败 {sub_guild.name}/{after.name}: {e}")
@@ -950,13 +1103,8 @@ class ServerSyncCommands(commands.Cog):
             return
 
         main_server_cfg = group_cfg["servers"].get(guild_id, {})
-        alias = None
-        for a, rid in list(main_server_cfg.get("roles", {}).items()):
-            if int(rid) == role.id:
-                alias = a
-                break
-
-        if not alias:
+        alias = str(role.id)
+        if alias not in main_server_cfg.get("roles", {}):
             return
 
         main_server_cfg["roles"].pop(alias, None)
@@ -964,21 +1112,21 @@ class ServerSyncCommands(commands.Cog):
         for sub_guild_id, sub_server_cfg in group_cfg["servers"].items():
             if sub_guild_id == guild_id:
                 continue
+            # 主服别名已删除，无论子服当前是否可达都先清掉其映射，避免残留悬空别名
+            target_role_id = sub_server_cfg.get("roles", {}).pop(alias, None)
+            if target_role_id is None:
+                continue
             sub_guild = self.bot.get_guild(int(sub_guild_id))
             if not sub_guild:
-                continue
-            target_role_id = sub_server_cfg.get("roles", {}).get(alias)
-            if not target_role_id:
                 continue
             target_role = sub_guild.get_role(int(target_role_id))
             if target_role:
                 try:
                     self._mark_role_event_guard(sub_guild.id, target_role.id, "delete")
-                    await target_role.delete(reason=f"主服身份组同步删除: {alias}")
+                    await target_role.delete(reason=f"主服身份组同步删除: {role.name}")
                 except Exception as e:
                     if self.logger:
                         self.logger.error(f"监听同步删除身份组失败 {sub_guild.name}/{alias}: {e}")
-            sub_server_cfg["roles"].pop(alias, None)
 
         self._config_cache = self.config
         self._save_config()
@@ -1122,18 +1270,21 @@ class ServerSyncCommands(commands.Cog):
         existing_mappings = server_cfg.get("roles", {})
         for idx, source_role in enumerate(source_roles, start=1):
             try:
-                mapped_role_id = existing_mappings.get(source_role.name)
+                alias = str(source_role.id)
+                mapped_role_id = existing_mappings.get(alias)
+                claimed = {v for k, v in existing_mappings.items() if k != alias}
                 target_role = await self._upsert_role_from_main(
                     source_role, target_guild,
                     existing_role_id=int(mapped_role_id) if mapped_role_id else None,
+                    claimed_role_ids=claimed,
                 )
                 if not target_role:
                     skipped += 1
                 else:
                     self._mark_role_event_guard(target_guild.id, target_role.id, "create")
                     self._mark_role_event_guard(target_guild.id, target_role.id, "update")
-                    main_server_cfg.setdefault("roles", {})[source_role.name] = source_role.id
-                    server_cfg["roles"][source_role.name] = target_role.id
+                    main_server_cfg.setdefault("roles", {})[alias] = source_role.id
+                    server_cfg["roles"][alias] = target_role.id
                     role_map[target_role] = source_role.position
                     updated += 1
             except discord.Forbidden:
@@ -1188,21 +1339,21 @@ class ServerSyncCommands(commands.Cog):
         guild_id = str(interaction.guild.id)
         group_cfg = self.config.get("server_groups", {}).get(组名)
         if not group_cfg:
-            await interaction.response.send_message(f"❌ 服务器组 `{组名}` 不存在", ephemeral=True)
+            await interaction.followup.send(f"❌ 服务器组 `{组名}` 不存在", ephemeral=True)
             return
         if guild_id not in group_cfg.get("servers", {}):
-            await interaction.response.send_message("❌ 当前服务器不在该组中", ephemeral=True)
+            await interaction.followup.send("❌ 当前服务器不在该组中", ephemeral=True)
             return
 
         main_server_id = str(group_cfg.get("main_server_id") or "")
         if guild_id == main_server_id:
-            await interaction.response.send_message("❌ 绝对禁止在主服务器执行此操作", ephemeral=True)
+            await interaction.followup.send("❌ 绝对禁止在主服务器执行此操作", ephemeral=True)
             return
 
         server_cfg = group_cfg["servers"][guild_id]
         role_entries = server_cfg.get("roles", {})
         if not role_entries:
-            await interaction.response.send_message("❌ 当前服务器在该组中没有已映射的同步身份组", ephemeral=True)
+            await interaction.followup.send("❌ 当前服务器在该组中没有已映射的同步身份组", ephemeral=True)
             return
 
         target_roles = []
@@ -1212,10 +1363,10 @@ class ServerSyncCommands(commands.Cog):
                 target_roles.append((alias, role_obj))
 
         if not target_roles:
-            await interaction.response.send_message("❌ 没有可删除的同步身份组（可能已被删除或 Bot 权限不足）", ephemeral=True)
+            await interaction.followup.send("❌ 没有可删除的同步身份组（可能已被删除或 Bot 权限不足）", ephemeral=True)
             return
 
-        role_list_text = "\n".join(f"- {alias} ({role_obj.name}, {len(role_obj.members)} 人持有)" for alias, role_obj in target_roles)
+        role_list_text = "\n".join(f"- {role_obj.name} ({len(role_obj.members)} 人持有)" for _, role_obj in target_roles)
         confirmed = await confirm_view(
             interaction,
             title="⚠️ 危险操作：删除全部同步身份组",
@@ -1359,7 +1510,7 @@ class ServerSyncCommands(commands.Cog):
     @sync_manage.command(name="身份组", description="设置当前服务器可同步身份组映射")
     @guild_only()
     @is_sync_admin()
-    @app_commands.describe(名字="映射名称（建议与主服身份组同名）", role="当前服务器中的身份组")
+    @app_commands.describe(名字="子服使用：要对应的主服身份组名称或 ID；主服使用：可留任意值", role="当前服务器中的身份组")
     async def add_role_mapping(self, interaction: discord.Interaction, 名字: str, role: discord.Role):
         if role.managed:
             await interaction.response.send_message(
@@ -1372,11 +1523,36 @@ class ServerSyncCommands(commands.Cog):
         if not group_name or not server_cfg:
             await interaction.response.send_message("❌ 当前服务器未加入任何同步服务器组", ephemeral=True)
             return
-        server_cfg.setdefault("roles", {})[名字] = role.id
+
+        group_cfg = config["server_groups"][group_name]
+        main_id = str(group_cfg.get("main_server_id") or "")
+
+        if guild_id == main_id:
+            # 主服：别名即该身份组自身 ID（名字参数仅作提示，不参与键）
+            alias = str(role.id)
+            server_cfg.setdefault("roles", {})[alias] = role.id
+            self._config_cache = config
+            self._save_config()
+            await interaction.response.send_message(
+                f"✅ 已在主服登记同步源身份组：{role.mention}（别名=ID `{alias}`）",
+                ephemeral=True,
+            )
+            return
+
+        # 子服：把“名字（主服身份组名称或 ID）”解析为规范别名（主服身份组 ID）
+        main_guild = self.bot.get_guild(int(main_id)) if main_id else None
+        main_server_cfg = group_cfg.get("servers", {}).get(main_id, {})
+        alias, err = self._resolve_main_alias(名字, main_guild, main_server_cfg)
+        if err:
+            await interaction.response.send_message(f"❌ {err}", ephemeral=True)
+            return
+        server_cfg.setdefault("roles", {})[alias] = role.id
         self._config_cache = config
         self._save_config()
+        main_role = main_guild.get_role(int(alias)) if main_guild else None
+        main_label = f"{main_role.name}（ID `{alias}`）" if main_role else f"ID `{alias}`"
         await interaction.response.send_message(
-            f"✅ 已在 `{group_name}` 中添加映射：`{名字}` -> {role.mention}",
+            f"✅ 已在 `{group_name}` 中添加映射：主服 {main_label} -> {role.mention}",
             ephemeral=True,
         )
 
@@ -1404,11 +1580,9 @@ class ServerSyncCommands(commands.Cog):
         existing = server_cfg.get("roles", {})
         added = 0
         for role in manageable:
-            if role.name not in existing:
-                existing[role.name] = role.id
-                added += 1
-            elif existing[role.name] != role.id:
-                existing[role.name] = role.id
+            alias = str(role.id)
+            if existing.get(alias) != role.id:
+                existing[alias] = role.id
                 added += 1
         server_cfg["roles"] = existing
         self._config_cache = config
@@ -1416,7 +1590,7 @@ class ServerSyncCommands(commands.Cog):
 
         msg = (
             f"✅ 已写入/更新 {added} 个映射，当前共 {len(existing)} 项\n"
-            "（映射名 = 身份组名，后续子服可用「一键智能对应子服映射」自动匹配）"
+            "（映射键 = 主服身份组 ID，子服可用「一键智能对应子服映射」按身份组名自动匹配）"
         )
         await interaction.response.send_message(msg, ephemeral=True)
 
@@ -1441,40 +1615,68 @@ class ServerSyncCommands(commands.Cog):
             return
 
         main_server_cfg = group_cfg["servers"].get(main_server_id, {})
-        main_aliases = set(main_server_cfg.get("roles", {}).keys())
+        main_aliases = list(main_server_cfg.get("roles", {}).keys())
         if not main_aliases:
             await interaction.response.send_message("❌ 主服务器还没有映射配置，请先在主服执行「一键写入主服映射」", ephemeral=True)
             return
 
-        local_roles_by_name: Dict[str, discord.Role] = {}
+        # 别名为主服身份组 ID，需借助主服解析出身份组名，再据名匹配本服身份组。
+        main_guild = self.bot.get_guild(int(main_server_id))
+        if not main_guild:
+            await interaction.response.send_message(
+                "❌ 无法访问主服务器，无法按身份组名自动匹配；请确认 Bot 在主服在线后重试", ephemeral=True
+            )
+            return
+
+        # 本服 身份组名 -> 同名身份组列表（用于检测本服同名歧义）
+        local_by_name: Dict[str, List[discord.Role]] = {}
         for role in interaction.guild.roles:
             if not role.is_default() and not role.managed:
-                local_roles_by_name[role.name] = role
+                local_by_name.setdefault(role.name, []).append(role)
 
         existing = server_cfg.get("roles", {})
         matched = 0
-        unmatched = []
-        for alias in sorted(main_aliases):
-            local_role = local_roles_by_name.get(alias)
-            if local_role:
-                existing[alias] = local_role.id
+        unmatched: List[str] = []          # 本服无同名身份组
+        ambiguous_local: List[str] = []     # 本服存在多个同名身份组，需手动指定
+        missing_main: List[str] = []        # 主服身份组已不存在
+        for alias in main_aliases:
+            main_role = main_guild.get_role(int(alias))
+            if not main_role:
+                missing_main.append(alias)
+                continue
+            candidates = local_by_name.get(main_role.name, [])
+            if len(candidates) == 1:
+                existing[alias] = candidates[0].id
                 matched += 1
+            elif len(candidates) == 0:
+                unmatched.append(main_role.name)
             else:
-                unmatched.append(alias)
+                ambiguous_local.append(main_role.name)
 
         server_cfg["roles"] = existing
         self._config_cache = config
         self._save_config()
 
+        def _block(title: str, items: List[str]) -> List[str]:
+            preview = items[:20]
+            out = [title, "```"]
+            out.extend(preview)
+            if len(items) > 20:
+                out.append(f"... 及另外 {len(items) - 20} 个")
+            out.append("```")
+            return out
+
         lines = [f"✅ 已自动匹配 {matched} 个映射，当前共 {len(existing)} 项"]
+        if ambiguous_local:
+            lines += _block(
+                f"⚠️ 以下 {len(ambiguous_local)} 个身份组在当前服务器存在多个同名，已跳过，请用 `/同步管理 身份组` 指定主服身份组 ID：",
+                ambiguous_local,
+            )
         if unmatched:
-            preview = unmatched[:20]
-            lines.append(f"⚠️ 以下 {len(unmatched)} 个主服映射在当前服务器无同名身份组：")
-            lines.append("```")
-            lines.extend(preview)
-            if len(unmatched) > 20:
-                lines.append(f"... 及另外 {len(unmatched) - 20} 个")
-            lines.append("```")
+            lines += _block(f"⚠️ 以下 {len(unmatched)} 个主服身份组在当前服务器无同名身份组：", unmatched)
+        if missing_main:
+            lines += _block(f"ℹ️ 以下 {len(missing_main)} 个主服映射对应的身份组已不存在（建议在主服重新执行「一键写入主服映射」）：", missing_main)
+        if unmatched or ambiguous_local:
             lines.append("提示：可手动用 `/同步管理 身份组` 逐个指定，或先执行「主服全量身份组同步」创建身份组后再试。")
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
