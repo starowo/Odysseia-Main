@@ -106,6 +106,17 @@ class ThreadSelfManage(commands.Cog):
             return True
         return await self.is_admin(interaction)
 
+    async def _notice_sender_label(self, interaction: discord.Interaction, channel: discord.Thread) -> str:
+        """全体通知小字中标注的发送者身份：贴主 / 协管 / 管理员 + 显示名。"""
+        name = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "name", "未知")
+        if interaction.user.id == channel.owner_id:
+            role = "贴主"
+        elif interaction.user.id in await self._load_thread_delegates(channel.guild.id, channel.id):
+            role = "协管"
+        else:
+            role = "管理员"
+        return f"{role}「{name}」"
+
     async def can_manage_delegate_settings(self, interaction: discord.Interaction, channel: discord.Thread) -> bool:
         """检查用户是否可以管理协管权限（仅子区所有者或管理员）"""
         if interaction.user.id == channel.owner_id:
@@ -398,8 +409,9 @@ class ThreadSelfManage(commands.Cog):
 
     async def apply_announce_from_modal(self, interaction: discord.Interaction, channel: discord.Thread, text: str):
         await interaction.response.defer(ephemeral=True)
+        sender = await self._notice_sender_label(interaction, channel)
         await channel.send(
-            f"@everyone \n{text}\n> -# 这是一条由贴主发送的子区内通知\n> -# 如果不想再收到此类通知，取消关注本贴即可"
+            f"@everyone \n{text}\n> -# 这是一条由{sender}发送的子区内通知\n> -# 如果不想再收到此类通知，取消关注本贴即可"
         )
         await interaction.followup.send("已通知所有在本贴内的成员", ephemeral=True)
 
@@ -779,8 +791,9 @@ class ThreadSelfManage(commands.Cog):
             return
         
         await interaction.response.defer(ephemeral=True)
-        
-        await channel.send(f"@everyone \n{message}\n> -# 这是一条由贴主发送的子区内通知\n> -# 如果不想再收到此类通知，取消关注本贴即可")
+
+        sender = await self._notice_sender_label(interaction, channel)
+        await channel.send(f"@everyone \n{message}\n> -# 这是一条由{sender}发送的子区内通知\n> -# 如果不想再收到此类通知，取消关注本贴即可")
         await interaction.edit_original_response(content="已通知所有在本贴内的成员")
 
     # ---- 删除消息反应 ----
