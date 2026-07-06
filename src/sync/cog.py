@@ -13,6 +13,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from src.utils.auth import guild_only
+from src.utils.config_helper import get_config_value
 from src.utils.confirm_view import confirm_view
 
 
@@ -509,6 +510,98 @@ class ServerSyncCommands(commands.Cog):
         await self._patch_role_colors_via_api(target_guild, result_role, colors_payload, reason)
         return result_role
 
+    @staticmethod
+    def _format_display_name(user) -> str:
+        """返回干净的用户展示名，去掉新用户系统里无意义的 `#0` 后缀。"""
+        if user is None:
+            return "未知用户"
+        name = getattr(user, "display_name", None) or getattr(user, "name", None) or str(getattr(user, "id", "未知用户"))
+        disc = getattr(user, "discriminator", None)
+        # 旧账号仍有有效四位 discriminator 时保留；新账号为 "0"/空则不拼接
+        if disc and disc not in ("0", "0000", ""):
+            return f"{name}#{disc}"
+        return name
+
+    @staticmethod
+    def _format_duration_text(seconds) -> str:
+        """把秒数格式化为「X天/X小时/X分钟/X秒」的可读文本。"""
+        try:
+            seconds = int(seconds)
+        except (TypeError, ValueError):
+            return "未知"
+        if seconds <= 0:
+            return "0秒"
+        if seconds % 86400 == 0:
+            return f"{seconds // 86400}天"
+        if seconds % 3600 == 0:
+            return f"{seconds // 3600}小时"
+        if seconds % 60 == 0:
+            return f"{seconds // 60}分钟"
+        return f"{seconds}秒"
+
+    def _build_sync_punish_embed(self, record: Dict, img_filename: Optional[str] = None) -> discord.Embed:
+        """构建同步处罚公示 Embed：中文处罚类型、时长/警告细节、@提及（不实际触发通知）。"""
+        ptype = record.get("type")
+        duration = record.get("duration")
+        warn_days = int(record.get("warn_days") or 0)
+        user_id = record.get("user_id")
+        moderator_id = record.get("moderator_id")
+
+        # 仅加警告（禁言时长为空）时，按“警告”而非“禁言”展示，避免类型误导
+        is_warn_only = ptype == "mute" and not (duration and int(duration) > 0) and warn_days > 0
+        type_label = "⚠️ 警告" if is_warn_only else {
+            "mute": "🔇 禁言",
+            "ban": "⛔ 永封",
+            "kick": "👋 踢出",
+            "warn": "⚠️ 警告",
+        }.get(ptype, ptype or "未知")
+
+        embed = discord.Embed(
+            title="🚨 同步处罚执行",
+            color=discord.Color.red(),
+            timestamp=datetime.datetime.now(datetime.timezone.utc),
+        )
+        embed.add_field(name="来源服务器", value=record.get("source_guild_name") or "未知", inline=True)
+        embed.add_field(name="处罚类型", value=type_label, inline=True)
+
+        user_name = record.get("user_name")
+        user_value = f"<@{user_id}>" + (f"（{user_name}）" if user_name else "")
+        embed.add_field(name="用户", value=user_value, inline=False)
+
+        mod_name = record.get("moderator_name")
+        if moderator_id:
+            mod_value = f"<@{moderator_id}>" + (f"（{mod_name}）" if mod_name else "")
+        else:
+            mod_value = mod_name or "系统"
+        embed.add_field(name="原管理员", value=mod_value, inline=True)
+
+        if duration and int(duration) > 0:
+            embed.add_field(name="时长", value=self._format_duration_text(duration), inline=True)
+        if warn_days > 0:
+            embed.add_field(name="警告", value=f"{warn_days}天", inline=True)
+
+        embed.add_field(name="原因", value=record.get("reason") or "未提供", inline=False)
+        embed.set_footer(text=f"处罚ID: {record.get('id')}")
+        if img_filename:
+            embed.set_image(url=f"attachment://{img_filename}")
+        return embed
+
+    def _resolve_punish_announce_channel(self, target_guild: discord.Guild, server_cfg: Dict):
+        """解析目标服的处罚公示频道：优先同步模块自身配置，未设置时回退到该服常规处罚公示频道。
+
+        运营常只在子服设置了同步公示频道，主服未设置，导致子服→主服的处罚被静默执行、
+        主服看不到公示（表现为“反向不同步”）。此处回退可让任意方向的同步处罚都能在目标服可见。
+        """
+        announce_channel_id = server_cfg.get("punishment_announce_channel")
+        if not announce_channel_id:
+            announce_channel_id = get_config_value("punish_announce_channel_id", target_guild.id, 0) or None
+        if not announce_channel_id:
+            return None
+        try:
+            return target_guild.get_channel(int(announce_channel_id))
+        except (TypeError, ValueError):
+            return None
+
     async def _apply_punishment_in_guild(
         self,
         target_guild: discord.Guild,
@@ -528,7 +621,9 @@ class ServerSyncCommands(commands.Cog):
             if not user_obj:
                 return
             if duration and duration > 0:
-                await user_obj.timeout(datetime.timedelta(seconds=int(duration)), reason=f"同步处罚: {reason}")
+                # Discord 超时上限为 28 天，超出会直接报错并被吞掉导致同步“失败”，此处夹紧
+                timeout_seconds = min(int(duration), 28 * 24 * 60 * 60)
+                await user_obj.timeout(datetime.timedelta(seconds=timeout_seconds), reason=f"同步处罚: {reason}")
             if warn_days > 0:
                 warned_role_id = self._get_warned_role_id(target_guild.id)
                 if warned_role_id:
@@ -547,25 +642,18 @@ class ServerSyncCommands(commands.Cog):
         with open(record_file, "w", encoding="utf-8") as f:
             json.dump(record, f, ensure_ascii=False, indent=2)
 
-        announce_channel_id = server_cfg.get("punishment_announce_channel")
-        if announce_channel_id:
-            announce_channel = target_guild.get_channel(int(announce_channel_id))
-            if announce_channel:
-                embed = discord.Embed(
-                    title="🚨 同步处罚执行",
-                    color=discord.Color.red(),
-                    timestamp=datetime.datetime.now(datetime.timezone.utc),
-                )
-                embed.add_field(name="来源服务器", value=record["source_guild_name"], inline=True)
-                embed.add_field(name="处罚类型", value=punishment_type, inline=True)
-                embed.add_field(name="用户", value=f"<@{user_id}> ({record.get('user_name', user_id)})", inline=True)
-                embed.add_field(name="原管理员", value=record.get("moderator_name", "系统"), inline=True)
-                embed.add_field(name="原因", value=reason, inline=False)
-                embed.set_footer(text=f"处罚ID: {record['id']}")
-                img_file = discord.File(io.BytesIO(img_bytes), filename=img_filename) if img_bytes and img_filename else None
-                if img_file:
-                    embed.set_image(url=f"attachment://{img_filename}")
-                await announce_channel.send(embed=embed, file=img_file)
+        announce_channel = self._resolve_punish_announce_channel(target_guild, server_cfg)
+        if announce_channel:
+            embed = self._build_sync_punish_embed(
+                record, img_filename if (img_bytes and img_filename) else None
+            )
+            img_file = discord.File(io.BytesIO(img_bytes), filename=img_filename) if img_bytes and img_filename else None
+            # 公示不应真的 @ 到被处罚用户/原管理员（可能跨服误触发通知）
+            await announce_channel.send(
+                embed=embed,
+                file=img_file,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
 
     def _get_warned_role_id(self, guild_id: int) -> Optional[int]:
         guild_configs = getattr(self.bot, "config", {}).get("guild_configs", {})
@@ -1826,13 +1914,13 @@ class ServerSyncCommands(commands.Cog):
 
         if member is not None:
             target_user_id = member.id
-            target_user_name = f"{member.display_name}#{member.discriminator}"
+            target_user_name = self._format_display_name(member)
         elif user_id is not None:
             target_user_id = int(user_id)
             target_user_name = f"用户 {target_user_id}"
             try:
                 fetched_user = await self.bot.fetch_user(target_user_id)
-                target_user_name = f"{fetched_user.display_name}#{fetched_user.discriminator}"
+                target_user_name = self._format_display_name(fetched_user)
             except Exception:
                 pass
         else:
@@ -1857,7 +1945,7 @@ class ServerSyncCommands(commands.Cog):
             "user_id": target_user_id,
             "user_name": target_user_name,
             "moderator_id": moderator.id if moderator else None,
-            "moderator_name": f"{moderator.display_name}#{moderator.discriminator}" if moderator else "系统",
+            "moderator_name": self._format_display_name(moderator) if moderator else "系统",
             "reason": reason,
             "duration": int(duration) if duration else None,
             "warn_days": int(warn_days or 0),
