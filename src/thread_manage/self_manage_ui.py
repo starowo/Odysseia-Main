@@ -126,7 +126,13 @@ async def wait_menu_confirm_on_message(
 
 
 class SelfManageMainSelect(ui.Select):
-    def __init__(self, cog: ThreadSelfManage, thread: discord.Thread):
+    def __init__(
+        self,
+        cog: ThreadSelfManage,
+        thread: discord.Thread,
+        *,
+        show_global_actions: bool = False,
+    ):
         opts = [
             discord.SelectOption(label="慢速模式", value="slowmode", description="设置发言间隔"),
             discord.SelectOption(label="全体通知", value="announce", description="@本贴内成员"),
@@ -134,11 +140,30 @@ class SelfManageMainSelect(ui.Select):
             discord.SelectOption(label="编辑标签", value="tags", description="仅论坛频道的贴"),
             discord.SelectOption(label="锁定并归档", value="lock", description="需确认"),
             discord.SelectOption(label="删帖", value="delete_thread", description="仅贴主，两次确认"),
-            discord.SelectOption(label="更多功能", value="more", description="斜杠与右键说明"),
         ]
+        # 高级选项只在菜单创建者拥有楼主或管理员权限时加入。
+        if show_global_actions:
+            opts.extend(
+                [
+                    discord.SelectOption(
+                        label="全贴禁言用户",
+                        value="global_mute",
+                        description="禁止用户在所有历史帖子发言",
+                    ),
+                    discord.SelectOption(
+                        label="撤销全贴禁言",
+                        value="global_unmute",
+                        description="恢复用户所有帖子发言权限",
+                    ),
+                ]
+            )
+        opts.append(
+            discord.SelectOption(label="更多功能", value="more", description="斜杠与右键说明")
+        )
         super().__init__(placeholder="选择要执行的功能…", min_values=1, max_values=1, options=opts)
         self.cog = cog
         self.thread = thread
+        self.show_global_actions = show_global_actions
 
     async def callback(self, interaction: discord.Interaction):
         if not isinstance(interaction.channel, discord.Thread):
@@ -148,11 +173,34 @@ class SelfManageMainSelect(ui.Select):
         if ch.id != self.thread.id:
             await interaction.response.send_message("子区已切换，请重新打开菜单。", ephemeral=True)
             return
+
+        v = self.values[0]
+        # 高级全贴操作必须先走独立权限，不能经过包含协管的 can_manage_thread。
+        if v in {"global_mute", "global_unmute"}:
+            is_mute = v == "global_mute"
+            if not await self.cog.can_global_thread_action(interaction, ch):
+                message = (
+                    "只有帖子楼主和管理组可以执行全贴禁言。"
+                    if is_mute
+                    else "只有帖子楼主和管理组可以撤销全贴禁言。"
+                )
+                await interaction.response.send_message(message, ephemeral=True)
+                return
+            action_name = "全贴禁言用户" if is_mute else "撤销全贴禁言"
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title=action_name,
+                    description="请选择目标用户。",
+                    colour=discord.Colour.orange(),
+                ),
+                view=GlobalThreadActionUserView(self.cog, ch, is_mute=is_mute),
+            )
+            return
+
         if not await self.cog.can_manage_thread(interaction, ch):
             await interaction.response.send_message("不能在他人子区内使用此功能。", ephemeral=True)
             return
 
-        v = self.values[0]
         if v == "slowmode":
             view = SlowModeSubView(self.cog, ch)
             await interaction.response.edit_message(
@@ -192,15 +240,34 @@ class SelfManageMainSelect(ui.Select):
                 description=MORE_FEATURES_HELP,
                 colour=discord.Colour.dark_teal(),
             )
-            await interaction.response.edit_message(embed=embed, view=BackToMainView(self.cog, ch))
+            await interaction.response.edit_message(
+                embed=embed,
+                view=BackToMainView(
+                    self.cog,
+                    ch,
+                    show_global_actions=self.show_global_actions,
+                ),
+            )
             return
 
 
 class BackToMainView(ui.View):
-    def __init__(self, cog: ThreadSelfManage, thread: discord.Thread):
+    def __init__(
+        self,
+        cog: ThreadSelfManage,
+        thread: discord.Thread,
+        *,
+        show_global_actions: bool = False,
+    ):
         super().__init__(timeout=300)
         self.cog = cog
-        self.add_item(SelfManageMainSelect(cog, thread))
+        self.add_item(
+            SelfManageMainSelect(
+                cog,
+                thread,
+                show_global_actions=show_global_actions,
+            )
+        )
 
     @ui.button(label="返回主菜单", style=discord.ButtonStyle.secondary, row=1)
     async def back(self, interaction: discord.Interaction, button: ui.Button):
@@ -218,14 +285,88 @@ class BackToMainView(ui.View):
         )
         await interaction.response.edit_message(
             embed=embed,
-            view=SelfManageMainMenuView(self.cog, ch),
+            view=await build_self_manage_main_menu_view(self.cog, interaction, ch),
         )
 
 
 class SelfManageMainMenuView(ui.View):
-    def __init__(self, cog: ThreadSelfManage, thread: discord.Thread):
+    def __init__(
+        self,
+        cog: ThreadSelfManage,
+        thread: discord.Thread,
+        *,
+        show_global_actions: bool = False,
+    ):
         super().__init__(timeout=300)
-        self.add_item(SelfManageMainSelect(cog, thread))
+        self.add_item(
+            SelfManageMainSelect(
+                cog,
+                thread,
+                show_global_actions=show_global_actions,
+            )
+        )
+
+
+async def build_self_manage_main_menu_view(
+    cog: ThreadSelfManage,
+    interaction: discord.Interaction,
+    thread: discord.Thread,
+) -> SelfManageMainMenuView:
+    """按当前交互用户权限动态构建自助管理主菜单。"""
+    show_global_actions = await cog.can_global_thread_action(interaction, thread)
+    return SelfManageMainMenuView(
+        cog,
+        thread,
+        show_global_actions=show_global_actions,
+    )
+
+
+class GlobalThreadActionUserSelect(ui.UserSelect):
+    """选择需要在其全部历史帖子中禁言或解除禁言的用户。"""
+
+    def __init__(self, cog: ThreadSelfManage, thread: discord.Thread, *, is_mute: bool):
+        super().__init__(placeholder="选择目标用户…", min_values=1, max_values=1)
+        self.cog = cog
+        self.thread = thread
+        self.is_mute = is_mute
+
+    async def callback(self, interaction: discord.Interaction):
+        if not isinstance(interaction.channel, discord.Thread) or interaction.channel.id != self.thread.id:
+            await interaction.response.send_message("子区已切换，请重新打开菜单。", ephemeral=True)
+            return
+        if not await self.cog.can_global_thread_action(interaction, self.thread):
+            message = (
+                "只有帖子楼主和管理组可以执行全贴禁言。"
+                if self.is_mute
+                else "只有帖子楼主和管理组可以撤销全贴禁言。"
+            )
+            await interaction.response.send_message(message, ephemeral=True)
+            return
+
+        member = self.values[0]
+        if self.is_mute:
+            if member.bot:
+                await interaction.response.send_message("❌ 不能禁言机器人", ephemeral=True)
+                return
+            if member.id == interaction.user.id:
+                await interaction.response.send_message("无法禁言自己", ephemeral=True)
+                return
+            if self.cog._is_protected_from_thread_mute(member):
+                await interaction.response.send_message("无法禁言管理组成员", ephemeral=True)
+                return
+
+        await self.cog.menu_run_global_thread_action(
+            interaction,
+            self.thread,
+            member,
+            is_mute=self.is_mute,
+        )
+
+
+class GlobalThreadActionUserView(ui.View):
+    def __init__(self, cog: ThreadSelfManage, thread: discord.Thread, *, is_mute: bool):
+        super().__init__(timeout=300)
+        self.add_item(GlobalThreadActionUserSelect(cog, thread, is_mute=is_mute))
 
 
 class SlowModeSubSelect(ui.Select):
@@ -270,7 +411,10 @@ class SlowModeSubView(ui.View):
             description="请在下拉列表中选择要执行的操作。",
             colour=discord.Colour.blue(),
         )
-        await interaction.response.edit_message(embed=embed, view=SelfManageMainMenuView(self.cog, ch))
+        await interaction.response.edit_message(
+            embed=embed,
+            view=await build_self_manage_main_menu_view(self.cog, interaction, ch),
+        )
 
 
 class AnnounceModal(ui.Modal, title="全体通知"):
@@ -356,7 +500,10 @@ class TagEditView(ui.View):
                 description="请在下拉列表中选择要执行的操作。",
                 colour=discord.Colour.blue(),
             )
-            await itx.response.edit_message(embed=embed, view=SelfManageMainMenuView(cog, ch))
+            await itx.response.edit_message(
+                embed=embed,
+                view=await build_self_manage_main_menu_view(cog, itx, ch),
+            )
 
         back.callback = back_cb
         self.add_item(back)

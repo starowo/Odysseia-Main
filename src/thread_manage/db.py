@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS thread_mutes (
     thread_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL,
     muted_until INTEGER,
+    global_muted_until TEXT,
     violations INTEGER DEFAULT 0,
     PRIMARY KEY (guild_id, thread_id, user_id)
 );
@@ -83,8 +84,20 @@ async def init_db() -> None:
     await _db.execute("PRAGMA journal_mode=WAL")
     await _db.execute("PRAGMA synchronous=NORMAL")
     await _db.executescript(_CREATE_TABLES_SQL)
+    await _ensure_thread_mute_columns()
     await _db.commit()
     _log("数据库表已就绪")
+
+
+async def _ensure_thread_mute_columns() -> None:
+    """幂等补齐禁言分层字段；旧记录继续作为单帖禁言保留。"""
+    rows = await _db.execute_fetchall("PRAGMA table_info(thread_mutes)")
+    columns = {row[1] for row in rows}
+    if "global_muted_until" not in columns:
+        await _db.execute(
+            "ALTER TABLE thread_mutes ADD COLUMN global_muted_until TEXT"
+        )
+        await _db.commit()
 
 
 async def close_db() -> None:
@@ -370,7 +383,11 @@ async def load_all_mutes() -> dict[tuple[int, int, int], dict]:
     rows = await _db.execute_fetchall("SELECT * FROM thread_mutes")
     for row in rows:
         key = (row["guild_id"], row["thread_id"], row["user_id"])
-        records[key] = {"muted_until": row["muted_until"], "violations": row["violations"]}
+        records[key] = {
+            "muted_until": row["muted_until"],
+            "global_muted_until": row["global_muted_until"],
+            "violations": row["violations"],
+        }
     return records
 
 
@@ -385,8 +402,16 @@ async def save_mute_record(guild_id: int, thread_id: int, user_id: int,
     else:
         await _db.execute(
             "INSERT OR REPLACE INTO thread_mutes "
-            "(guild_id, thread_id, user_id, muted_until, violations) VALUES (?, ?, ?, ?, ?)",
-            (guild_id, thread_id, user_id, record.get("muted_until"), record.get("violations", 0)),
+            "(guild_id, thread_id, user_id, muted_until, global_muted_until, violations) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                guild_id,
+                thread_id,
+                user_id,
+                record.get("muted_until"),
+                record.get("global_muted_until"),
+                record.get("violations", 0),
+            ),
         )
     await _db.commit()
 

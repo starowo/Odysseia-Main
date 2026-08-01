@@ -13,13 +13,13 @@ from src.thread_manage.auto_clear import AutoClearManager
 from src.thread_manage.self_manage_ui import (
     ForumWelcomeView,
     SLOWMODE_OPTIONS,
-    SelfManageMainMenuView,
     SlowModeSubView,
     TagEditView,
     ThreadMuteModal,
     forum_user_opted_out,
     schedule_delete_message,
     wait_menu_confirm_on_message,
+    build_self_manage_main_menu_view,
 )
 from src.thread_manage import db
 from typing import Optional
@@ -103,6 +103,14 @@ class ThreadSelfManage(commands.Cog):
     async def can_manage_thread(self, interaction: discord.Interaction, channel: discord.Thread) -> bool:
         """检查用户是否可以管理该子区（子区所有者、协管或管理员）"""
         if await self.can_manage_as_owner(interaction.user.id, channel):
+            return True
+        return await self.is_admin(interaction)
+
+    async def can_global_thread_action(
+        self, interaction: discord.Interaction, channel: discord.Thread
+    ) -> bool:
+        """全贴操作仅允许当前帖子楼主或管理员，明确排除帖子协管。"""
+        if interaction.user.id == channel.owner_id:
             return True
         return await self.is_admin(interaction)
 
@@ -297,8 +305,84 @@ class ThreadSelfManage(commands.Cog):
         )
         await interaction.response.send_message(
             embed=embed,
-            view=SelfManageMainMenuView(self, channel),
+            view=await build_self_manage_main_menu_view(self, interaction, channel),
             ephemeral=True,
+        )
+
+    @self_manage.command(name="全贴禁言", description="在用户创建的所有历史帖子中禁言该成员")
+    @app_commands.describe(
+        member="要禁言的成员",
+        duration="时长(如10m,1h,1d，可选)",
+        reason="原因(可选)",
+    )
+    async def global_mute(
+        self,
+        interaction: discord.Interaction,
+        member: discord.Member,
+        duration: str = None,
+        reason: str = None,
+    ):
+        """直接命令入口；实际扫描、确认及写入均复用现有全贴禁言流程。"""
+        channel = interaction.channel
+        if not isinstance(channel, discord.Thread):
+            await interaction.response.send_message("此指令仅在子区内有效", ephemeral=True)
+            return
+        if not await self.can_global_thread_action(interaction, channel):
+            await interaction.response.send_message(
+                "只有帖子楼主和管理组可以执行全贴禁言。", ephemeral=True
+            )
+            return
+        if member.bot:
+            await interaction.response.send_message("❌ 不能禁言机器人", ephemeral=True)
+            return
+        if member.id == interaction.user.id:
+            await interaction.response.send_message("无法禁言自己", ephemeral=True)
+            return
+        if self._is_protected_from_thread_mute(member):
+            await interaction.response.send_message("无法禁言管理组成员", ephemeral=True)
+            return
+
+        muted_until = -1
+        if duration:
+            seconds, _human = self._parse_time(duration)
+            if seconds < 0:
+                await interaction.response.send_message(
+                    "❌ 无效时长，请使用m/h/d结尾", ephemeral=True
+                )
+                return
+            muted_until = (datetime.now() + timedelta(seconds=seconds)).isoformat()
+
+        await self.menu_run_global_thread_action(
+            interaction,
+            channel,
+            member,
+            is_mute=True,
+            muted_until=muted_until,
+            reason=reason,
+            duration_label=duration or "永久",
+        )
+
+    @self_manage.command(name="撤销全贴禁言", description="恢复用户在其所有历史帖子中的发言权限")
+    @app_commands.describe(member="要撤销全贴禁言的成员")
+    async def global_unmute(
+        self, interaction: discord.Interaction, member: discord.Member
+    ):
+        """直接命令入口；实际扫描、确认及删除均复用现有全贴撤销流程。"""
+        channel = interaction.channel
+        if not isinstance(channel, discord.Thread):
+            await interaction.response.send_message("此指令仅在子区内有效", ephemeral=True)
+            return
+        if not await self.can_global_thread_action(interaction, channel):
+            await interaction.response.send_message(
+                "只有帖子楼主和管理组可以撤销全贴禁言。", ephemeral=True
+            )
+            return
+
+        await self.menu_run_global_thread_action(
+            interaction,
+            channel,
+            member,
+            is_mute=False,
         )
 
     async def menu_run_lock(self, interaction: discord.Interaction, channel: discord.Thread):
@@ -380,6 +464,204 @@ class ThreadSelfManage(commands.Cog):
                 await interaction.followup.send(f"❌ 删除失败: {str(e)}", ephemeral=True)
             except Exception:
                 pass
+
+    async def _find_owned_forum_threads(
+        self, guild: discord.Guild, owner_id: int
+    ) -> list[discord.Thread]:
+        """查找用户创建的全部活动及公开归档论坛帖子，并按帖子 ID 去重。"""
+        found: dict[int, discord.Thread] = {}
+        for forum in guild.channels:
+            if not isinstance(forum, discord.ForumChannel):
+                continue
+
+            # 活动帖来自频道缓存，不额外请求 Discord API。
+            for thread in forum.threads:
+                if thread.owner_id == owner_id:
+                    found[thread.id] = thread
+
+            try:
+                async for thread in forum.archived_threads(limit=None):
+                    if thread.owner_id == owner_id:
+                        found[thread.id] = thread
+            except (discord.Forbidden, discord.HTTPException) as e:
+                if self.logger:
+                    self.logger.warning(
+                        f"读取论坛归档帖失败: guild={guild.id} forum={forum.id} - {e}"
+                    )
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(
+                        f"读取论坛归档帖异常: guild={guild.id} forum={forum.id} - {e}"
+                    )
+
+            # 多论坛连续分页时主动让出事件循环，降低 API 突发请求压力。
+            await asyncio.sleep(0.25)
+
+        return list(found.values())
+
+    async def _apply_global_thread_mute(
+        self,
+        threads: list[discord.Thread],
+        member: discord.Member,
+        actor: discord.abc.User,
+        *,
+        muted_until=-1,
+        reason: Optional[str] = "全贴禁言",
+        duration_label: str = "永久",
+        announce_thread_id: Optional[int] = None,
+    ) -> int:
+        """复用单帖禁言函数，在楼主的全部历史帖子中禁言目标用户。"""
+        affected = 0
+        for index, thread in enumerate(threads, start=1):
+            try:
+                if await self._mute_thread_user(
+                    thread,
+                    member,
+                    muted_until=muted_until,
+                    reason=reason,
+                    actor=actor,
+                    # 仅在执行指令的当前帖子公示，其他帖子静默写入禁言。
+                    announce=thread.id == announce_thread_id,
+                    duration_label=duration_label,
+                    announcement_title="🔒 全贴禁言",
+                    scope="global",
+                ):
+                    affected += 1
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(
+                        f"全贴禁言单帖处理失败: thread={thread.id} user={member.id} - {e}"
+                    )
+            if index % 10 == 0:
+                await asyncio.sleep(0.5)
+        return affected
+
+    async def _apply_global_thread_unmute(
+        self,
+        threads: list[discord.Thread],
+        member: discord.Member,
+        actor: discord.abc.User,
+        *,
+        announce_thread_id: Optional[int] = None,
+    ) -> tuple[int, int]:
+        """复用解除函数，仅清除全贴层并统计仍有单帖层的帖子。"""
+        affected = 0
+        still_single = 0
+        for index, thread in enumerate(threads, start=1):
+            try:
+                guild = getattr(thread, "guild", None)
+                record = (
+                    self._mute_cache.get((guild.id, thread.id, member.id), {})
+                    if guild is not None
+                    else {}
+                )
+                single_was_active = self._is_mute_value_active(
+                    record.get("muted_until")
+                )
+                if await self._unmute_thread_user(
+                    thread,
+                    member,
+                    actor=actor,
+                    announce=thread.id == announce_thread_id,
+                    scope="global",
+                ):
+                    affected += 1
+                    if single_was_active:
+                        still_single += 1
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(
+                        f"撤销全贴禁言单帖处理失败: thread={thread.id} user={member.id} - {e}"
+                    )
+            if index % 10 == 0:
+                await asyncio.sleep(0.5)
+        return affected, still_single
+
+    async def menu_run_global_thread_action(
+        self,
+        interaction: discord.Interaction,
+        channel: discord.Thread,
+        member: discord.Member,
+        *,
+        is_mute: bool,
+        muted_until=-1,
+        reason: Optional[str] = "全贴禁言",
+        duration_label: str = "永久",
+    ) -> None:
+        """执行全贴禁言或撤销流程：权限复查、扫描、确认、批量处理。"""
+        if not await self.can_global_thread_action(interaction, channel):
+            message = (
+                "只有帖子楼主和管理组可以执行全贴禁言。"
+                if is_mute
+                else "只有帖子楼主和管理组可以撤销全贴禁言。"
+            )
+            await interaction.response.send_message(message, ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        try:
+            # 全贴范围属于当前帖楼主 A；member 是被禁言的目标用户 B。
+            threads = await self._find_owned_forum_threads(
+                interaction.guild, channel.owner_id
+            )
+            message = await interaction.original_response()
+            owner = interaction.guild.get_member(channel.owner_id)
+            owner_mention = owner.mention if owner else f"<@{channel.owner_id}>"
+            confirmation_details = (
+                f"**帖子楼主：** {owner_mention}\n"
+                f"**目标用户：** {member.mention}\n\n"
+                f"**将影响：** {len(threads)} 个历史帖子"
+            )
+            if is_mute:
+                confirmation_details += (
+                    f"\n\n**时长：** {duration_label}"
+                    f"\n**原因：** {reason or '未填写'}"
+                )
+            confirmed = await wait_menu_confirm_on_message(
+                message,
+                interaction.user.id,
+                title="⚠️ 确认全贴禁言" if is_mute else "⚠️ 确认撤销全贴禁言",
+                description=confirmation_details,
+                colour=discord.Colour.orange(),
+            )
+            if not confirmed:
+                return
+
+            if is_mute:
+                affected = await self._apply_global_thread_mute(
+                    threads,
+                    member,
+                    interaction.user,
+                    muted_until=muted_until,
+                    reason=reason,
+                    duration_label=duration_label,
+                    announce_thread_id=channel.id,
+                )
+                result = (
+                    "✅ **全贴禁言完成**\n\n"
+                    f"**用户：** {member.mention}\n\n"
+                    f"**影响帖子：** {affected} 个"
+                )
+            else:
+                affected, still_single = await self._apply_global_thread_unmute(
+                    threads,
+                    member,
+                    interaction.user,
+                    announce_thread_id=channel.id,
+                )
+                result = (
+                    "✅ **已撤销全贴禁言**\n\n"
+                    f"**用户：** {member.mention}\n\n"
+                    f"**撤销全贴层帖子：** {affected} 个\n\n"
+                    f"**仍有单帖禁言帖子：** {still_single} 个"
+                )
+            await message.edit(content=result, embed=None, view=None)
+        except Exception as e:
+            if self.logger:
+                self.logger.error(
+                    f"全贴禁言流程失败: guild={interaction.guild.id} user={member.id} - {e}"
+                )
+            await interaction.followup.send(f"❌ 操作失败：{e}", ephemeral=True)
 
     async def apply_slowmode_from_menu(self, interaction: discord.Interaction, channel: discord.Thread, seconds: int):
         label = next((n for n, s in SLOWMODE_OPTIONS if s == seconds), str(seconds))
@@ -554,20 +836,15 @@ class ThreadSelfManage(commands.Cog):
         else:
             muted_until = -1
             human = "永久"
-        embed = discord.Embed(
-            title="🔒 子区禁言",
-            description=f"👤 {member.mention} 已被禁言",
-            color=discord.Color.red(),
-            timestamp=datetime.now(),
+        await self._mute_thread_user(
+            channel,
+            member,
+            muted_until=muted_until,
+            reason=reason,
+            actor=interaction.user,
+            announce=True,
+            duration_label=duration or "永久",
         )
-        embed.add_field(name="原因", value=reason if reason else "无", inline=True)
-        embed.add_field(name="时长", value=duration if duration else "永久", inline=True)
-        embed.add_field(name="执行者", value=interaction.user.mention, inline=True)
-        await channel.send(embed=embed)
-        rec = self._get_mute_record(channel.guild.id, channel.id, member.id)
-        rec["muted_until"] = muted_until
-        rec["violations"] = 0
-        await self._save_mute_record(channel.guild.id, channel.id, member.id, rec)
         msg = f"✅ 已在子区禁言 {member.mention}"
         if duration:
             msg += f" 持续 {human}"
@@ -582,17 +859,23 @@ class ThreadSelfManage(commands.Cog):
             await interaction.response.send_message("只有子区所有者或管理员可执行此操作", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True)
-        key = (channel.guild.id, channel.id, member.id)
-        record = self._mute_cache.get(key)
-        if record and record.get("muted_until"):
-            await self._save_mute_record(channel.guild.id, channel.id, member.id, None)
-            embed = discord.Embed(
-                title="🔒 子区禁言",
-                description=f"👤 {member.mention} 已被解除禁言",
-                color=discord.Color.green(),
-                timestamp=datetime.now(),
+        single_active, global_active = await self._refresh_mute_layers(
+            channel.guild.id, channel.id, member.id
+        )
+        if global_active:
+            await interaction.followup.send(
+                "该用户仍处于全贴禁言，请由帖子楼主或管理组使用 /自助管理 撤销全贴禁言。",
+                ephemeral=True,
             )
-            await channel.send(embed=embed)
+            return
+        if single_active:
+            await self._unmute_thread_user(
+                channel,
+                member,
+                actor=interaction.user,
+                announce=True,
+                scope="thread",
+            )
             await interaction.followup.send(f"✅ 已解除 {member.mention} 的子区禁言", ephemeral=True)
         else:
             await interaction.followup.send("该成员未被禁言", ephemeral=True)
@@ -1493,9 +1776,111 @@ class ThreadSelfManage(commands.Cog):
         # 从内存缓存获取或初始化
         record = self._mute_cache.get(key)
         if record is None:
-            record = {"muted_until": None, "violations": 0}
+            record = {
+                "muted_until": None,
+                "global_muted_until": None,
+                "violations": 0,
+            }
             self._mute_cache[key] = record
+        else:
+            # 兼容升级前加载到内存、尚未包含新字段的旧记录。
+            record.setdefault("global_muted_until", None)
         return record
+
+    async def _mute_thread_user(
+        self,
+        channel: discord.Thread,
+        member: discord.Member,
+        *,
+        muted_until,
+        reason: Optional[str],
+        actor: discord.abc.User,
+        announce: bool,
+        duration_label: str = "永久",
+        announcement_title: str = "🔒 子区禁言",
+        scope: str = "thread",
+    ) -> bool:
+        """统一禁言实现；scope 决定写入单帖层还是全贴层。"""
+        if scope not in {"thread", "global"}:
+            raise ValueError(f"未知禁言范围: {scope}")
+        if announce:
+            embed = discord.Embed(
+                title=announcement_title,
+                description=f"👤 {member.mention} 已被禁言",
+                color=discord.Color.red(),
+                timestamp=datetime.now(),
+            )
+            embed.add_field(name="原因", value=reason or "无", inline=True)
+            embed.add_field(name="时长", value=duration_label, inline=True)
+            embed.add_field(name="执行者", value=actor.mention, inline=True)
+            await channel.send(embed=embed)
+
+        record = self._get_mute_record(channel.guild.id, channel.id, member.id)
+        field = "global_muted_until" if scope == "global" else "muted_until"
+        record[field] = muted_until
+        record["violations"] = 0
+        await self._save_mute_record(channel.guild.id, channel.id, member.id, record)
+        return True
+
+    async def _unmute_thread_user(
+        self,
+        channel: discord.Thread,
+        member: discord.Member,
+        *,
+        actor: discord.abc.User,
+        announce: bool,
+        scope: str = "thread",
+    ) -> bool:
+        """统一解除实现；仅清除指定层，另一层不受影响。"""
+        if scope not in {"thread", "global"}:
+            raise ValueError(f"未知禁言范围: {scope}")
+        key = (channel.guild.id, channel.id, member.id)
+        record = self._mute_cache.get(key)
+        if not record:
+            return False
+
+        single_active, global_active = await self._refresh_mute_layers(
+            channel.guild.id, channel.id, member.id
+        )
+        active = global_active if scope == "global" else single_active
+        if not active:
+            return False
+
+        field = "global_muted_until" if scope == "global" else "muted_until"
+        record = self._mute_cache.get(key, record)
+        record[field] = None
+        remaining_single = self._is_mute_value_active(record.get("muted_until"))
+        remaining_global = self._is_mute_value_active(
+            record.get("global_muted_until")
+        )
+        await self._save_mute_record(
+            channel.guild.id,
+            channel.id,
+            member.id,
+            record if remaining_single or remaining_global else None,
+        )
+        if announce:
+            is_global = scope == "global"
+            embed = discord.Embed(
+                title="🔓 全贴禁言" if is_global else "🔒 子区禁言",
+                description=(
+                    f"👤 {member.mention} 已被解除全贴禁言"
+                    if is_global
+                    else f"👤 {member.mention} 已被解除禁言"
+                ),
+                color=discord.Color.green(),
+                timestamp=datetime.now(),
+            )
+            if is_global:
+                embed.add_field(name="执行者", value=actor.mention, inline=True)
+                if remaining_single:
+                    embed.add_field(
+                        name="提示",
+                        value="该用户在本帖仍有单帖禁言",
+                        inline=False,
+                    )
+            await channel.send(embed=embed)
+        return True
 
     async def _save_mute_record(self, guild_id: int, thread_id: int, user_id: int, record: dict):
         # 更新内存缓存
@@ -1521,18 +1906,53 @@ class ThreadSelfManage(commands.Cog):
         else:
             return -1, "未知时间"
 
-    async def _is_thread_muted(self, guild_id: int, thread_id: int, user_id: int) -> bool:
-        rec = self._get_mute_record(guild_id, thread_id, user_id)
-        mu = rec.get("muted_until")
-        if mu == -1:
+    @staticmethod
+    def _is_mute_value_active(value) -> bool:
+        """判断单个禁言层是否仍有效；无效值按已过期处理。"""
+        if value == -1 or value == "-1":
             return True
-        if mu:
-            until = datetime.fromisoformat(mu)
-            if datetime.now() < until:
-                return True
-            await self._save_mute_record(guild_id, thread_id, user_id, None)
+        if not value:
             return False
-        return False
+        try:
+            return datetime.now() < datetime.fromisoformat(str(value))
+        except (TypeError, ValueError):
+            return False
+
+    async def _refresh_mute_layers(
+        self, guild_id: int, thread_id: int, user_id: int
+    ) -> tuple[bool, bool]:
+        """分别清理已到期层，返回（单帖层有效，全贴层有效）。"""
+        key = (guild_id, thread_id, user_id)
+        record = self._mute_cache.get(key)
+        if not record:
+            return False, False
+
+        record.setdefault("global_muted_until", None)
+        single_value = record.get("muted_until")
+        global_value = record.get("global_muted_until")
+        single_active = self._is_mute_value_active(single_value)
+        global_active = self._is_mute_value_active(global_value)
+        changed = False
+        if single_value is not None and not single_active:
+            record["muted_until"] = None
+            changed = True
+        if global_value is not None and not global_active:
+            record["global_muted_until"] = None
+            changed = True
+        if changed:
+            await self._save_mute_record(
+                guild_id,
+                thread_id,
+                user_id,
+                record if single_active or global_active else None,
+            )
+        return single_active, global_active
+
+    async def _is_thread_muted(self, guild_id: int, thread_id: int, user_id: int) -> bool:
+        single_active, global_active = await self._refresh_mute_layers(
+            guild_id, thread_id, user_id
+        )
+        return single_active or global_active
 
     async def _increment_violations(self, guild_id: int, thread_id: int, user_id: int) -> int:
         rec = self._get_mute_record(guild_id, thread_id, user_id)
@@ -1576,9 +1996,6 @@ class ThreadSelfManage(commands.Cog):
                     return
         except Exception:
             pass
-        # 自己禁言自己
-        if user.id == channel.owner_id:
-            return
         # 检查是否在子区禁言
         if await self._is_thread_muted(guild.id, channel.id, user.id):
             # 删除消息
@@ -1678,22 +2095,15 @@ class ThreadSelfManage(commands.Cog):
             muted_until = until.isoformat()
         else:
             muted_until = -1 # 永久禁言
-        # 子区内公示
-        embed = discord.Embed(
-            title="🔒 子区禁言",
-            description=f"👤 {member.mention} 已被禁言",
-            color=discord.Color.red(),
-            timestamp=datetime.now()
+        await self._mute_thread_user(
+            channel,
+            member,
+            muted_until=muted_until,
+            reason=reason,
+            actor=interaction.user,
+            announce=True,
+            duration_label=duration or "永久",
         )
-        embed.add_field(name="原因", value=reason if reason else "无", inline=True)
-        embed.add_field(name="时长", value=duration if duration else "永久", inline=True)
-        embed.add_field(name="执行者", value=interaction.user.mention, inline=True)
-        await channel.send(embed=embed)
-
-        rec = self._get_mute_record(channel.guild.id, channel.id, member.id)
-        rec['muted_until'] = muted_until
-        rec['violations'] = 0
-        await self._save_mute_record(channel.guild.id, channel.id, member.id, rec)
         msg = f"✅ 已在子区禁言 {member.mention}"
         if duration:
             msg += f" 持续 {human}"
@@ -1711,18 +2121,23 @@ class ThreadSelfManage(commands.Cog):
         if not await self.can_manage_thread(interaction, channel):
             await interaction.response.send_message("只有子区所有者或管理员可执行此操作", ephemeral=True)
             return
-        key = (channel.guild.id, channel.id, member.id)
-        record = self._mute_cache.get(key)
-        if record and record.get("muted_until"):
-            await self._save_mute_record(channel.guild.id, channel.id, member.id, None)
-            # 子区内公示
-            embed = discord.Embed(
-                title="🔒 子区禁言",
-                description=f"👤 {member.mention} 已被解除禁言",
-                color=discord.Color.green(),
-                timestamp=datetime.now()
+        single_active, global_active = await self._refresh_mute_layers(
+            channel.guild.id, channel.id, member.id
+        )
+        if global_active:
+            await interaction.response.send_message(
+                "该用户仍处于全贴禁言，请由帖子楼主或管理组使用 /自助管理 撤销全贴禁言。",
+                ephemeral=True,
             )
-            await channel.send(embed=embed)
+            return
+        if single_active:
+            await self._unmute_thread_user(
+                channel,
+                member,
+                actor=interaction.user,
+                announce=True,
+                scope="thread",
+            )
             await interaction.response.send_message(f"✅ 已解除 {member.mention} 的子区禁言", ephemeral=True)
         else:
             await interaction.response.send_message("该成员未被禁言", ephemeral=True)
@@ -1991,4 +2406,3 @@ class ThreadSelfManage(commands.Cog):
             embed.add_field(name="协管成员", value="当前没有协管", inline=False)
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
-
