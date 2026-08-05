@@ -77,9 +77,13 @@ class OdysseiaBot(commands.Bot):
     cog_manager: CogManager
 
     def __init__(self, **kwargs):
+        intent_config = CONFIG.get("privileged_intents", {})
         intents = discord.Intents.default()
-        intents.message_content = True
-        intents.members = True
+        # Privileged intents are explicit and auditable. Presence is deliberately
+        # disabled: Odysseia does not inspect users' online state or activities.
+        intents.members = bool(intent_config.get("members", True))
+        intents.message_content = bool(intent_config.get("message_content", True))
+        intents.presences = False
         # 由于本机器人只使用斜杠命令，前缀设置为默认值即可
         super().__init__(command_prefix='!', intents=intents, **kwargs)
 
