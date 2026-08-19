@@ -41,6 +41,12 @@ class ThreadSelfManage(commands.Cog):
         self._config_cache_mtime = None
         # 自动清理管理器
         self.auto_clear_manager = AutoClearManager(bot)
+        # 后台执行的全贴禁言/撤销任务引用，防止任务被垃圾回收。
+        self._global_action_tasks: set = set()
+        # 帖子楼主索引：guild_id → {owner_id: set[thread_id]}，惰性全量构建。
+        self._thread_owner_cache: dict[int, dict[int, set[int]]] = {}
+        # 已完成索引构建的 guild_id 集合；bot 重启后清空，自动回到惰性加载。
+        self._thread_owner_ready: set[int] = set()
 
     self_manage = app_commands.Group(name="自助管理", description="在贴内进行权限操作，仅限贴主、协管或管理员")
 
@@ -229,6 +235,8 @@ class ThreadSelfManage(commands.Cog):
             parent = thread.parent
             if not isinstance(parent, discord.ForumChannel):
                 return
+            # 维护楼主索引（仅服务器索引已就绪时增量更新）。
+            self._index_add_thread(thread.guild.id, thread.id, thread.owner_id)
             if await forum_user_opted_out(thread.owner_id):
                 return
             owner = thread.guild.get_member(thread.owner_id)
@@ -250,8 +258,14 @@ class ThreadSelfManage(commands.Cog):
 
     @commands.Cog.listener()
     async def on_thread_update(self, before: discord.Thread, after: discord.Thread):
-        """当子区被锁定时，通过私信通知贴主。"""
+        """维护楼主索引（owner 转移）及在子区被锁定时私信通知贴主。"""
         try:
+            # 帖子 owner 转移时同步更新索引归属。
+            if before.owner_id != after.owner_id:
+                self._index_change_owner(
+                    after.guild.id, after.id, before.owner_id, after.owner_id
+                )
+
             if before.locked or not after.locked:
                 return
 
@@ -288,6 +302,20 @@ class ThreadSelfManage(commands.Cog):
         except Exception as e:
             if self.logger:
                 self.logger.error(f"锁帖通知私信发送失败: {e}")
+
+    @commands.Cog.listener()
+    async def on_raw_thread_delete(self, payload: discord.RawThreadDeleteEvent):
+        """帖子删除时从楼主索引中移除，避免残留孤儿索引。"""
+        try:
+            self._index_remove_thread(payload.guild_id, payload.thread_id)
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"索引移除帖子失败: {e}")
+
+    @commands.Cog.listener()
+    async def on_guild_remove(self, guild: discord.Guild):
+        """服务器移除时清理对应的楼主索引，避免内存泄漏。"""
+        self._index_clear_guild(guild.id)
 
     @self_manage.command(name="菜单", description="打开自助管理图形菜单（下拉选择功能）")
     async def self_manage_menu(self, interaction: discord.Interaction):
@@ -465,24 +493,22 @@ class ThreadSelfManage(commands.Cog):
             except Exception:
                 pass
 
-    async def _find_owned_forum_threads(
-        self, guild: discord.Guild, owner_id: int
-    ) -> list[discord.Thread]:
-        """查找用户创建的全部活动及公开归档论坛帖子，并按帖子 ID 去重。"""
-        found: dict[int, discord.Thread] = {}
+    async def _scan_all_forum_threads(self, guild: discord.Guild) -> dict[int, set[int]]:
+        """扫描全站论坛，构建 {owner_id: set[thread_id]} 完整索引。"""
+        owner_index: dict[int, set[int]] = {}
         for forum in guild.channels:
             if not isinstance(forum, discord.ForumChannel):
                 continue
 
             # 活动帖来自频道缓存，不额外请求 Discord API。
             for thread in forum.threads:
-                if thread.owner_id == owner_id:
-                    found[thread.id] = thread
+                if thread.owner_id is not None:
+                    owner_index.setdefault(thread.owner_id, set()).add(thread.id)
 
             try:
                 async for thread in forum.archived_threads(limit=None):
-                    if thread.owner_id == owner_id:
-                        found[thread.id] = thread
+                    if thread.owner_id is not None:
+                        owner_index.setdefault(thread.owner_id, set()).add(thread.id)
             except (discord.Forbidden, discord.HTTPException) as e:
                 if self.logger:
                     self.logger.warning(
@@ -497,84 +523,178 @@ class ThreadSelfManage(commands.Cog):
             # 多论坛连续分页时主动让出事件循环，降低 API 突发请求压力。
             await asyncio.sleep(0.25)
 
-        return list(found.values())
+        return owner_index
+
+    async def _build_owner_index(self, guild: discord.Guild) -> None:
+        """惰性为整个服务器构建楼主索引；完成后标记该 guild 已就绪。"""
+        self._thread_owner_cache[guild.id] = await self._scan_all_forum_threads(guild)
+        self._thread_owner_ready.add(guild.id)
+
+    def _lookup_owned_threads(self, guild: discord.Guild, owner_id: int) -> list[int]:
+        """从索引中取该楼主的所有帖子 ID。"""
+        index = self._thread_owner_cache.get(guild.id)
+        if not index:
+            return []
+        return list(index.get(owner_id, set()))
+
+    def _index_add_thread(self, guild_id: int, thread_id: int, owner_id: int) -> None:
+        """增量维护：仅在服务器索引已就绪后写入；否则由懒加载全量构建覆盖。"""
+        if guild_id not in self._thread_owner_ready:
+            return
+        index = self._thread_owner_cache.get(guild_id)
+        if index is None:
+            return
+        index.setdefault(owner_id, set()).add(thread_id)
+
+    def _index_remove_thread(self, guild_id: int, thread_id: int) -> None:
+        """增量维护：从索引中移除指定帖子的归属。"""
+        if guild_id not in self._thread_owner_ready:
+            return
+        index = self._thread_owner_cache.get(guild_id)
+        if not index:
+            return
+        for owner_set in index.values():
+            if thread_id in owner_set:
+                owner_set.discard(thread_id)
+
+    def _index_change_owner(
+        self,
+        guild_id: int,
+        thread_id: int,
+        old_owner_id: Optional[int],
+        new_owner_id: Optional[int],
+    ) -> None:
+        """增量维护：处理帖子 owner 转移。"""
+        if guild_id not in self._thread_owner_ready:
+            return
+        index = self._thread_owner_cache.get(guild_id)
+        if not index:
+            return
+        if old_owner_id is not None:
+            index.get(old_owner_id, set()).discard(thread_id)
+        if new_owner_id is not None:
+            index.setdefault(new_owner_id, set()).add(thread_id)
+
+    def _index_clear_guild(self, guild_id: int) -> None:
+        """服务器移除时清理对应索引，避免内存泄漏。"""
+        self._thread_owner_cache.pop(guild_id, None)
+        self._thread_owner_ready.discard(guild_id)
+
+    _GLOBAL_MUTE_CONCURRENCY = 10
+    # 帖子数超过该阈值时，全贴禁言/撤销转为后台执行，避免超过交互 15 分钟上限。
+    _GLOBAL_BACKGROUND_THRESHOLD = 100
 
     async def _apply_global_thread_mute(
         self,
-        threads: list[discord.Thread],
+        guild_id: int,
+        thread_ids: list[int],
         member: discord.Member,
         actor: discord.abc.User,
         *,
         muted_until=-1,
         reason: Optional[str] = "全贴禁言",
         duration_label: str = "永久",
-        announce_thread_id: Optional[int] = None,
+        announce_channel: Optional[discord.Thread] = None,
     ) -> int:
-        """复用单帖禁言函数，在楼主的全部历史帖子中禁言目标用户。"""
-        affected = 0
-        for index, thread in enumerate(threads, start=1):
-            try:
-                if await self._mute_thread_user(
-                    thread,
-                    member,
-                    muted_until=muted_until,
-                    reason=reason,
-                    actor=actor,
-                    # 仅在执行指令的当前帖子公示，其他帖子静默写入禁言。
-                    announce=thread.id == announce_thread_id,
-                    duration_label=duration_label,
-                    announcement_title="🔒 全贴禁言",
-                    scope="global",
-                ):
-                    affected += 1
-            except Exception as e:
-                if self.logger:
-                    self.logger.error(
-                        f"全贴禁言单帖处理失败: thread={thread.id} user={member.id} - {e}"
+        """在楼主的全部历史帖子中禁言目标用户。
+
+        应用阶段仅写本地 SQLite（无 Discord API 调用），可安全并发以加快
+        大批量场景；每帖 key 的 thread_id 均不相同，不存在同 key 竞争。
+        非公示帖仅凭 (guild_id, thread_id) 写库，不恢复 thread 对象。
+        """
+        sem = asyncio.Semaphore(self._GLOBAL_MUTE_CONCURRENCY)
+        pending: list[tuple[int, int, int, Optional[dict]]] = []
+        announce_id = announce_channel.id if announce_channel is not None else None
+
+        async def _mute_one(thread_id: int) -> bool:
+            async with sem:
+                try:
+                    if announce_channel is not None and thread_id == announce_id:
+                        return await self._mute_thread_user(
+                            announce_channel,
+                            member,
+                            muted_until=muted_until,
+                            reason=reason,
+                            actor=actor,
+                            announce=True,
+                            duration_label=duration_label,
+                            announcement_title="🔒 全贴禁言",
+                            scope="global",
+                            bulk=pending,
+                        )
+                    return await self._apply_mute_by_ids(
+                        guild_id,
+                        thread_id,
+                        member.id,
+                        muted_until,
+                        "global",
+                        pending,
                     )
-            if index % 10 == 0:
-                await asyncio.sleep(0.5)
-        return affected
+                except Exception as e:
+                    if self.logger:
+                        self.logger.error(
+                            f"全贴禁言单帖处理失败: thread={thread_id} user={member.id} - {e}"
+                        )
+                    return False
+
+        results = await asyncio.gather(*(_mute_one(tid) for tid in thread_ids))
+        try:
+            await db.save_mute_records_bulk(pending)
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"全贴禁言批量写入失败: user={member.id} - {e}")
+        return sum(1 for ok in results if ok)
 
     async def _apply_global_thread_unmute(
         self,
-        threads: list[discord.Thread],
+        guild_id: int,
+        thread_ids: list[int],
         member: discord.Member,
         actor: discord.abc.User,
         *,
-        announce_thread_id: Optional[int] = None,
+        announce_channel: Optional[discord.Thread] = None,
     ) -> tuple[int, int]:
-        """复用解除函数，仅清除全贴层并统计仍有单帖层的帖子。"""
-        affected = 0
-        still_single = 0
-        for index, thread in enumerate(threads, start=1):
-            try:
-                guild = getattr(thread, "guild", None)
-                record = (
-                    self._mute_cache.get((guild.id, thread.id, member.id), {})
-                    if guild is not None
-                    else {}
-                )
-                single_was_active = self._is_mute_value_active(
-                    record.get("muted_until")
-                )
-                if await self._unmute_thread_user(
-                    thread,
-                    member,
-                    actor=actor,
-                    announce=thread.id == announce_thread_id,
-                    scope="global",
-                ):
-                    affected += 1
-                    if single_was_active:
-                        still_single += 1
-            except Exception as e:
-                if self.logger:
-                    self.logger.error(
-                        f"撤销全贴禁言单帖处理失败: thread={thread.id} user={member.id} - {e}"
+        """仅清除全贴层并统计仍有单帖层的帖子。"""
+        sem = asyncio.Semaphore(self._GLOBAL_MUTE_CONCURRENCY)
+        pending: list[tuple[int, int, int, Optional[dict]]] = []
+        announce_id = announce_channel.id if announce_channel is not None else None
+
+        async def _unmute_one(thread_id: int) -> tuple[bool, bool]:
+            async with sem:
+                try:
+                    record = self._mute_cache.get((guild_id, thread_id, member.id), {})
+                    single_was_active = self._is_mute_value_active(
+                        record.get("muted_until")
                     )
-            if index % 10 == 0:
-                await asyncio.sleep(0.5)
+                    if announce_channel is not None and thread_id == announce_id:
+                        removed = await self._unmute_thread_user(
+                            announce_channel,
+                            member,
+                            actor=actor,
+                            announce=True,
+                            scope="global",
+                            bulk=pending,
+                        )
+                        return removed, removed and single_was_active
+                    removed, still_single = await self._apply_unmute_by_ids(
+                        guild_id, thread_id, member.id, "global", pending
+                    )
+                    return removed, still_single
+                except Exception as e:
+                    if self.logger:
+                        self.logger.error(
+                            f"撤销全贴禁言单帖处理失败: thread={thread_id} user={member.id} - {e}"
+                        )
+                    return False, False
+
+        results = await asyncio.gather(*(_unmute_one(tid) for tid in thread_ids))
+        try:
+            await db.save_mute_records_bulk(pending)
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"撤销全贴禁言批量写入失败: user={member.id} - {e}")
+        affected = sum(1 for removed, _ in results if removed)
+        still_single = sum(1 for removed, single in results if removed and single)
         return affected, still_single
 
     async def menu_run_global_thread_action(
@@ -601,7 +721,10 @@ class ThreadSelfManage(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         try:
             # 全贴范围属于当前帖楼主 A；member 是被禁言的目标用户 B。
-            threads = await self._find_owned_forum_threads(
+            # 惰性首次为整个服务器构建楼主索引，之后所有全贴操作直接命中缓存。
+            if interaction.guild.id not in self._thread_owner_ready:
+                await self._build_owner_index(interaction.guild)
+            thread_ids = self._lookup_owned_threads(
                 interaction.guild, channel.owner_id
             )
             message = await interaction.original_response()
@@ -610,7 +733,7 @@ class ThreadSelfManage(commands.Cog):
             confirmation_details = (
                 f"**帖子楼主：** {owner_mention}\n"
                 f"**目标用户：** {member.mention}\n\n"
-                f"**将影响：** {len(threads)} 个历史帖子"
+                f"**将影响：** {len(thread_ids)} 个历史帖子"
             )
             if is_mute:
                 confirmation_details += (
@@ -627,15 +750,31 @@ class ThreadSelfManage(commands.Cog):
             if not confirmed:
                 return
 
+            # 影响帖子过多时转入后台执行，避免阻塞交互超过 15 分钟上限。
+            if len(thread_ids) > self._GLOBAL_BACKGROUND_THRESHOLD:
+                await self._start_background_global_action(
+                    interaction,
+                    message,
+                    channel,
+                    member,
+                    thread_ids=thread_ids,
+                    is_mute=is_mute,
+                    muted_until=muted_until,
+                    reason=reason,
+                    duration_label=duration_label,
+                )
+                return
+
             if is_mute:
                 affected = await self._apply_global_thread_mute(
-                    threads,
+                    interaction.guild.id,
+                    thread_ids,
                     member,
                     interaction.user,
                     muted_until=muted_until,
                     reason=reason,
                     duration_label=duration_label,
-                    announce_thread_id=channel.id,
+                    announce_channel=channel,
                 )
                 result = (
                     "✅ **全贴禁言完成**\n\n"
@@ -644,10 +783,11 @@ class ThreadSelfManage(commands.Cog):
                 )
             else:
                 affected, still_single = await self._apply_global_thread_unmute(
-                    threads,
+                    interaction.guild.id,
+                    thread_ids,
                     member,
                     interaction.user,
-                    announce_thread_id=channel.id,
+                    announce_channel=channel,
                 )
                 result = (
                     "✅ **已撤销全贴禁言**\n\n"
@@ -662,6 +802,128 @@ class ThreadSelfManage(commands.Cog):
                     f"全贴禁言流程失败: guild={interaction.guild.id} user={member.id} - {e}"
                 )
             await interaction.followup.send(f"❌ 操作失败：{e}", ephemeral=True)
+
+    async def _start_background_global_action(
+        self,
+        interaction: discord.Interaction,
+        message: discord.Message,
+        channel: discord.Thread,
+        member: discord.Member,
+        *,
+        thread_ids: list[int],
+        is_mute: bool,
+        muted_until,
+        reason: Optional[str],
+        duration_label: str,
+    ) -> None:
+        """影响帖子过多时，将全贴禁言/撤销转为后台执行并立即反馈进度。"""
+        verb = "全贴禁言" if is_mute else "撤销全贴禁言"
+        await message.edit(
+            content=(
+                f"⏳ **{verb}处理中…**\n\n"
+                f"**影响帖子：** {len(thread_ids)} 个（较多，已转入后台处理）\n\n"
+                f"完成后将通过私信通知您。"
+            ),
+            embed=None,
+            view=None,
+        )
+        task = asyncio.create_task(
+            self._run_global_action_in_background(
+                guild=interaction.guild,
+                channel=channel,
+                member=member,
+                actor=interaction.user,
+                is_mute=is_mute,
+                thread_ids=thread_ids,
+                muted_until=muted_until,
+                reason=reason,
+                duration_label=duration_label,
+            )
+        )
+        tasks = getattr(self, "_global_action_tasks", None)
+        if tasks is None:
+            tasks = set()
+            self._global_action_tasks = tasks
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+
+    async def _run_global_action_in_background(
+        self,
+        *,
+        guild: discord.Guild,
+        channel: discord.Thread,
+        member: discord.Member,
+        actor: discord.abc.User,
+        is_mute: bool,
+        thread_ids: list[int],
+        muted_until,
+        reason: Optional[str],
+        duration_label: str,
+    ) -> None:
+        """后台执行全贴禁言/撤销，完成后通知执行者。"""
+        try:
+            if is_mute:
+                affected = await self._apply_global_thread_mute(
+                    guild.id,
+                    thread_ids,
+                    member,
+                    actor,
+                    muted_until=muted_until,
+                    reason=reason,
+                    duration_label=duration_label,
+                    announce_channel=channel,
+                )
+                result = (
+                    "✅ **全贴禁言完成**\n\n"
+                    f"**用户：** {member.mention}\n\n"
+                    f"**影响帖子：** {affected} 个"
+                )
+            else:
+                affected, still_single = await self._apply_global_thread_unmute(
+                    guild.id,
+                    thread_ids,
+                    member,
+                    actor,
+                    announce_channel=channel,
+                )
+                result = (
+                    "✅ **已撤销全贴禁言**\n\n"
+                    f"**用户：** {member.mention}\n\n"
+                    f"**撤销全贴层帖子：** {affected} 个\n\n"
+                    f"**仍有单帖禁言帖子：** {still_single} 个"
+                )
+            await self._notify_background_result(guild, channel, actor, result)
+        except Exception as e:
+            if self.logger:
+                self.logger.error(
+                    f"后台全贴禁言流程失败: guild={guild.id} user={member.id} - {e}"
+                )
+            try:
+                await self._notify_background_result(
+                    guild, channel, actor, f"❌ 操作失败：{e}"
+                )
+            except Exception:
+                pass
+
+    async def _notify_background_result(
+        self,
+        guild: discord.Guild,
+        channel: discord.Thread,
+        actor: discord.abc.User,
+        text: str,
+    ) -> None:
+        """后台结果优先私信执行者，失败时降级为在帖子内发送。"""
+        try:
+            await dm.send_dm(guild, actor, text)
+            return
+        except Exception as e:
+            if self.logger:
+                self.logger.warning(f"后台结果私信通知失败: user={actor.id} - {e}")
+        try:
+            await channel.send(text)
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"后台结果帖内通知失败: channel={channel.id} - {e}")
 
     async def apply_slowmode_from_menu(self, interaction: discord.Interaction, channel: discord.Thread, seconds: int):
         label = next((n for n, s in SLOWMODE_OPTIONS if s == seconds), str(seconds))
@@ -1787,6 +2049,25 @@ class ThreadSelfManage(commands.Cog):
             record.setdefault("global_muted_until", None)
         return record
 
+    async def _apply_mute_by_ids(
+        self,
+        guild_id: int,
+        thread_id: int,
+        user_id: int,
+        muted_until,
+        scope: str,
+        bulk: Optional[list] = None,
+    ) -> bool:
+        """按 (guild_id, thread_id, user_id) 写入禁言层，不依赖 Thread 对象。"""
+        if scope not in {"thread", "global"}:
+            raise ValueError(f"未知禁言范围: {scope}")
+        record = self._get_mute_record(guild_id, thread_id, user_id)
+        field = "global_muted_until" if scope == "global" else "muted_until"
+        record[field] = muted_until
+        record["violations"] = 0
+        await self._save_mute_record(guild_id, thread_id, user_id, record, bulk=bulk)
+        return True
+
     async def _mute_thread_user(
         self,
         channel: discord.Thread,
@@ -1799,8 +2080,13 @@ class ThreadSelfManage(commands.Cog):
         duration_label: str = "永久",
         announcement_title: str = "🔒 子区禁言",
         scope: str = "thread",
+        bulk: Optional[list] = None,
     ) -> bool:
-        """统一禁言实现；scope 决定写入单帖层还是全贴层。"""
+        """统一禁言实现；scope 决定写入单帖层还是全贴层。
+
+        bulk 为可选收集列表：传入时仅更新内存缓存并暂存待写记录，
+        由调用方在循环结束后统一提交（批量场景减少 commit 次数）。
+        """
         if scope not in {"thread", "global"}:
             raise ValueError(f"未知禁言范围: {scope}")
         if announce:
@@ -1815,36 +2101,32 @@ class ThreadSelfManage(commands.Cog):
             embed.add_field(name="执行者", value=actor.mention, inline=True)
             await channel.send(embed=embed)
 
-        record = self._get_mute_record(channel.guild.id, channel.id, member.id)
-        field = "global_muted_until" if scope == "global" else "muted_until"
-        record[field] = muted_until
-        record["violations"] = 0
-        await self._save_mute_record(channel.guild.id, channel.id, member.id, record)
-        return True
+        return await self._apply_mute_by_ids(
+            channel.guild.id, channel.id, member.id, muted_until, scope, bulk
+        )
 
-    async def _unmute_thread_user(
+    async def _apply_unmute_by_ids(
         self,
-        channel: discord.Thread,
-        member: discord.Member,
-        *,
-        actor: discord.abc.User,
-        announce: bool,
-        scope: str = "thread",
-    ) -> bool:
-        """统一解除实现；仅清除指定层，另一层不受影响。"""
+        guild_id: int,
+        thread_id: int,
+        user_id: int,
+        scope: str,
+        bulk: Optional[list] = None,
+    ) -> tuple[bool, bool]:
+        """按 id 解除指定层，返回 (是否解除, 是否仍有单帖层)。"""
         if scope not in {"thread", "global"}:
             raise ValueError(f"未知禁言范围: {scope}")
-        key = (channel.guild.id, channel.id, member.id)
+        key = (guild_id, thread_id, user_id)
         record = self._mute_cache.get(key)
         if not record:
-            return False
+            return False, False
 
         single_active, global_active = await self._refresh_mute_layers(
-            channel.guild.id, channel.id, member.id
+            guild_id, thread_id, user_id
         )
         active = global_active if scope == "global" else single_active
         if not active:
-            return False
+            return False, False
 
         field = "global_muted_until" if scope == "global" else "muted_until"
         record = self._mute_cache.get(key, record)
@@ -1854,11 +2136,34 @@ class ThreadSelfManage(commands.Cog):
             record.get("global_muted_until")
         )
         await self._save_mute_record(
-            channel.guild.id,
-            channel.id,
-            member.id,
+            guild_id,
+            thread_id,
+            user_id,
             record if remaining_single or remaining_global else None,
+            bulk=bulk,
         )
+        return True, remaining_single
+
+    async def _unmute_thread_user(
+        self,
+        channel: discord.Thread,
+        member: discord.Member,
+        *,
+        actor: discord.abc.User,
+        announce: bool,
+        scope: str = "thread",
+        bulk: Optional[list] = None,
+    ) -> bool:
+        """统一解除实现；仅清除指定层，另一层不受影响。
+
+        bulk 为可选收集列表：语义同 _mute_thread_user。
+        """
+        removed, remaining_single = await self._apply_unmute_by_ids(
+            channel.guild.id, channel.id, member.id, scope, bulk
+        )
+        if not removed:
+            return False
+
         if announce:
             is_global = scope == "global"
             embed = discord.Embed(
@@ -1882,13 +2187,24 @@ class ThreadSelfManage(commands.Cog):
             await channel.send(embed=embed)
         return True
 
-    async def _save_mute_record(self, guild_id: int, thread_id: int, user_id: int, record: dict):
+    async def _save_mute_record(
+        self,
+        guild_id: int,
+        thread_id: int,
+        user_id: int,
+        record: dict,
+        bulk: Optional[list] = None,
+    ):
         # 更新内存缓存
         key = (guild_id, thread_id, user_id)
         if record:
             self._mute_cache[key] = record
         else:
             self._mute_cache.pop(key, None)
+        # 批量模式：仅暂存，由调用方循环结束后统一提交
+        if bulk is not None:
+            bulk.append((guild_id, thread_id, user_id, record if record else None))
+            return
         # 持久化到数据库
         try:
             await db.save_mute_record(guild_id, thread_id, user_id, record if record else None)
