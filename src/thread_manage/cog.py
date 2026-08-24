@@ -271,7 +271,7 @@ class ThreadSelfManage(commands.Cog):
                 title="🔒 您的帖子已被锁定",
                 description=(
                     f"您发布的帖子 **{after.name}** 已被锁定，锁定后其他人将无法发言。\n\n"
-                    f"如需解锁，可使用 `/自助管理 解锁子区 {after.id}`。"
+                    f"如需解锁，可使用 `/自助管理 解锁子区 thread_id:{after.id}`。"
                 ),
                 colour=discord.Colour.orange(),
             )
@@ -407,7 +407,7 @@ class ThreadSelfManage(commands.Cog):
             )
             await channel.send(lock_notice)
             await interaction.followup.send(
-                f"可使用 `/自助管理 解锁子区 {channel.id}` 解锁子区。",
+                f"可使用 `/自助管理 解锁子区 thread_id:{channel.id}` 解锁子区。",
                 ephemeral=True,
             )
             await channel.edit(locked=True, archived=True)
@@ -1395,7 +1395,7 @@ class ThreadSelfManage(commands.Cog):
             await channel.send(lock_notice)
 
             await interaction.followup.send(
-                f"可使用 `/自助管理 解锁子区 {channel.id}` 解锁子区。",
+                f"可使用 `/自助管理 解锁子区 thread_id:{channel.id}` 解锁子区。",
                 ephemeral=True,
             )
 
