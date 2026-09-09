@@ -79,10 +79,10 @@ class OdysseiaBot(commands.Bot):
     def __init__(self, **kwargs):
         intent_config = CONFIG.get("privileged_intents", {})
         intents = discord.Intents.default()
-        # Privileged intents are explicit and auditable. Presence is deliberately
-        # disabled: Odysseia does not inspect users' online state or activities.
+        # Only member events/listing require privileged access in this deployment.
+        # Ignore stale content-intent settings so a config reload cannot restore it.
         intents.members = bool(intent_config.get("members", True))
-        intents.message_content = bool(intent_config.get("message_content", True))
+        intents.message_content = False
         intents.presences = False
         # 由于本机器人只使用斜杠命令，前缀设置为默认值即可
         super().__init__(command_prefix='!', intents=intents, **kwargs)

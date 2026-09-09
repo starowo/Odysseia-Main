@@ -1,87 +1,115 @@
-# Discord Privileged Intent Application — Odysseia
+# Odysseia-Main — Server Members Intent Review
 
-Replace all `[bracketed values]` and attach public screenshots/video links.
+Prepared against the live deployment on 9 September 2026.
+Application ID: 1374372307916554351. Notice deadline: **10 September 2026**.
+
+Only Server Members is requested. Message Content and Presence are disabled.
+Publish and verify the completed privacy/evidence URLs before submission. The
+owner must review the final accuracy/compliance acknowledgement.
 
 ## Selections
 
-- Public Privacy Policy: **Yes** — `[PUBLIC_PRIVACY_POLICY_URL]`
-- Server Members Intent: **Apply**
-- Presence Intent: **Do not apply**
-- Message Content Intent: **Apply**
+| Question | Answer |
+| --- | --- |
+| Server Members Intent | Request |
+| Presence Intent | Do not request |
+| Message Content Intent | Do not request |
+| Public Privacy Policy | Yes once the completed policy is published |
+| API Data stored off-platform | Yes |
+| All API Data retained 30 days or less | No |
+| Encryption at rest | Yes, Google Compute Engine disk encryption |
 
-## Application Details
+## What does your application do?
 
-Odysseia is a multi-server community administration bot operated by
-`[OPERATOR/COMMUNITY]`. It primarily uses slash commands and Discord UI
-components. Features include member verification and role assignment,
-cross-server role synchronization, forum/thread self-management and cleanup,
-moderator-requested message cleanup and evidence review, anonymous feedback,
-forum post filtering, event participation checks, content-license workflows and
-moderation tools.
+Odysseia-Main manages membership and community administration for
+类脑ΟΔΥΣΣΕΙΑ (Odysseia) and participating communities, including 类脑ΙΛΙΑΣ.
+Features include rules-quiz verification, buffer/verified roles, automatic role
+upgrades after the waiting period, synchronization of configured roles between
+participating servers, forum-thread self-management and activity cleanup,
+permission-restricted moderation, creator-license settings and community banner
+applications. User-facing actions use slash commands, buttons and Discord
+interactions.
 
-Commands are permission-gated. Data is used only to deliver these features and
-prevent abuse; it is not sold, and message content is not used to train AI/ML
-models. Privacy policy: `[PUBLIC_PRIVACY_POLICY_URL]`. Demo server:
-`[SERVER_INVITE_URL]`.
+The only privileged intent requested is Guild Members. Presence and Message
+Content are disabled. Forum keyword filtering and legacy hand-written
+punishment-history import are disabled. Bulk message deletion uses message IDs
+and timestamps; its audit contains metadata rather than message bodies.
+Anonymous-feedback and event modules are also disabled in this deployment.
+
+Operator: SoliUmbra / starowo, for 类脑ΟΔΥΣΣΕΙΑ.
+Source: https://github.com/starowo/Odysseia-Main
+
+Privacy policy after publication:
+https://github.com/starowo/Odysseia-Main/blob/main/docs/PRIVACY_POLICY.md
 
 ## Why do you need the Guild Members intent?
 
-Guild Members is required for member lifecycle and role-based administration
-that interaction payloads alone cannot provide. Odysseia listens for joins and
-member updates to apply verification and cross-server role synchronization.
-Authorized staff can transfer all current holders of one role to another. Event
-managers can compare current members of a selected role with forum authors.
-Verification automation promotes eligible members from configured buffer roles
-after a waiting period.
+The bot handles member joins and member-role changes to maintain
+administrator-configured role mappings between participating servers. A member
+joining 类脑ΙΛΙΑΣ can automatically receive eligible roles held in
+类脑ΟΔΥΣΣΕΙΑ. A role added or removed by a moderator in the source server can
+be reflected in the configured counterpart server without requiring the member
+to issue a command.
 
-Only member ID, join timestamp and role IDs needed for these features are read.
-The bot does not use presence/activity data. Bulk operations are staff-only.
+These join and role-update events occur independently of an interaction.
+Fetching one known member when they click a button does not report the ongoing
+changes that automatic synchronization needs. The manual synchronization panel
+shown in the evidence is a user-facing recovery option, not the sole reason
+for requesting this intent.
 
-Demo: `[GUILD_MEMBERS_DEMO_URL]`
+Verification automation also enumerates holders of configured buffer roles,
+checks verification time (or join time as a fallback), and upgrades eligible
+members after their waiting period. This scheduled processing operates without
+requiring each affected member to interact with the bot. Authorized staff can
+also transfer current holders of a configured role.
 
-### Are you storing any API Data off-platform?
+We use Discord IDs, roles, join/verification timestamps and necessary
+verification/moderation state. We do not request online status, user activities
+or ordinary server message bodies for these functions. Synchronization is
+restricted to administrator-configured participating servers.
 
-**Yes.** Restricted SQLite/JSON storage contains Discord IDs and limited
-verification, role mapping, thread activity, moderation/safety and settings
-records. It contains no presence data. Retention is disclosed in the policy.
+At inspection, the production configuration contained one two-server
+synchronization group, with 194 source-server and 135 destination-server role
+mappings. Live Discord audit records showed join-time synchronization,
+role-change synchronization and automatic removal of buffer roles/addition of
+the verified role. These are configuration counts at inspection, not user counts.
 
-## Presence Intent
+## Screenshots / videos
 
-Do not select it. Code forces `intents.presences = False`; no feature reads user
-status, client status, activities or custom status.
+Publish this page and verify it is publicly accessible:
+https://github.com/starowo/Odysseia-Main/blob/main/docs/review-20260909/README.md#guild-members
 
-## Message Content answers
+## API Data stored off-platform
 
-- Opt out? **Yes for optional features.** Users choose whether to invoke feedback
-  and license workflows; forum welcome tracking has opt-out. Admin-enabled safety
-  filtering/moderation cannot be individually opted out of while participating
-  in that server, as disclosed in the privacy policy.
-- Stored off-platform? **Yes.** Deliberately submitted anonymous feedback and
-  attachment URLs are stored. Routine thread scanning stores only IDs, counts
-  and timestamps. Moderator-created evidence/backup records may contain selected
-  message text.
-- Used to train AI/ML? **No.**
+Yes. The Google Cloud host stores SQLite/JSON operational records including
+Discord IDs, verification results/timestamps and cooldowns, role mappings,
+thread activity/mute/delegation state, moderation records and license/banner
+settings. The bot does not collect presence data. Its current bulk-deletion audit
+contains message metadata only. Content deliberately supplied through
+interactions, such as moderation reasons, may still be stored.
 
-## Why do you need the Message Content intent?
+## Retained for 30 days or less?
 
-Odysseia needs Message Content for narrowly scoped, administrator-enabled
-features that inspect existing or new messages. The forum filter checks opening
-and subsequent posts against a configured word list. Thread cleanup reads
-history to calculate activity but retains only counts/timestamps. Authorized
-moderation commands read selected ranges for deletion or a requested backup.
-The license workflow detects its own helper messages in configured forums.
-Anonymous feedback listens in DM only after a user explicitly starts an
-image/file upload, then consumes that user's next message and attachment.
+No. There is no universal automatic 30-day purge of all operational state.
+Active sanctions, verification state and role mappings may remain longer.
+The privacy policy discloses manual retention/deletion handling; it does not
+promise a deletion schedule the application does not implement.
 
-The bot ignores bot messages and scopes listeners to relevant DMs, threads or
-configured channels. Content is not used for ads, profiling, sale or AI training.
+## How can users request deletion?
 
-Demo: `[MESSAGE_CONTENT_DEMO_URL]`
+Contact SoliUmbra (Discord username: soliumbra) in 类脑ΟΔΥΣΣΕΙΑ or the
+administrators of the relevant server, with the Discord ID and records
+concerned. The existing operator support message is:
+https://discord.com/channels/1134557553011998840/1338036166221365339/1400399975531282444
 
-## Demo recording checklist
+Non-confidential technical questions: https://github.com/starowo/Odysseia-Main/issues
 
-Show: the server and bot profile; join/verification and a synced role update;
-the role-member/event check; forum filtering and thread activity cleanup; the
-explicit feedback DM upload; admin permission checks and unauthorized rejection;
-the module list, public privacy URL, and Presence disabled in the Portal. Use a
-reviewer-accessible public/unlisted link that requires no access request.
+The operator verifies and handles requests manually. Necessary active sanction
+or safety records may need to be retained, with an explanation.
+
+## Encryption at rest
+
+Yes. Hosting is on Google Compute Engine in Oregon, United States (us-west1).
+Compute Engine disks encrypt customer content at rest. Application SQLite/JSON
+files do not add a separate file/database encryption layer:
+https://docs.cloud.google.com/compute/docs/disks/disk-encryption

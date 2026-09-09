@@ -1,65 +1,109 @@
-# Odysseia Bot Privacy Policy
+# Odysseia-Main Privacy Policy
 
-Last updated: 17 July 2026
+Last updated: 9 September 2026
 
-> Before publishing, replace every `[bracketed value]`, host this document at a
-> stable public HTTPS URL, and add that URL in the Discord Developer Portal.
+This policy describes Odysseia-Main (Discord application ID 1374372307916554351),
+maintained by **SoliUmbra / starowo for the 类脑ΟΔΥΣΣΕΙΑ community** and
+participating communities. Independently hosted copies of this open-source
+software have their own operators and practices.
 
-## 1. Who operates this bot
+## Contact and data requests
 
-Odysseia (the “Bot”) is operated by **[legal name or community name]**. Privacy
-questions and data requests can be sent to **[contact email]** or **[support server URL]**.
+Contact **SoliUmbra (Discord username: soliumbra)** in 类脑ΟΔΥΣΣΕΙΑ for privacy
+questions, access, correction or deletion. The operator's existing support
+message is in the [new-member verification channel](https://discord.com/channels/1134557553011998840/1338036166221365339/1400399975531282444).
+You may also contact the administrators of the server where you use the bot.
+For non-confidential technical questions, use the
+[project issue tracker](https://github.com/starowo/Odysseia-Main/issues).
+Do not post private messages, credentials or sensitive evidence in public issues.
 
-## 2. Data we process
+## Data the bot uses
 
-The Bot processes Discord user, guild, channel, role, thread, message and
-interaction identifiers needed to provide community administration features.
-Depending on features enabled by a server, it may also process membership and
-role changes; message text and attachment metadata for user-requested anonymous
-feedback, forum filtering, thread cleanup, moderation and license workflows;
-verification attempts and cooldowns; pseudonymous abuse-prevention records;
-and moderation, banner application and user-configured license records.
+The bot uses Discord user, server, role, channel, thread, message and interaction
+IDs; member roles and join times; and information supplied to its commands.
+These support verification, role assignment and synchronization, thread
+management, moderation, creator-license settings and banner applications.
 
-The Bot does **not** request or process Discord presence/activity data. Message
-content is not used to train machine-learning or AI models and is not sold.
+Verification records include user/server IDs, attempt times and results,
+successful-verification time, cooldowns and temporary question state. Thread
+records include user/thread IDs, message counts or activity timestamps,
+delegation, mute state and welcome-message preferences. Moderation records can
+include the affected account, staff account, reason, sanction times, evidence
+references and administrative decisions. Role mappings, license preferences and
+banner applications are stored when needed by their features.
 
-## 3. Purpose and access
+Message Content is disabled. The bot does not read ordinary server message
+bodies for keyword filtering or moderation transcripts. Bulk cleanup operates
+on message IDs and timestamps, and its audit records message ID, author ID and
+creation time only. Routine thread activity tracking stores IDs and statistics,
+not a copy of every conversation. Forum keyword filtering and legacy
+hand-written punishment-history import are disabled.
 
-We use data only to perform features requested by users or server administrators,
-keep communities safe, prevent abuse, synchronize roles and maintain the Bot.
-Access is limited to the operator and authorized server moderators according to
-their Discord permissions.
+Discord still provides content deliberately supplied through interactions,
+direct messages to the bot and the bot's own messages without this privileged
+intent. Such inputs, including moderator-provided reasons, may be used or stored
+for the requested feature. Disabling the intent does not mean the bot receives
+no user-provided text at all.
 
-## 4. Storage and retention
+The hosted application's anonymous-feedback and event modules are currently
+disabled. Presence is disabled: the bot does not track members' online status,
+custom status, games or activities. Displaying the bot's own status does not
+mean that it tracks users' presence.
 
-Operational data is stored on **[hosting country/region and provider]** in local
-SQLite/JSON files and restricted logs. Discord messages normally remain on
-Discord. Thread activity records store identifiers, counts and timestamps rather
-than message bodies.
+## Purposes, hosting and access
 
-Production retention schedule: application logs are kept for 30 days;
-verification attempts and temporary question caches for 30 days after the last
-attempt; anonymous feedback until deletion, feature removal or 180 days after
-creation, except active safety records; moderation records while needed to
-enforce an active sanction; and configuration/state until removed or no longer
-needed. The operator must configure deletion/rotation procedures accordingly.
+Data is used to operate requested community features, maintain role-based
+access, prevent abuse and allow authorized staff to review moderation actions.
+The bot uses Discord APIs and is currently hosted on Google Cloud Platform in
+Oregon, United States (us-west1). Operational records are stored in SQLite/JSON
+files and application logs. Google Cloud and Discord process data as the
+infrastructure providers for these services.
 
-## 5. Sharing
+The Google Compute Engine disks provide
+[encryption at rest](https://docs.cloud.google.com/compute/docs/disks/disk-encryption).
+This is infrastructure encryption; the SQLite/JSON files do not add a separate
+application-level encryption layer.
 
-Data is sent to Discord as required and to **[hosting provider]** for hosting. We
-do not sell personal data. We disclose it only to authorized server staff,
-service providers operating the Bot, or when required by law.
+Administrative commands use configured Discord role and staff checks. Host
+access is restricted to the operator and authorized system administrators.
+Audit attachments are sent to the server's configured moderation-log
+destination; administrators must restrict its visibility appropriately.
 
-## 6. Choices and requests
+The bot does not use Discord message content to train ML/AI models, send it to
+an AI inference service, sell it or use it for advertising. The subject matter
+of a community does not change these limits on this bot's data use.
 
-Users can avoid optional content features by not invoking them. Forum welcome
-messages include an opt-out control. Administrators can disable optional modules.
-For access, correction or deletion, contact **[contact method]** with your Discord
-user ID. Necessary active moderation, fraud-prevention, security or legal records
-may be retained or pseudonymized; we will explain this when responding.
+## Storage and retention
 
-## 7. Security and changes
+The bot does not continuously archive server messages. Current moderation audit
+attachments contain metadata only and are uploaded to the configured Discord
+moderation log, where they remain until authorized staff delete them.
+Operational records, logs and historical records from earlier versions may
+remain until an administrator removes them. Turning off Message Content does
+not delete pre-existing records or content deliberately supplied to commands.
 
-We use least-privilege Discord permissions, access controls and restricted host
-access. Material changes will be posted at this URL with an updated date.
+There is currently no universal automatic 30-day or 180-day deletion rule for
+all stored records. Verification, sanctions and role-related state may be needed
+after an interaction ends. This policy does not promise an automatic deadline
+the application does not implement. The operator handles deletion requests
+manually and evaluates what is still needed for active restrictions, abuse
+prevention or moderation appeals.
 
+## Choices and deletion
+
+Users can avoid optional license/banner features, and forum welcome messages
+provide an opt-out. Administrators can disable optional modules and filter
+rules. There is no universal per-user switch that exempts a member from server
+moderation or all membership processing while using the same community.
+
+For access, correction or deletion, provide your Discord user ID, relevant
+server and records/feature through the contact methods above. The operator will
+verify the request and remove data no longer required. Active sanction,
+abuse-prevention or legal records may need to be retained; the operator will
+explain an applicable exception. Deleting a Discord message or leaving a server
+does not automatically erase every bot record or audit attachment.
+
+## Changes
+
+Changes to the hosted application's data practices will be reflected here
+with an updated date.

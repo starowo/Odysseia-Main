@@ -445,7 +445,7 @@ class AdminCommands(commands.Cog):
         if start_message_obj.channel.id != channel.id or end_message_obj.channel.id != channel.id:
             await interaction.followup.send("消息必须在当前频道", ephemeral=True)
             return
-        if start_message_obj.created_at > end_message_obj.created_at:
+        if start_message_obj.id > end_message_obj.id:
             await interaction.followup.send("开始消息必须在结束消息之前", ephemeral=True)
             return
         
@@ -466,17 +466,21 @@ class AdminCommands(commands.Cog):
             return
 
         deleted = 0
-        current_after = start_message_obj.created_at - datetime.timedelta(seconds=1)  # 稍早于起始消息以包含它
+        backup_lines = []
+        current_after = discord.Object(id=start_message_obj.id - 1)
+        range_end = discord.Object(id=end_message_obj.id + 1)
         
         # 分批删除消息
         while True:
             fetched: List[discord.Message] = []
-            backup_text = ""
-            async for message in channel.history(limit=100, after=current_after, before=end_message_obj.created_at + datetime.timedelta(seconds=1)):
+            async for message in channel.history(limit=100, after=current_after, before=range_end, oldest_first=True):
                 # 确保消息在时间范围内
-                if start_message_obj.created_at <= message.created_at <= end_message_obj.created_at:
+                if start_message_obj.id <= message.id <= end_message_obj.id:
                     fetched.append(message)
-                    backup_text += f"{message.author.name}({message.author.id}): {message.content}\n"
+                    backup_lines.append(
+                        f"message_id={message.id} author_id={message.author.id} "
+                        f"created_at={message.created_at.isoformat()}\n"
+                    )
             if len(fetched) == 0:
                 break
                 
@@ -516,29 +520,27 @@ class AdminCommands(commands.Cog):
             # 更新进度
             await interaction.edit_original_response(content=f"已删除 {deleted} 条消息")
             
-            # 更新current_after为最后一条处理的消息时间
+            # 使用消息 ID 作游标，避免同一毫秒内的消息在分页时被跳过。
             if fetched:
-                current_after = fetched[-1].created_at
+                current_after = fetched[-1]
             else:
                 break
                 
-        # 记录删除日志
-        # 临时保存备份文本
-        with open(".backup.txt", "w") as f:
-            f.write(backup_text)
-            f.close()
-        backup_file = discord.File(".backup.txt")
-
+        # 仅记录消息元数据，不读取正文；无 Message Content Intent 时仍可审核删除范围。
         # 使用服务器特定配置
         moderation_log_channel_id = self.get_guild_config("moderation_log_channel_id", interaction.guild.id, 0)
         if moderation_log_channel_id:
-            await interaction.guild.get_channel_or_thread(int(moderation_log_channel_id)).send(
-                embed=discord.Embed(title="🔴 批量删除消息", description=f"管理员 {interaction.user.mention} 在 {channel.mention} 批量删除了 {deleted} 条消息。"),
-                files=[backup_file]
-            )
-        # 删除临时文件
-        os.remove(".backup.txt")
-        backup_file.close()
+            log_channel = interaction.guild.get_channel_or_thread(int(moderation_log_channel_id))
+            if log_channel is not None:
+                with io.BytesIO("".join(backup_lines).encode("utf-8")) as buffer:
+                    backup_file = discord.File(buffer, filename="moderation-audit.txt")
+                    try:
+                        await log_channel.send(
+                            embed=discord.Embed(title="🔴 批量删除消息", description=f"管理员 {interaction.user.mention} 在 {channel.mention} 批量删除了 {deleted} 条消息。"),
+                            files=[backup_file]
+                        )
+                    finally:
+                        backup_file.close()
 
         await interaction.followup.send(f"✅ 已删除 {deleted} 条消息", ephemeral=True)
 
@@ -2184,6 +2186,9 @@ class AdminCommands(commands.Cog):
 
     async def _quiz_punish_init(self):
         """初始化答题处罚记录"""
+        if not self.bot.intents.message_content:
+            self.logger.info("已跳过旧手工处罚回溯：消息正文读取已关闭，现有处罚记录保留")
+            return
         # 检测data/punish/quiz目录是否存在
         if os.path.exists("data/punish/quiz"):
            return

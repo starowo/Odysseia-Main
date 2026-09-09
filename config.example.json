@@ -4,10 +4,10 @@
     
     "token": "你的机器人Token_从Discord开发者门户获取",
 
-    "_privileged_intents_comment": "必须与 Discord Developer Portal 设置一致。机器人不使用 Presence Intent。仅在禁用依赖模块后才可关闭对应 Intent。",
+    "_privileged_intents_comment": "只申请 Server Members。Message Content 和 Presence 均关闭；新帖正文过滤与旧手工处罚回溯不可用，批量删除仅记录消息元数据。",
     "privileged_intents": {
         "members": true,
-        "message_content": true
+        "message_content": false
     },
     
     "_logging_comment": "日志系统配置",

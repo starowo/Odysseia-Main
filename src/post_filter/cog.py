@@ -57,6 +57,10 @@ class PostFilterCog(commands.Cog):
         description="联动验证记录，检查楼主消息违禁词；关键词子串匹配、不区分大小写（管理员）",
     )
 
+    async def cog_load(self):
+        if not self.bot.intents.message_content:
+            raise RuntimeError("消息正文读取已关闭，无法启用新帖违禁过滤模块")
+
     @commands.Cog.listener()
     async def on_ready(self):
         await self.verify_db.init()
