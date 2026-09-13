@@ -1,6 +1,6 @@
 # Odysseia-Main Privacy Policy
 
-Last updated: 9 September 2026
+Last updated: 13 September 2026
 
 This policy describes Odysseia-Main (Discord application ID 1374372307916554351),
 maintained by **SoliUmbra / starowo for the 类脑ΟΔΥΣΣΕΙΑ community** and
@@ -54,15 +54,20 @@ mean that it tracks users' presence.
 
 Data is used to operate requested community features, maintain role-based
 access, prevent abuse and allow authorized staff to review moderation actions.
-The bot uses Discord APIs and is currently hosted on Google Cloud Platform in
-Oregon, United States (us-west1). Operational records are stored in SQLite/JSON
-files and application logs. Google Cloud and Discord process data as the
-infrastructure providers for these services.
+The bot uses Discord APIs and is currently hosted on an OVHcloud VPS in Oregon,
+United States. Operational records are stored in SQLite/JSON files and
+application logs. OVHcloud and Discord provide the running service's
+infrastructure. Following the migration on 13 September 2026 (UTC), the previous
+Google Cloud host remains stopped for this bot and retains a rollback copy.
+Restricted migration/recovery copies are also held on the operator's workstation.
 
-The Google Compute Engine disks provide
-[encryption at rest](https://docs.cloud.google.com/compute/docs/disks/disk-encryption).
-This is infrastructure encryption; the SQLite/JSON files do not add a separate
-application-level encryption layer.
+The OVHcloud deployment stores its application files, databases, configuration
+and logs on a LUKS2 encrypted volume. The unlock key is stored separately from
+that volume in a root-readable host file to allow unattended restart, with a
+restricted recovery copy held by the operator. This protects the contents of the
+encrypted volume at rest; it is not a claim that the entire VPS system disk is
+encrypted or that data is inaccessible to an authorized root administrator.
+SQLite/JSON do not add a separate application-level encryption layer.
 
 Administrative commands use configured Discord role and staff checks. Host
 access is restricted to the operator and authorized system administrators.

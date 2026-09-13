@@ -3,6 +3,10 @@
 Prepared against the live deployment on 9 September 2026.
 Application ID: 1374372307916554351. Notice deadline: **10 September 2026**.
 
+Hosting information updated on 13 September 2026 (UTC) after migration to OVHcloud.
+This document is current reference text; editing it does not update a previously
+submitted Discord application.
+
 Only Server Members is requested. Message Content and Presence are disabled.
 Publish and verify the completed privacy/evidence URLs before submission. The
 owner must review the final accuracy/compliance acknowledgement.
@@ -17,7 +21,7 @@ owner must review the final accuracy/compliance acknowledgement.
 | Public Privacy Policy | Yes once the completed policy is published |
 | API Data stored off-platform | Yes |
 | All API Data retained 30 days or less | No |
-| Encryption at rest | Yes, Google Compute Engine disk encryption |
+| Encryption at rest | Yes, LUKS2 encrypted application volume on the OVHcloud host |
 
 ## What does your application do?
 
@@ -81,7 +85,7 @@ https://github.com/starowo/Odysseia-Main/blob/main/docs/review-20260909/README.m
 
 ## API Data stored off-platform
 
-Yes. The Google Cloud host stores SQLite/JSON operational records including
+Yes. The OVHcloud host stores SQLite/JSON operational records including
 Discord IDs, verification results/timestamps and cooldowns, role mappings,
 thread activity/mute/delegation state, moderation records and license/banner
 settings. The bot does not collect presence data. Its current bulk-deletion audit
@@ -109,7 +113,11 @@ or safety records may need to be retained, with an explanation.
 
 ## Encryption at rest
 
-Yes. Hosting is on Google Compute Engine in Oregon, United States (us-west1).
-Compute Engine disks encrypt customer content at rest. Application SQLite/JSON
-files do not add a separate file/database encryption layer:
-https://docs.cloud.google.com/compute/docs/disks/disk-encryption
+Yes. Hosting is on an OVHcloud VPS in Oregon, United States. The application,
+databases, configuration and logs reside on a LUKS2 encrypted volume. The unlock
+key is held in a separate root-readable host file for unattended startup, with
+a restricted operator recovery copy. This is encrypted application storage,
+not a claim that the whole VPS system disk is encrypted or that root cannot
+access the running application. SQLite/JSON do not add separate database-level
+encryption. The previous GCP host retains a stopped rollback copy; migration
+and recovery copies on the operator workstation have restricted access.
