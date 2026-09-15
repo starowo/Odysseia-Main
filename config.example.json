@@ -55,6 +55,10 @@
         "banner": {
             "enabled": true,
             "description": "轮换通知功能"
+        },
+        "channel_rename": {
+            "enabled": true,
+            "description": "频道改名功能"
         }
     },
 
