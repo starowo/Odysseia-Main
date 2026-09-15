@@ -416,6 +416,46 @@ async def save_mute_record(guild_id: int, thread_id: int, user_id: int,
     await _db.commit()
 
 
+async def save_mute_records_bulk(records: list[tuple[int, int, int, Optional[dict]]]) -> None:
+    """批量保存或删除禁言记录，单个事务提交。
+
+    records 元素为 (guild_id, thread_id, user_id, record)；record 为 None 时删除。
+    用于全贴禁言/撤销等大批量场景，将 N 次独立 commit 合并为一次。
+    """
+    if not records:
+        return
+    upserts = [
+        (
+            guild_id,
+            thread_id,
+            user_id,
+            record.get("muted_until"),
+            record.get("global_muted_until"),
+            record.get("violations", 0),
+        )
+        for guild_id, thread_id, user_id, record in records
+        if record
+    ]
+    deletes = [
+        (guild_id, thread_id, user_id)
+        for guild_id, thread_id, user_id, record in records
+        if not record
+    ]
+    if upserts:
+        await _db.executemany(
+            "INSERT OR REPLACE INTO thread_mutes "
+            "(guild_id, thread_id, user_id, muted_until, global_muted_until, violations) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            upserts,
+        )
+    if deletes:
+        await _db.executemany(
+            "DELETE FROM thread_mutes WHERE guild_id = ? AND thread_id = ? AND user_id = ?",
+            deletes,
+        )
+    await _db.commit()
+
+
 # ── 论坛 Opt-out 操作 ───────────────────────────────────────
 
 async def load_forum_optout() -> set[int]:
