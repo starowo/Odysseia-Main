@@ -122,7 +122,8 @@ def validate_config():
         ('misc', '杂项功能'),
         ('event', '赛事管理'),
         ('bot_manage', '机器人管理'),
-        ('sync', '服务器同步')
+        ('sync', '服务器同步'),
+        ('channel_rename', '频道改名功能')
     ]
     
     for cog_name, cog_desc in available_cogs:
