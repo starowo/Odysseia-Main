@@ -41,8 +41,14 @@ class ChannelRenameCommands(commands.Cog):
     async def rename_channel(
         self, interaction: discord.Interaction, 新名称: str, emoji: Optional[str] = None
     ):
+        if isinstance(interaction.channel, discord.Thread):
+            await interaction.response.send_message(
+                "❌ 此命令不支持修改子区或帖子名称，请在普通频道中使用。",
+                ephemeral=True,
+            )
+            return
         if interaction.guild is None or not isinstance(
-            interaction.channel, (discord.abc.GuildChannel, discord.Thread)
+            interaction.channel, discord.abc.GuildChannel
         ):
             await interaction.response.send_message(
                 "❌ 请在服务器频道中使用此命令。", ephemeral=True
