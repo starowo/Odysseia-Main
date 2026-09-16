@@ -17,6 +17,8 @@ def make_cog() -> ThreadSelfManage:
     cog = ThreadSelfManage.__new__(ThreadSelfManage)
     cog.logger = MagicMock()
     cog._mute_cache = {}
+    cog._thread_owner_cache = {}
+    cog._thread_owner_ready = set()
     return cog
 
 
@@ -134,7 +136,7 @@ async def test_global_thread_action_permission_excludes_delegate(
     assert await cog.can_global_thread_action(interaction, thread) is expected
 
 
-async def test_find_owned_forum_threads_includes_active_and_archived(monkeypatch):
+async def test_scan_all_forum_threads_builds_owner_index(monkeypatch):
     cog = make_cog()
 
     class FakeForum:
@@ -161,9 +163,9 @@ async def test_find_owned_forum_threads_includes_active_and_archived(monkeypatch
     )
     guild = SimpleNamespace(channels=[forum, SimpleNamespace(id=100)])
 
-    result = await cog._find_owned_forum_threads(guild, 42)
+    result = await cog._scan_all_forum_threads(guild)
 
-    assert [thread.id for thread in result] == [1, 3]
+    assert result == {42: {1, 3}, 7: {2}}
 
 
 async def test_global_mute_scans_current_thread_owner_posts(monkeypatch):
@@ -181,7 +183,8 @@ async def test_global_mute_scans_current_thread_owner_posts(monkeypatch):
         original_response=AsyncMock(return_value=message),
     )
     cog.can_global_thread_action = AsyncMock(return_value=True)
-    cog._find_owned_forum_threads = AsyncMock(return_value=[])
+    cog._build_owner_index = AsyncMock()
+    cog._lookup_owned_threads = MagicMock(return_value=[])
     cog._apply_global_thread_mute = AsyncMock(return_value=0)
     monkeypatch.setattr(
         "src.thread_manage.cog.wait_menu_confirm_on_message",
@@ -192,89 +195,99 @@ async def test_global_mute_scans_current_thread_owner_posts(monkeypatch):
         interaction, source, target, is_mute=True
     )
 
-    cog._find_owned_forum_threads.assert_awaited_once_with(guild, 10)
+    cog._build_owner_index.assert_awaited_once_with(guild)
+    cog._lookup_owned_threads.assert_called_once_with(guild, 10)
 
 
-async def test_global_mute_announces_only_in_source_thread():
-    """全贴禁言仅在执行指令的当前帖子公示，其他帖子保持静默。"""
+async def test_global_mute_announces_only_in_source_thread(monkeypatch):
+    """全贴禁言仅在执行指令的当前帖子公示，其他帖子静默按 id 写库。"""
     cog = make_cog()
-    threads = [SimpleNamespace(id=100), SimpleNamespace(id=101)]
+    monkeypatch.setattr("src.thread_manage.cog.db.save_mute_records_bulk", AsyncMock())
+    announce_channel = SimpleNamespace(id=100, send=AsyncMock())
     target = SimpleNamespace(id=42)
     actor = SimpleNamespace(id=10)
-    cog._mute_thread_user = AsyncMock(side_effect=[True, True])
+    cog._mute_thread_user = AsyncMock(return_value=True)
+    cog._apply_mute_by_ids = AsyncMock(return_value=True)
 
     affected = await cog._apply_global_thread_mute(
-        threads,
-        target,
-        actor,
-        announce_thread_id=100,
+        7, [100, 101], target, actor, announce_channel=announce_channel
     )
 
     assert affected == 2
-    calls = cog._mute_thread_user.await_args_list
-    assert calls[0].args[1] is target
-    assert calls[0].kwargs["announce"] is True
-    assert calls[0].kwargs["announcement_title"] == "🔒 全贴禁言"
-    assert calls[1].args[1] is target
-    assert calls[1].kwargs["announce"] is False
-    assert calls[1].kwargs["announcement_title"] == "🔒 全贴禁言"
+    cog._mute_thread_user.assert_awaited_once()
+    announce_call = cog._mute_thread_user.await_args
+    assert announce_call.args[0] is announce_channel
+    assert announce_call.kwargs["announce"] is True
+    assert announce_call.kwargs["announcement_title"] == "🔒 全贴禁言"
+    cog._apply_mute_by_ids.assert_awaited_once()
+    assert cog._apply_mute_by_ids.await_args.args[:5] == (7, 101, 42, -1, "global")
 
 
-async def test_apply_global_thread_mute_reuses_single_thread_mute_helper():
+async def test_apply_global_thread_mute_uses_bulk_helper_for_non_announce(monkeypatch):
     cog = make_cog()
-    threads = [SimpleNamespace(id=1), SimpleNamespace(id=2)]
+    monkeypatch.setattr("src.thread_manage.cog.db.save_mute_records_bulk", AsyncMock())
     member = SimpleNamespace(id=42)
     actor = SimpleNamespace(id=10)
-    cog._mute_thread_user = AsyncMock(side_effect=[True, True])
+    cog._mute_thread_user = AsyncMock(return_value=True)
+    cog._apply_mute_by_ids = AsyncMock(return_value=True)
 
-    affected = await cog._apply_global_thread_mute(threads, member, actor)
+    affected = await cog._apply_global_thread_mute(7, [1, 2], member, actor)
 
     assert affected == 2
-    assert cog._mute_thread_user.await_count == 2
-    for call in cog._mute_thread_user.await_args_list:
-        assert call.kwargs["muted_until"] == -1
-        assert call.kwargs["announce"] is False
+    cog._mute_thread_user.assert_not_awaited()
+    assert cog._apply_mute_by_ids.await_count == 2
+    for call in cog._apply_mute_by_ids.await_args_list:
+        assert call.args[0] == 7
+        assert call.args[3] == -1
+        assert call.args[4] == "global"
 
 
-async def test_apply_global_thread_mute_forwards_custom_mute_parameters():
+async def test_apply_global_thread_mute_forwards_custom_mute_parameters(monkeypatch):
     """防止批量入口丢失直接命令传入的时长、原因或显示标签。"""
     cog = make_cog()
-    threads = [SimpleNamespace(id=1), SimpleNamespace(id=2)]
+    monkeypatch.setattr("src.thread_manage.cog.db.save_mute_records_bulk", AsyncMock())
+    announce_channel = SimpleNamespace(id=1, send=AsyncMock())
     member = SimpleNamespace(id=42)
     actor = SimpleNamespace(id=10)
-    cog._mute_thread_user = AsyncMock(side_effect=[True, True])
+    cog._mute_thread_user = AsyncMock(return_value=True)
+    cog._apply_mute_by_ids = AsyncMock(return_value=True)
 
-    affected = await cog._apply_global_thread_mute(
-        threads,
+    await cog._apply_global_thread_mute(
+        7,
+        [1, 2],
         member,
         actor,
         muted_until="2026-07-27T12:00:00",
         reason="跨帖测试",
         duration_label="1d",
+        announce_channel=announce_channel,
     )
 
-    assert affected == 2
-    for call in cog._mute_thread_user.await_args_list:
-        assert call.kwargs["muted_until"] == "2026-07-27T12:00:00"
-        assert call.kwargs["reason"] == "跨帖测试"
-        assert call.kwargs["duration_label"] == "1d"
-        assert call.kwargs["announce"] is False
+    announce_call = cog._mute_thread_user.await_args
+    assert announce_call.kwargs["muted_until"] == "2026-07-27T12:00:00"
+    assert announce_call.kwargs["reason"] == "跨帖测试"
+    assert announce_call.kwargs["duration_label"] == "1d"
+    assert cog._apply_mute_by_ids.await_args.args[3] == "2026-07-27T12:00:00"
 
 
-async def test_apply_global_thread_unmute_only_counts_existing_records():
+async def test_apply_global_thread_unmute_only_counts_existing_records(monkeypatch):
     cog = make_cog()
-    threads = [SimpleNamespace(id=1), SimpleNamespace(id=2)]
+    monkeypatch.setattr("src.thread_manage.cog.db.save_mute_records_bulk", AsyncMock())
     member = SimpleNamespace(id=42)
     actor = SimpleNamespace(id=10)
-    cog._unmute_thread_user = AsyncMock(side_effect=[True, False])
+    cog._apply_unmute_by_ids = AsyncMock(
+        side_effect=[(True, False), (False, False)]
+    )
 
-    affected = await cog._apply_global_thread_unmute(threads, member, actor)
+    affected, still_single = await cog._apply_global_thread_unmute(
+        7, [1, 2], member, actor
+    )
 
-    assert affected == (1, 0)
-    assert cog._unmute_thread_user.await_count == 2
-    for call in cog._unmute_thread_user.await_args_list:
-        assert call.kwargs["announce"] is False
-        assert call.kwargs["scope"] == "global"
+    assert (affected, still_single) == (1, 0)
+    assert cog._apply_unmute_by_ids.await_count == 2
+    for call in cog._apply_unmute_by_ids.await_args_list:
+        assert call.args[0] == 7
+        assert call.args[3] == "global"
 
 
 async def test_global_unmute_clears_global_layer_and_preserves_single_layer(monkeypatch):
@@ -306,50 +319,44 @@ async def test_global_unmute_clears_global_layer_and_preserves_single_layer(monk
     assert await cog._is_thread_muted(1, 50, 42) is True
 
 
-async def test_global_unmute_returns_removed_and_still_single_counts():
+async def test_global_unmute_returns_removed_and_still_single_counts(monkeypatch):
     """批量撤销只统计实际全贴层，并报告撤销后仍有单帖层的帖子。"""
     cog = make_cog()
-    threads = [SimpleNamespace(id=1), SimpleNamespace(id=2), SimpleNamespace(id=3)]
+    monkeypatch.setattr("src.thread_manage.cog.db.save_mute_records_bulk", AsyncMock())
     member = SimpleNamespace(id=42)
     actor = SimpleNamespace(id=10)
-    cog._mute_cache = {
-        (1, 1, 42): {"muted_until": -1, "global_muted_until": -1},
-        (1, 2, 42): {"muted_until": None, "global_muted_until": -1},
-        (1, 3, 42): {"muted_until": -1, "global_muted_until": None},
-    }
-    for thread in threads:
-        thread.guild = SimpleNamespace(id=1)
-    cog._unmute_thread_user = AsyncMock(side_effect=[True, True, False])
-
-    result = await cog._apply_global_thread_unmute(threads, member, actor)
-
-    assert result == (2, 1)
-    for call in cog._unmute_thread_user.await_args_list:
-        assert call.kwargs["scope"] == "global"
-
-
-async def test_global_unmute_announces_only_in_source_thread():
-    """解除全贴禁言公示只发送到执行命令的当前帖子。"""
-    cog = make_cog()
-    source = SimpleNamespace(id=1, guild=SimpleNamespace(id=7))
-    other = SimpleNamespace(id=2, guild=SimpleNamespace(id=7))
-    member = SimpleNamespace(id=42)
-    actor = SimpleNamespace(id=10)
-    cog._unmute_thread_user = AsyncMock(side_effect=[True, True])
-    cog._mute_cache = {
-        (7, 1, 42): {"muted_until": -1, "global_muted_until": -1},
-        (7, 2, 42): {"muted_until": None, "global_muted_until": -1},
-    }
-
-    await cog._apply_global_thread_unmute(
-        [source, other], member, actor, announce_thread_id=1
+    cog._apply_unmute_by_ids = AsyncMock(
+        side_effect=[(True, True), (True, False), (False, False)]
     )
 
-    calls = cog._unmute_thread_user.await_args_list
-    assert calls[0].kwargs["announce"] is True
-    assert calls[0].kwargs["scope"] == "global"
-    assert calls[1].kwargs["announce"] is False
-    assert calls[1].kwargs["scope"] == "global"
+    result = await cog._apply_global_thread_unmute(7, [1, 2, 3], member, actor)
+
+    assert result == (2, 1)
+    for call in cog._apply_unmute_by_ids.await_args_list:
+        assert call.args[3] == "global"
+
+
+async def test_global_unmute_announces_only_in_source_thread(monkeypatch):
+    """解除全贴禁言公示只发送到执行命令的当前帖子。"""
+    cog = make_cog()
+    monkeypatch.setattr("src.thread_manage.cog.db.save_mute_records_bulk", AsyncMock())
+    announce_channel = SimpleNamespace(id=1, send=AsyncMock())
+    member = SimpleNamespace(id=42)
+    actor = SimpleNamespace(id=10)
+    cog._unmute_thread_user = AsyncMock(return_value=True)
+    cog._apply_unmute_by_ids = AsyncMock(return_value=(True, False))
+
+    await cog._apply_global_thread_unmute(
+        7, [1, 2], member, actor, announce_channel=announce_channel
+    )
+
+    cog._unmute_thread_user.assert_awaited_once()
+    announce_call = cog._unmute_thread_user.await_args
+    assert announce_call.args[0] is announce_channel
+    assert announce_call.kwargs["announce"] is True
+    assert announce_call.kwargs["scope"] == "global"
+    cog._apply_unmute_by_ids.assert_awaited_once()
+    assert cog._apply_unmute_by_ids.await_args.args[:3] == (7, 2, 42)
 
 
 @pytest.mark.parametrize(
@@ -825,3 +832,175 @@ async def test_global_unmute_slash_command_reuses_existing_flow(monkeypatch):
         member,
         is_mute=False,
     )
+
+
+async def test_global_mute_collects_records_for_single_commit(monkeypatch):
+    """批量禁言通过收集列表一次性提交，而非逐帖 commit。"""
+    cog = make_cog()
+    bulk_save = AsyncMock()
+    monkeypatch.setattr("src.thread_manage.cog.db.save_mute_records_bulk", bulk_save)
+    member = SimpleNamespace(id=42)
+    actor = SimpleNamespace(id=10)
+
+    affected = await cog._apply_global_thread_mute(7, [1, 2], member, actor)
+
+    assert affected == 2
+    bulk_save.assert_awaited_once()
+    records = bulk_save.await_args.args[0]
+    assert len(records) == 2
+    keys = {(g, t, u) for g, t, u, _ in records}
+    assert keys == {(7, 1, 42), (7, 2, 42)}
+    assert all(rec[3] is not None for rec in records)
+
+
+async def test_global_unmute_collects_deletes_for_single_commit(monkeypatch):
+    """批量撤销收集删除记录并一次性提交，不逐帖 commit。"""
+    cog = make_cog()
+    bulk_save = AsyncMock()
+    monkeypatch.setattr("src.thread_manage.cog.db.save_mute_records_bulk", bulk_save)
+    member = SimpleNamespace(id=42)
+    actor = SimpleNamespace(id=10)
+    cog._mute_cache[(7, 1, 42)] = {
+        "muted_until": None,
+        "global_muted_until": -1,
+        "violations": 0,
+    }
+
+    affected, still_single = await cog._apply_global_thread_unmute(
+        7, [1], member, actor
+    )
+
+    assert (affected, still_single) == (1, 0)
+    bulk_save.assert_awaited_once()
+    records = bulk_save.await_args.args[0]
+    assert len(records) == 1
+    assert records[0][:3] == (7, 1, 42)
+    assert records[0][3] is None  # 全清后删除记录
+
+
+async def test_global_action_backgrounds_when_over_threshold(monkeypatch):
+    """影响帖子数超过阈值时，转为后台执行而非同步批量处理。"""
+    cog = make_cog()
+    cog._GLOBAL_BACKGROUND_THRESHOLD = 2
+    cog.can_global_thread_action = AsyncMock(return_value=True)
+    source = SimpleNamespace(id=100, owner_id=10)
+    target = SimpleNamespace(id=42, mention="<@42>")
+    guild = SimpleNamespace(
+        id=1,
+        get_member=lambda user_id: SimpleNamespace(mention="<@10>") if user_id == 10 else None,
+    )
+    message = SimpleNamespace(edit=AsyncMock())
+    interaction = SimpleNamespace(
+        guild=guild,
+        user=SimpleNamespace(id=10, mention="<@10>"),
+        response=SimpleNamespace(defer=AsyncMock()),
+        original_response=AsyncMock(return_value=message),
+    )
+    cog._build_owner_index = AsyncMock()
+    cog._lookup_owned_threads = MagicMock(return_value=[1, 2, 3])
+    cog._apply_global_thread_mute = AsyncMock()
+    cog._start_background_global_action = AsyncMock()
+    monkeypatch.setattr(
+        "src.thread_manage.cog.wait_menu_confirm_on_message",
+        AsyncMock(return_value=True),
+    )
+
+    await cog.menu_run_global_thread_action(
+        interaction, source, target, is_mute=True
+    )
+
+    cog._start_background_global_action.assert_awaited_once()
+    cog._apply_global_thread_mute.assert_not_awaited()
+
+
+async def test_global_action_sync_when_under_threshold(monkeypatch):
+    """影响帖子数未超阈值时，保持同步批量处理。"""
+    cog = make_cog()
+    cog._GLOBAL_BACKGROUND_THRESHOLD = 2
+    cog.can_global_thread_action = AsyncMock(return_value=True)
+    source = SimpleNamespace(id=100, owner_id=10)
+    target = SimpleNamespace(id=42, mention="<@42>")
+    guild = SimpleNamespace(
+        id=1,
+        get_member=lambda user_id: SimpleNamespace(mention="<@10>") if user_id == 10 else None,
+    )
+    message = SimpleNamespace(edit=AsyncMock())
+    interaction = SimpleNamespace(
+        guild=guild,
+        user=SimpleNamespace(id=10, mention="<@10>"),
+        response=SimpleNamespace(defer=AsyncMock()),
+        original_response=AsyncMock(return_value=message),
+    )
+    cog._build_owner_index = AsyncMock()
+    cog._lookup_owned_threads = MagicMock(return_value=[1])
+    cog._apply_global_thread_mute = AsyncMock(return_value=1)
+    cog._start_background_global_action = AsyncMock()
+    monkeypatch.setattr(
+        "src.thread_manage.cog.wait_menu_confirm_on_message",
+        AsyncMock(return_value=True),
+    )
+
+    await cog.menu_run_global_thread_action(
+        interaction, source, target, is_mute=True
+    )
+
+    cog._start_background_global_action.assert_not_awaited()
+    cog._apply_global_thread_mute.assert_awaited_once()
+
+
+async def test_notify_background_result_prefers_dm(monkeypatch):
+    """后台结果优先私信执行者，成功时不发帖内消息。"""
+    cog = make_cog()
+    send_dm = AsyncMock()
+    monkeypatch.setattr("src.thread_manage.cog.dm.send_dm", send_dm)
+    guild = SimpleNamespace(id=1)
+    channel = SimpleNamespace(id=10, send=AsyncMock())
+    actor = SimpleNamespace(id=42)
+
+    await cog._notify_background_result(guild, channel, actor, "完成")
+
+    send_dm.assert_awaited_once_with(guild, actor, "完成")
+    channel.send.assert_not_awaited()
+
+
+async def test_notify_background_result_falls_back_to_channel(monkeypatch):
+    """私信失败时，降级为在帖子内发送结果。"""
+    cog = make_cog()
+    send_dm = AsyncMock(side_effect=Exception("no dm bot"))
+    monkeypatch.setattr("src.thread_manage.cog.dm.send_dm", send_dm)
+    guild = SimpleNamespace(id=1)
+    channel = SimpleNamespace(id=10, send=AsyncMock())
+    actor = SimpleNamespace(id=42)
+
+    await cog._notify_background_result(guild, channel, actor, "完成")
+
+    send_dm.assert_awaited_once()
+    channel.send.assert_awaited_once_with("完成")
+
+
+async def test_background_mute_notifies_actor_on_completion(monkeypatch):
+    """后台禁言完成后，将结果通知给执行者。"""
+    cog = make_cog()
+    notify = AsyncMock()
+    cog._notify_background_result = notify
+    cog._apply_global_thread_mute = AsyncMock(return_value=5)
+    guild = SimpleNamespace(id=1)
+    channel = SimpleNamespace(id=10)
+    member = SimpleNamespace(id=42, mention="<@42>")
+    actor = SimpleNamespace(id=10)
+
+    await cog._run_global_action_in_background(
+        guild=guild,
+        channel=channel,
+        member=member,
+        actor=actor,
+        is_mute=True,
+        thread_ids=[1],
+        muted_until=-1,
+        reason="测试",
+        duration_label="永久",
+    )
+
+    notify.assert_awaited_once()
+    text = notify.await_args.args[3]
+    assert "5 个" in text
