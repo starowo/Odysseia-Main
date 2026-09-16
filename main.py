@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 
 from src.bot_manage.cogUtils import CogManager
 from src.utils import dm
+from src.utils.command_tree import GuildOnlyCommandTree
 from src.utils.log import SingleEmbedLogHandler
 
 # 加载环境变量
@@ -85,7 +86,9 @@ class OdysseiaBot(commands.Bot):
         intents.message_content = False
         intents.presences = False
         # 由于本机器人只使用斜杠命令，前缀设置为默认值即可
-        super().__init__(command_prefix='!', intents=intents, **kwargs)
+        super().__init__(
+            command_prefix='!', intents=intents, tree_cls=GuildOnlyCommandTree, **kwargs
+        )
 
     async def on_ready(self):
         # 设置Discord日志处理器的bot引用
