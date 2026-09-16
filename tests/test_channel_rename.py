@@ -205,12 +205,9 @@ def test_lowercasing_length_expansion_is_rejected():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("channel_class", [discord.VoiceChannel, discord.Thread])
 @pytest.mark.parametrize("emoji,expected", [(None, "AeT"), ("🌙", "🌙丨AeT")])
-async def test_case_supporting_channels_submit_original_characters(
-    cog, store, channel_class, emoji, expected
-):
-    channel = make_channel(channel_class=channel_class)
+async def test_voice_channel_submits_original_characters(cog, store, emoji, expected):
+    channel = make_channel(channel_class=discord.VoiceChannel)
     interaction = make_interaction(channel)
     await invoke(cog, interaction, "AeT", emoji)
     assert channel.edit.call_args.kwargs["name"] == expected
@@ -220,6 +217,49 @@ async def test_case_supporting_channels_submit_original_characters(
         for field in channel.send.call_args.kwargs["embed"].fields
     }
     assert fields["✏️ 新名称"] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "thread_type,parent_class",
+    [
+        (discord.ChannelType.public_thread, discord.TextChannel),
+        (discord.ChannelType.private_thread, discord.TextChannel),
+        (discord.ChannelType.news_thread, discord.TextChannel),
+        (discord.ChannelType.public_thread, discord.ForumChannel),
+    ],
+    ids=["public-thread", "private-thread", "announcement-thread", "forum-post"],
+)
+async def test_threads_rejected_without_api_or_quota(
+    cog, store, monkeypatch, thread_type, parent_class
+):
+    parent = make_channel(11, channel_class=parent_class)
+    thread = make_channel(channel_class=discord.Thread)
+    thread.type = thread_type
+    thread.parent = parent
+    thread.parent_id = parent.id
+    interaction = make_interaction(thread)
+    get_window = AsyncMock(wraps=store.get_window)
+    record_success = AsyncMock(wraps=store.record_success)
+    monkeypatch.setattr(store, "get_window", get_window)
+    monkeypatch.setattr(store, "record_success", record_success)
+
+    await invoke(cog, interaction, "新名称", "🌙")
+
+    thread.edit.assert_not_awaited()
+    parent.edit.assert_not_awaited()
+    interaction.guild.fetch_channel.assert_not_awaited()
+    thread.send.assert_not_awaited()
+    parent.send.assert_not_awaited()
+    get_window.assert_not_awaited()
+    record_success.assert_not_awaited()
+    assert not store.db_path.exists()
+    interaction.response.defer.assert_not_awaited()
+    interaction.response.send_message.assert_awaited_once()
+    assert "不支持" in reply_text(interaction)
+    assert "子区" in reply_text(interaction)
+    assert "帖子" in reply_text(interaction)
+    assert_private(interaction)
 
 
 @pytest.mark.asyncio
