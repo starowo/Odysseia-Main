@@ -1,3 +1,4 @@
+from src.utils.punishment_announcement import send_punishment_announcement
 import asyncio
 import datetime
 import io
@@ -649,16 +650,14 @@ class ServerSyncCommands(commands.Cog):
             )
             img_file = discord.File(io.BytesIO(img_bytes), filename=img_filename) if img_bytes and img_filename else None
             # 公示不应真的 @ 到被处罚用户/原管理员（可能跨服误触发通知）
-            await announce_channel.send(
+            await send_punishment_announcement(self.bot, target_guild.id, announce_channel, from_sync=True,
                 embed=embed,
                 file=img_file,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
 
     def _get_warned_role_id(self, guild_id: int) -> Optional[int]:
-        guild_configs = getattr(self.bot, "config", {}).get("guild_configs", {})
-        guild_config = guild_configs.get(str(guild_id), {})
-        warned_role_id = guild_config.get("warned_role_id")
+        warned_role_id = get_config_value("warned_role_id", guild_id, 0)
         return int(warned_role_id) if warned_role_id else None
 
     def _format_progress_bar(self, current: int, total: int, width: int = 20) -> str:
@@ -2052,7 +2051,7 @@ class ServerSyncCommands(commands.Cog):
                     embed.add_field(name="用户", value=f"<@{user_id}>")
                     embed.add_field(name="操作者", value=moderator.mention)
                     embed.add_field(name="原因", value=reason or "同步撤销", inline=False)
-                    await announce_channel.send(embed=embed)
+                    await send_punishment_announcement(self.bot, guild.id, announce_channel, from_sync=True, embed=embed)
         except Exception as e:
             if self.logger:
                 self.logger.error(f"撤销处罚失败 {guild.name}: {e}")
