@@ -11,6 +11,7 @@ import pathlib
 from typing import List, Tuple, Optional
 
 from src.utils import dm
+from src.utils.punishment_announcement import send_punishment_announcement
 from src.utils.confirm_view import confirm_view, confirm_view_embed
 from src.utils.auth import (
     is_admin,
@@ -260,7 +261,11 @@ class AdminCommands(commands.Cog):
                                             embed.add_field(name="申诉帖", value=f"<#{appeal_thread_id}>", inline=False)
                                         embed.set_footer(text=f"审查ID: {record['id']}")
                                     if announce_channel:
-                                        await announce_channel.send(embed=embed)
+                                        await send_punishment_announcement(
+                                            self.bot, guild.id, announce_channel, from_sync=False,
+                                            get_config=self.get_guild_config,
+                                            embed=embed,
+                                        )
                                     if moderation_log_channel:
                                         await moderation_log_channel.send(embed=embed)
                                      # 删除记录文件
@@ -822,7 +827,9 @@ class AdminCommands(commands.Cog):
                 embed.set_image(url=f"attachment://{img_filename}")
             embed.set_footer(text=f"处罚ID: {record_id}")
             if announce_channel:
-                await announce_channel.send(
+                await send_punishment_announcement(
+                    self.bot, guild.id, announce_channel, from_sync=False,
+                    get_config=self.get_guild_config,
                     embed=embed,
                     file=discord.File(io.BytesIO(img_bytes), filename=img_filename) if img_bytes else None,
                 )
@@ -917,7 +924,9 @@ class AdminCommands(commands.Cog):
                 embed.set_image(url=f"attachment://{img_filename}")
             embed.set_footer(text=f"处罚ID: {record_id}")
             if announce_channel:
-                await announce_channel.send(
+                await send_punishment_announcement(
+                    self.bot, guild.id, announce_channel, from_sync=False,
+                    get_config=self.get_guild_config,
                     embed=embed,
                     file=discord.File(io.BytesIO(img_bytes), filename=img_filename) if img_bytes else None,
                 )
@@ -1091,7 +1100,9 @@ class AdminCommands(commands.Cog):
                 embed.set_image(url=f"attachment://{img_filename}")
             embed.set_footer(text=f"处罚ID: {record_id}")
             if announce_channel:
-                await announce_channel.send(
+                await send_punishment_announcement(
+                    self.bot, guild.id, announce_channel, from_sync=False,
+                    get_config=self.get_guild_config,
                     embed=embed,
                     file=discord.File(io.BytesIO(img_bytes), filename=img_filename) if img_bytes else None,
                 )
@@ -1235,7 +1246,11 @@ class AdminCommands(commands.Cog):
                 embed.add_field(name="封禁用户", value=user_list_text, inline=False)
                 
                 if announce_channel:
-                    await announce_channel.send(embed=embed)
+                    await send_punishment_announcement(
+                        self.bot, guild.id, announce_channel, from_sync=False,
+                        get_config=self.get_guild_config,
+                        embed=embed,
+                    )
                 if moderation_log_channel:
                     await moderation_log_channel.send(embed=embed)
 
@@ -1440,7 +1455,9 @@ class AdminCommands(commands.Cog):
                 embed.add_field(name="附件", value=att_filename, inline=False)
             embed.set_footer(text=f"审查ID: {record_id}")
             if announce_channel:
-                await announce_channel.send(
+                await send_punishment_announcement(
+                    self.bot, guild.id, announce_channel, from_sync=False,
+                    get_config=self.get_guild_config,
                     embed=embed,
                     file=discord.File(io.BytesIO(att_bytes), filename=att_filename) if att_bytes else None,
                 )
@@ -1543,7 +1560,11 @@ class AdminCommands(commands.Cog):
                 embed.add_field(name="原因", value=reason or "未提供", inline=False)
                 try:
                     if announce_channel:
-                        await announce_channel.send(embed=embed)
+                        await send_punishment_announcement(
+                            self.bot, guild.id, announce_channel, from_sync=False,
+                            get_config=self.get_guild_config,
+                            embed=embed,
+                        )
                     if moderation_log_channel:
                         await moderation_log_channel.send(embed=embed)
                 except Exception as e:
@@ -1663,7 +1684,9 @@ class AdminCommands(commands.Cog):
                 embed.set_image(url=f"attachment://{att_filename}")
             elif att_bytes and att_filename:
                 embed.add_field(name="附件", value=att_filename, inline=False)
-            await announce_channel.send(
+            await send_punishment_announcement(
+                self.bot, guild.id, announce_channel, from_sync=False,
+                get_config=self.get_guild_config,
                 embed=embed,
                 file=discord.File(io.BytesIO(att_bytes), filename=att_filename) if att_bytes else None,
             )
@@ -2562,7 +2585,9 @@ class AdminCommands(commands.Cog):
                 embed.set_image(url=f"attachment://{img_filename}")
             embed.set_footer(text=f"处罚ID: {record_id}")
             if announce_channel:
-                await announce_channel.send(
+                await send_punishment_announcement(
+                    self.bot, guild.id, announce_channel, from_sync=False,
+                    get_config=self.get_guild_config,
                     embed=embed,
                     file=discord.File(io.BytesIO(img_bytes), filename=img_filename) if img_bytes else None,
                 )
@@ -2688,7 +2713,11 @@ class AdminCommands(commands.Cog):
             embed.add_field(name="原因", value=reason, inline=False)
             embed.set_footer(text=f"处罚ID: {record_id}")
             if announce_channel:
-                await announce_channel.send(embed=embed)
+                await send_punishment_announcement(
+                    self.bot, guild.id, announce_channel, from_sync=False,
+                    get_config=self.get_guild_config,
+                    embed=embed,
+                )
             if quiz_punish_log_channel:
                 await quiz_punish_log_channel.send(embed=embed)
 
