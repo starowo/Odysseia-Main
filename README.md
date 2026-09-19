@@ -211,6 +211,7 @@ Odysseia-Main-new/
     "quiz_role_id": 答题身份组ID,
     "warned_role_id": 警告身份组ID,
     "punish_announce_channel_id": 处罚频道ID,
+    "punish_archive_channel_id": 0, // 可选：原始公示留痕频道；详见 docs/punishment_archive.md
     
     // 必填项
     "event_managers": [赛事管理员用户ID列表],
