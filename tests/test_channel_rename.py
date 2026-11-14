@@ -178,7 +178,7 @@ async def test_uppercase_matching_existing_lowercase_does_not_call_api(
     interaction = make_interaction(channel)
     await invoke(cog, interaction, "AET", emoji)
     channel.edit.assert_not_awaited()
-    interaction.guild.fetch_channel.assert_not_awaited()
+    interaction.guild.fetch_channel.assert_awaited_once_with(channel.id)
     assert (await store.get_window(1, 10)).count == 0
     assert "完全相同" in reply_text(interaction)
     assert_private(interaction)
@@ -268,7 +268,7 @@ async def test_same_automatically_prefixed_name_does_not_call_api(cog, store):
     interaction = make_interaction(channel)
     await invoke(cog, interaction, "聊天区", "🌙")
     channel.edit.assert_not_awaited()
-    interaction.guild.fetch_channel.assert_not_awaited()
+    interaction.guild.fetch_channel.assert_awaited_once_with(channel.id)
     assert (await store.get_window(1, 10)).count == 0
 
 
@@ -363,13 +363,30 @@ def make_interaction(channel, user_id=20):
         guild=guild,
         channel=channel,
         user=SimpleNamespace(id=user_id, mention=f"<@{user_id}>"),
-        response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock()),
+        response=SimpleNamespace(
+            defer=AsyncMock(), send_message=AsyncMock(), edit_message=AsyncMock()
+        ),
         followup=SimpleNamespace(send=AsyncMock()),
+        edit_original_response=AsyncMock(),
     )
 
 
-async def invoke(cog, interaction, name="新名称", emoji=None):
+async def invoke(cog, interaction, name="新名称", emoji=None, *, action="confirm"):
     await cog.rename_channel.callback(cog, interaction, name, emoji)
+    if interaction.edit_original_response.call_args is None:
+        return None, None
+    view = interaction.edit_original_response.call_args.kwargs.get("view")
+    if view is None:
+        return None, None
+    if action is None:
+        return view, None
+    component = make_interaction(interaction.channel, interaction.user.id)
+    component.guild = interaction.guild
+    component.user = interaction.user
+    component.followup = interaction.followup
+    button_index = 0 if action == "confirm" else 1
+    await view.children[button_index].callback(component)
+    return view, component
 
 
 def replies(interaction):
@@ -380,12 +397,110 @@ def replies(interaction):
 
 
 def reply_text(interaction):
-    return "\n".join(str(call.args[0]) for call in replies(interaction))
+    calls = replies(interaction) + interaction.edit_original_response.call_args_list
+    return "\n".join(
+        str(call.args[0] if call.args else call.kwargs.get("content", ""))
+        for call in calls
+    )
 
 
 def assert_private(interaction):
-    assert replies(interaction)
-    assert all(call.kwargs.get("ephemeral") is True for call in replies(interaction))
+    if replies(interaction):
+        assert all(
+            call.kwargs.get("ephemeral") is True for call in replies(interaction)
+        )
+        return
+    interaction.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
+
+
+@pytest.mark.asyncio
+async def test_preview_shows_submitted_name_without_editing(cog, store):
+    channel = make_channel(name="旧频道")
+    interaction = make_interaction(channel)
+
+    view, component = await invoke(cog, interaction, "New Room", "🌙", action=None)
+
+    assert component is None
+    assert view is interaction.edit_original_response.call_args.kwargs["view"]
+    fields = {
+        field.name: field.value
+        for field in interaction.edit_original_response.call_args.kwargs["embed"].fields
+    }
+    assert fields["📋 当前名称"] == "旧频道"
+    assert fields["✏️ 将提交的名称"] == "🌙丨new room"
+    channel.edit.assert_not_awaited()
+    assert (await store.get_window(1, channel.id)).count == 0
+    assert_private(interaction)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_preview_never_edits_or_consumes_quota(cog, store):
+    channel = make_channel()
+    interaction = make_interaction(channel)
+
+    view, component = await invoke(cog, interaction, action="cancel")
+
+    assert view.is_finished()
+    assert "已取消" in component.response.edit_message.call_args.kwargs["content"]
+    channel.edit.assert_not_awaited()
+    assert (await store.get_window(1, channel.id)).count == 0
+
+
+@pytest.mark.asyncio
+async def test_preview_timeout_never_edits_or_consumes_quota(cog, store):
+    channel = make_channel()
+    interaction = make_interaction(channel)
+    view, _ = await invoke(cog, interaction, action=None)
+
+    await view.on_timeout()
+
+    assert view.is_finished()
+    assert "超时" in interaction.edit_original_response.call_args.kwargs["content"]
+    channel.edit.assert_not_awaited()
+    assert (await store.get_window(1, channel.id)).count == 0
+
+
+@pytest.mark.asyncio
+async def test_preview_rejects_another_member(cog):
+    channel = make_channel()
+    interaction = make_interaction(channel, user_id=20)
+    view, _ = await invoke(cog, interaction, action=None)
+    outsider = make_interaction(channel, user_id=21)
+
+    assert not await view.interaction_check(outsider)
+    assert "发起者" in outsider.response.send_message.call_args.args[0]
+    assert outsider.response.send_message.call_args.kwargs["ephemeral"] is True
+    channel.edit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_confirmation_does_not_overwrite_intervening_rename(cog, store):
+    original = make_channel(name="预览时名称")
+    changed = make_channel(name="别人刚改的名称")
+    interaction = make_interaction(original)
+    interaction.guild.fetch_channel.side_effect = [original, changed]
+
+    await invoke(cog, interaction, "我的新名称")
+
+    original.edit.assert_not_awaited()
+    changed.edit.assert_not_awaited()
+    assert "发生变化" in reply_text(interaction)
+    assert (await store.get_window(1, original.id)).count == 0
+
+
+@pytest.mark.asyncio
+async def test_confirmation_panel_can_only_be_resolved_once(cog, store):
+    channel = make_channel()
+    interaction = make_interaction(channel)
+    view, _ = await invoke(cog, interaction)
+    duplicate = make_interaction(channel, interaction.user.id)
+    duplicate.guild = interaction.guild
+
+    await view.children[0].callback(duplicate)
+
+    assert channel.edit.await_count == 1
+    assert "已经处理" in duplicate.response.send_message.call_args.args[0]
+    assert (await store.get_window(1, channel.id)).count == 1
 
 
 @pytest.mark.asyncio
@@ -409,14 +524,22 @@ async def test_channel_shares_two_successes_across_members(cog, store, clock):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "name,emoji", [("聊天", "😭🔥"), ("", None), ("x" * 100, "😭"), ("旧名称", None)]
+    "name,emoji,fetches_current",
+    [
+        ("聊天", "😭🔥", False),
+        ("", None, False),
+        ("x" * 100, "😭", False),
+        ("旧名称", None, True),
+    ],
 )
-async def test_invalid_or_same_name_does_not_call_api(cog, store, name, emoji):
+async def test_invalid_or_same_name_does_not_call_api(
+    cog, store, name, emoji, fetches_current
+):
     channel = make_channel()
     interaction = make_interaction(channel)
     await invoke(cog, interaction, name, emoji)
     channel.edit.assert_not_awaited()
-    interaction.guild.fetch_channel.assert_not_awaited()
+    assert interaction.guild.fetch_channel.await_count == int(fetches_current)
     assert (await store.get_window(1, 10)).count == 0
     assert_private(interaction)
 

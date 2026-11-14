@@ -17,6 +17,90 @@ from src.channel_rename.core import (
 )
 
 
+class RenameConfirmationView(discord.ui.View):
+    """一次性的私密改名确认面板。"""
+
+    def __init__(
+        self,
+        cog,
+        command_interaction: discord.Interaction,
+        *,
+        final_name: str,
+        emoji: Optional[str],
+        expected_old_name: str,
+    ):
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.command_interaction = command_interaction
+        self.owner_id = command_interaction.user.id
+        self.final_name = final_name
+        self.emoji = emoji
+        self.expected_old_name = expected_old_name
+        self.resolved = False
+
+    def _claim(self) -> bool:
+        if self.resolved:
+            return False
+        # Set this before the first await so simultaneous button deliveries
+        # cannot start the operation twice.
+        self.resolved = True
+        self.stop()
+        return True
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.owner_id:
+            return True
+        await interaction.response.send_message(
+            "❌ 只有命令发起者可以操作这个确认面板。", ephemeral=True
+        )
+        return False
+
+    @discord.ui.button(label="确认改名", style=discord.ButtonStyle.success)
+    async def confirm(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        if not self._claim():
+            await interaction.response.send_message(
+                "ℹ️ 这个确认面板已经处理完毕。", ephemeral=True
+            )
+            return
+        await interaction.response.edit_message(
+            content="⏳ 正在修改名称……",
+            embed=None,
+            view=None,
+        )
+        await self.cog._start_rename_task(
+            interaction,
+            self.final_name,
+            self.emoji,
+            expected_old_name=self.expected_old_name,
+        )
+
+    @discord.ui.button(label="取消", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._claim():
+            await interaction.response.send_message(
+                "ℹ️ 这个确认面板已经处理完毕。", ephemeral=True
+            )
+            return
+        await interaction.response.edit_message(
+            content="🚫 已取消频道改名。", embed=None, view=None
+        )
+
+    async def on_timeout(self):
+        if not self._claim():
+            return
+        try:
+            await self.command_interaction.edit_original_response(
+                content="⌛ 确认已超时，未修改频道名称。", embed=None, view=None
+            )
+        except Exception:
+            self.cog.logger.exception(
+                "频道改名：更新超时确认面板失败，channel_id=%s",
+                self.command_interaction.channel.id,
+            )
+
+
 class ChannelRenameCommands(commands.Cog):
     def __init__(self, bot, *, store: Optional[ChannelRenameStore] = None):
         self.bot = bot
@@ -64,10 +148,71 @@ class ChannelRenameCommands(commands.Cog):
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
 
-        # Acknowledge before waiting on a busy channel or Discord's own limiter.
+        # Fetch an authoritative baseline for the preview. The same name is
+        # checked again after confirmation so an intervening rename is never
+        # overwritten silently.
         await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            channel = await interaction.guild.fetch_channel(interaction.channel.id)
+        except discord.Forbidden:
+            await interaction.edit_original_response(
+                content="❌ 机器人无法读取该频道的最新状态。"
+            )
+            return
+        except discord.HTTPException:
+            self.logger.exception(
+                "频道改名：获取预览所需的频道状态失败，channel_id=%s",
+                interaction.channel.id,
+            )
+            await interaction.edit_original_response(
+                content="❌ 暂时无法获取频道的最新状态，请稍后再试。"
+            )
+            return
+
+        old_name = channel.name
+        if final_name == old_name:
+            await interaction.edit_original_response(
+                content="ℹ️ 新名称与当前频道名称完全相同，本次不占用次数。"
+            )
+            return
+
+        embed = discord.Embed(
+            title="✏️ 确认频道改名",
+            description="请确认下面的名称无误后再继续。",
+            colour=discord.Colour.blurple(),
+        )
+        embed.add_field(name="📋 当前名称", value=old_name, inline=False)
+        embed.add_field(name="✏️ 将提交的名称", value=final_name, inline=False)
+        embed.add_field(name="😀 Emoji", value=emoji or "未设置", inline=False)
+        embed.add_field(
+            name="⚠️ 提示",
+            value=(
+                "确认后会重新检查频道状态和改名次数。"
+                "Discord 仍可能对提交的名称进行规范化。"
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="120 秒内未操作将自动取消")
+        view = RenameConfirmationView(
+            self,
+            interaction,
+            final_name=final_name,
+            emoji=emoji,
+            expected_old_name=old_name,
+        )
+        await interaction.edit_original_response(embed=embed, view=view)
+
+    async def _start_rename_task(
+        self, interaction, final_name, emoji, *, expected_old_name
+    ):
+        # Acknowledge before waiting on a busy channel or Discord's own limiter.
         task = asyncio.create_task(
-            self._rename_and_notify(interaction, final_name, emoji)
+            self._rename_and_notify(
+                interaction,
+                final_name,
+                emoji,
+                expected_old_name=expected_old_name,
+            )
         )
         self._state["tasks"].add(task)
         task.add_done_callback(self._operation_done)
@@ -91,7 +236,9 @@ class ChannelRenameCommands(commands.Cog):
                 "频道改名：发送操作者提示失败，channel_id=%s", interaction.channel.id
             )
 
-    async def _rename_and_notify(self, interaction, final_name, emoji):
+    async def _rename_and_notify(
+        self, interaction, final_name, emoji, *, expected_old_name
+    ):
         guild_id, channel_id = interaction.guild.id, interaction.channel.id
         lock = self._state["locks"].setdefault(channel_id, asyncio.Lock())
         async with lock:
@@ -104,11 +251,6 @@ class ChannelRenameCommands(commands.Cog):
                         guild_id, channel_id, pending[1], event_id=pending[0]
                     )
                     del self._state["pending"][channel_id]
-                if final_name == interaction.channel.name:
-                    await self._reply(
-                        interaction, "ℹ️ 新名称与当前频道名称完全相同，本次不占用次数。"
-                    )
-                    return
                 window = await self.store.get_window(guild_id, channel_id)
             except Exception:
                 self.logger.exception(
@@ -134,6 +276,12 @@ class ChannelRenameCommands(commands.Cog):
                 if final_name == old_name:
                     await self._reply(
                         interaction, "ℹ️ 新名称与当前频道名称完全相同，本次不占用次数。"
+                    )
+                    return
+                if old_name != expected_old_name:
+                    await self._reply(
+                        interaction,
+                        "⚠️ 频道名称在你确认前已经发生变化。为避免覆盖他人的修改，本次已取消；请重新执行命令查看最新预览。",
                     )
                     return
                 updated = await channel.edit(
