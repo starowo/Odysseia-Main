@@ -615,7 +615,7 @@ class ServerSyncCommands(commands.Cog):
         user_id = int(record["user_id"])
         reason = record.get("reason") or "同步处罚"
         duration = record.get("duration")
-        warn_days = int(record.get("warn_days") or 0)
+        warn_days = int(record.get("warn_days") or record.get("warn") or 0)
 
         if punishment_type == "mute":
             user_obj = await self._safe_fetch_member(target_guild, user_id)
@@ -624,7 +624,7 @@ class ServerSyncCommands(commands.Cog):
             if duration and duration > 0:
                 # Discord 超时上限为 28 天，超出会直接报错并被吞掉导致同步“失败”，此处夹紧
                 timeout_seconds = min(int(duration), 28 * 24 * 60 * 60)
-                await user_obj.timeout(datetime.timedelta(seconds=timeout_seconds), reason=f"同步处罚: {reason}")
+                await user_obj.timeout(datetime.timedelta(seconds=timeout_seconds), reason=f"同步处罚: {reason}"[:512])
             if warn_days > 0:
                 warned_role_id = self._get_warned_role_id(target_guild.id)
                 if warned_role_id:
@@ -632,6 +632,24 @@ class ServerSyncCommands(commands.Cog):
                     if warned_role:
                         self._mark_guard(target_guild.id, user_id, warned_role.id, "add")
                         await user_obj.add_roles(warned_role, reason=f"同步处罚警告 {warn_days} 天")
+                # 在同步目标服同步写入定时警告到期文件，保证到期后能自动摘除警告身份组
+                warn_dir = pathlib.Path("data") / "warn" / str(target_guild.id)
+                warn_dir.mkdir(parents=True, exist_ok=True)
+                warn_id = uuid.uuid4().hex[:8]
+                now_utc = datetime.datetime.now(datetime.timezone.utc)
+                warn_payload = {
+                    "id": warn_id,
+                    "punish_id": record.get("id"),
+                    "type": "warn",
+                    "source": "sync",
+                    "user_id": user_id,
+                    "moderator_id": record.get("moderator_id"),
+                    "reason": reason,
+                    "timestamp": now_utc.isoformat(),
+                    "until": (now_utc + datetime.timedelta(days=warn_days)).isoformat(),
+                }
+                with open(warn_dir / f"{warn_id}.json", "w", encoding="utf-8") as wf:
+                    json.dump(warn_payload, wf, ensure_ascii=False, indent=2)
         elif punishment_type == "ban":
             await target_guild.ban(discord.Object(id=user_id), reason=f"同步处罚: {reason}", delete_message_days=0)
         else:
@@ -1947,6 +1965,7 @@ class ServerSyncCommands(commands.Cog):
             "moderator_name": self._format_display_name(moderator) if moderator else "系统",
             "reason": reason,
             "duration": int(duration) if duration else None,
+            "warn": int(warn_days or 0),
             "warn_days": int(warn_days or 0),
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
@@ -2017,12 +2036,21 @@ class ServerSyncCommands(commands.Cog):
                 record = json.load(f)
 
             user_id = int(record["user_id"])
+            has_other_warn = False
+            if record["type"] == "mute":
+                try:
+                    from src.anticommercial.cog import cleanup_warn_files_for_punish
+                    has_other_warn = cleanup_warn_files_for_punish(guild.id, user_id, punishment_id)
+                except Exception:
+                    pass
+
             user_obj = await self._safe_fetch_member(guild, user_id)
+            warn_days = int(record.get("warn_days") or record.get("warn") or 0)
 
             if record["type"] == "mute" and user_obj:
                 try:
-                    await user_obj.timeout(None, reason=f"同步撤销处罚: {reason}")
-                    if record.get("warn_days", 0) > 0:
+                    await user_obj.timeout(None, reason=f"同步撤销处罚: {reason}"[:512])
+                    if warn_days > 0 and not has_other_warn:
                         warned_role_id = self._get_warned_role_id(guild.id)
                         if warned_role_id:
                             warned_role = guild.get_role(int(warned_role_id))

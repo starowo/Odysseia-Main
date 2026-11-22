@@ -59,6 +59,10 @@
         "channel_rename": {
             "enabled": true,
             "description": "频道改名功能"
+        },
+        "anticommercial": {
+            "enabled": true,
+            "description": "反商业化 aff 阶梯处罚与跨服计次功能"
         }
     },
 
@@ -116,6 +120,26 @@
     "punish_announce_channel_id": 123456789012345683,
     "punish_archive_channel_id": 0,
     "appeal_channel_id": 123456789012345684,
+
+    "anticommercial": {
+        "shared_guild_ids": [
+            123456789012345678
+        ],
+        "announce_in_command_channel": true,
+        "default_reason": "违规发布带推广/返利性质（aff）的内容",
+        "tiers": [
+            {
+                "mute": "0d",
+                "warn_days": 3
+            },
+            {
+                "mute": "3d",
+                "warn_days": 30
+            }
+        ],
+        "role_ids": [],
+        "admin_role_ids": []
+    },
 
     "_banner_comment": "轮换通知申请系统配置",
     "banner_application": {

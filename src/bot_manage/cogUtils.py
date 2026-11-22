@@ -17,6 +17,7 @@ import src.license.cog as license_auto
 import src.banner.cog as banner
 import src.post_filter.cog as post_filter
 import src.channel_rename.cog as channel_rename
+import src.anticommercial.cog as anticommercial
 
 # 模块管理
 class CogManager:
@@ -41,7 +42,8 @@ class CogManager:
             "license": "src.license.cog",
             "banner": "src.banner.cog",
             "post_filter": "src.post_filter.cog",
-            "channel_rename": "src.channel_rename.cog"
+            "channel_rename": "src.channel_rename.cog",
+            "anticommercial": "src.anticommercial.cog"
         }
         
         # Cog类名映射
@@ -57,7 +59,8 @@ class CogManager:
             "license": "LicenseCog",
             "banner": "BannerCommands",
             "post_filter": "PostFilterCog",
-            "channel_rename": "ChannelRenameCommands"
+            "channel_rename": "ChannelRenameCommands",
+            "anticommercial": "AntiCommercialCommands"
         }
         
         # 初始化Cog实例映射
@@ -73,7 +76,8 @@ class CogManager:
             "license": license_auto.LicenseCog(bot),
             "banner": banner.BannerCommands(bot),
             "post_filter": post_filter.PostFilterCog(bot),
-            "channel_rename": channel_rename.ChannelRenameCommands(bot)
+            "channel_rename": channel_rename.ChannelRenameCommands(bot),
+            "anticommercial": anticommercial.AntiCommercialCommands(bot)
         }
     
     async def load_all_enabled(self):

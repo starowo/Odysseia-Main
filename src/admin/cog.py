@@ -1,3 +1,4 @@
+from __future__ import annotations
 import asyncio
 import io
 import os
@@ -1493,28 +1494,37 @@ class AdminCommands(commands.Cog):
             user_mention = f"<@{user_id}>"  # 默认mention，防止获取用户失败
             
             if record["type"] == "mute":
-                # 对于禁言，需要获取用户对象
+                has_other_warn = False
+                try:
+                    from src.anticommercial.cog import cleanup_warn_files_for_punish
+                    has_other_warn = cleanup_warn_files_for_punish(guild.id, user_id, punish_id)
+                except Exception:
+                    pass
+
+                # 对于禁言，若成员已退服则跳过实时解除，继续执行文件清理、跨服撤销与反商销账
                 try:
                     user_obj = guild.get_member(user_id) or await guild.fetch_member(user_id)
-                    user_mention = user_obj.mention
+                    if user_obj is not None:
+                        user_mention = user_obj.mention
                 except discord.NotFound:
-                    await interaction.followup.send("❌ 未找到对应用户", ephemeral=True)
-                    return
-                
-                try:
-                    await user_obj.timeout(None, reason="撤销处罚")
-                    if record.get("warn", 0) > 0:
-                        # 使用服务器特定配置
-                        warned_role_id = self.get_guild_config("warned_role_id", guild.id, 0)
-                        warned_role = guild.get_role(int(warned_role_id)) if warned_role_id else None
-                        if warned_role:
-                            sync_cog_ref = self.bot.get_cog("ServerSyncCommands")
-                            if sync_cog_ref:
-                                sync_cog_ref._mark_guard(guild.id, user_obj.id, warned_role.id, "remove")
-                            await user_obj.remove_roles(warned_role, reason=f"撤销处罚附加警告 {record['warn']} 天")
-                except discord.Forbidden:
-                    await interaction.followup.send("❌ 无权限解除禁言", ephemeral=True)
-                    return
+                    user_obj = None
+
+                warn_days = int(record.get("warn") or record.get("warn_days") or 0)
+                if user_obj is not None:
+                    try:
+                        await user_obj.timeout(None, reason="撤销处罚")
+                        if warn_days > 0 and not has_other_warn:
+                            # 使用服务器特定配置
+                            warned_role_id = self.get_guild_config("warned_role_id", guild.id, 0)
+                            warned_role = guild.get_role(int(warned_role_id)) if warned_role_id else None
+                            if warned_role:
+                                sync_cog_ref = self.bot.get_cog("ServerSyncCommands")
+                                if sync_cog_ref:
+                                    sync_cog_ref._mark_guard(guild.id, user_obj.id, warned_role.id, "remove")
+                                await user_obj.remove_roles(warned_role, reason=f"撤销处罚附加警告 {warn_days} 天")
+                    except discord.Forbidden:
+                        await interaction.followup.send("❌ 无权限解除禁言", ephemeral=True)
+                        return
                     
             elif record["type"] == "ban":
                 # 对于封禁，直接使用user_id进行解封
@@ -1537,11 +1547,21 @@ class AdminCommands(commands.Cog):
                 await interaction.followup.send("❌ 未知处罚类型", ephemeral=True)
                 return
 
-            # 删除记录文件
+            # 删除记录文件并同步撤销可能关联的反商计次记录
             try:
                 path.unlink(missing_ok=True)
             except Exception:
                 pass
+
+            try:
+                ac_cog = self.bot.get_cog("AntiCommercialCommands")
+                if ac_cog is not None:
+                    await ac_cog.mark_revoked_from_admin(
+                        punish_id, interaction.user.id, reason, guild_id=guild.id
+                    )
+            except Exception as ac_err:
+                if self.logger:
+                    self.logger.warning(f"同步撤销反商记录失败: {ac_err}")
 
             # 同步撤销处罚到其他服务器
             sync_cog = self.bot.get_cog("ServerSyncCommands")
